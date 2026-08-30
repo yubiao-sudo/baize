@@ -1,0 +1,61 @@
+[package]
+name = "baize"
+version = "0.1.0"
+description = "BaiZe 桌面 Agent 框架 · M0 骨架（本地 Ollama 对话 + 只读文件工具 + 权限审批）"
+edition = "2021"
+
+[lib]
+name = "baize_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# 嵌入前端 dist（双击 exe 独立运行必需）：cargo build --features custom-protocol
+# 不带此 feature 的调试构建为 dev 模式，会加载 devUrl(localhost:1421)，需配合 pnpm tauri dev
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream", "gzip", "brotli", "deflate", "http2", "multipart"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+flate2 = "1"
+async-trait = "0.1"
+notify = "6"
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+uiautomation = "0.5"
+windows = { version = "0.48", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory", "Foundation", "Foundation_Collections", "Globalization", "Graphics", "Graphics_Imaging", "Media", "Media_Ocr", "Storage", "Storage_Streams"] }
+xcap = "0.8"
+image = { version = "0.25", default-features = false, features = ["png"] }
+regex = "1"
+zip = "0.6"
+pdf-extract = "0.7"
+futures-util = "0.3"
+rfd = "0.14"
+portable-pty = "0.8"
+headless_chrome = { version = "1.0", features = ["offline"] }
+lettre = "0.11"
+imap = { version = "2", features = ["tls"] }
+native-tls = "0.2"
+mysql = "25"
+postgres = "0.19"
+cron = "0.17"
+base64 = "0.22"
+encoding_rs = "0.8"
+aes = "0.8"
+md5 = "0.7"
+hex = "0.4"
+chrono = "0.4"
+walkdir = "2"
+arboard = "3"
+csv = "1"
+calamine = { version = "0.26", features = ["dates"] }
+rust_xlsxwriter = "0.83"
+qrcode = "0.14"

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>白泽 · 能力矩阵</title>
+<style>
+  :root{
+    --cyan:#00f0ff; --purple:#a855f7; --pink:#ff2d95; --green:#00ffa3;
+    --bg:#05070f; --panel:rgba(10,16,32,.72); --line:rgba(0,240,255,.18);
+    --txt:#d6e4ff; --dim:#6b7fa3;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--txt); font-family:"Segoe UI","Microsoft YaHei",sans-serif;
+    min-height:100vh; overflow-x:hidden;
+  }
+  /* 背景层 */
+  #bg{position:fixed;inset:0;z-index:0;opacity:.9}
+  .grid-overlay{
+    position:fixed;inset:0;z-index:0;pointer-events:none;
+    background:
+      linear-gradient(rgba(0,240,255,.05) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(0,240,255,.05) 1px,transparent 1px);
+    background-size:44px 44px;
+    mask-image:radial-gradient(ellipse at 50% 30%,#000 30%,transparent 75%);
+    -webkit-mask-image:radial-gradient(ellipse at 50% 30%,#000 30%,transparent 75%);
+  }
+  .scanline{
+    position:fixed;left:0;right:0;height:120px;z-index:1;pointer-events:none;
+    background:linear-gradient(180deg,transparent,rgba(0,240,255,.05),transparent);
+    animation:scan 7s linear infinite;
+  }
+  @keyframes scan{0%{top:-140px}100%{top:110vh}}
+
+  .wrap{position:relative;z-index:2;max-width:1180px;margin:0 auto;padding:34px 26px 60px}
+
+  /* 头部 */
+  header{text-align:center;margin-bottom:30px}
+  .badge{
+    display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border-radius:999px;
+    border:1px solid var(--line);background:var(--panel);font-size:12px;letter-spacing:2px;
+    color:var(--cyan);box-shadow:0 0 18px rgba(0,240,255,.12) inset;
+  }
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  h1{
+    margin-top:16px;font-size:44px;font-weight:800;letter-spacing:6px;
+    background:linear-gradient(90deg,var(--cyan),var(--purple),var(--pink));
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 0 22px rgba(168,85,247,.45));
+  }
+  .sub{margin-top:8px;color:var(--dim);font-size:14px;letter-spacing:3px}
+
+  /* 主布局 */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+
+  /* 能力卡 */
+  .card{
+    position:relative;border-radius:16px;padding:20px 18px;overflow:hidden;
+    background:var(--panel);border:1px solid var(--line);
+    backdrop-filter:blur(10px);
+    transition:transform .35s,box-shadow .35s,border-color .35s;
+    animation:rise .7s ease both;
+  }
+  .card:nth-child(1){animation-delay:.05s}.card:nth-child(2){animation-delay:.13s}
+  .card:nth-child(3){animation-delay:.21s}.card:nth-child(4){animation-delay:.29s}
+  .card:nth-child(5){animation-delay:.37s}.card:nth-child(6){animation-delay:.45s}
+  .card:nth-child(7){animation-delay:.53s}
+  @keyframes rise{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+
+  .card::before{
+    content:"";position:absolute;top:0;left:-100%;width:100%;height:2px;
+    background:linear-gradient(90deg,transparent,var(--accent,var(--cyan)),transparent);
+    transition:left .6s;
+  }
+  .card:hover::before{left:100%}
+  .card:hover{transform:translateY(-6px);border-color:var(--accent,var(--cyan));box-shadow:0 12px 40px rgba(0,240,255,.14),0 0 30px rgba(0,240,255,.08) inset}
+  .card .glow{
+    position:absolute;right:-40px;top:-40px;width:130px;height:130px;border-radius:50%;
+    background:radial-gradient(circle,var(--accent,var(--cyan)) 0%,transparent 70%);opacity:.16;filter:blur(8px);
+  }
+  .card h3{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:700;margin-bottom:4px}
+  .card h3 .ico{font-size:22px;filter:drop-shadow(0 0 8px var(--accent,var(--cyan)))}
+  .card .en{font-size:11px;color:var(--dim);letter-spacing:2px;margin-bottom:14px}
+  .card ul{list-style:none}
+  .card li{
+    display:flex;align-items:center;gap:8px;padding:7px 0;font-size:13.5px;color:var(--txt);
+    border-bottom:1px dashed rgba(107,127,163,.15);
+  }
+  .card li:last-child{border-bottom:none}
+  .card li::before{content:"▸";color:var(--accent,var(--cyan));font-size:12px;text-shadow:0 0 6px var(--accent,var(--cyan))}
+  .bar{height:4px;border-radius:4px;margin-top:12px;background:rgba(107,127,163,.15);overflow:hidden}
+  .bar i{display:block;height:100%;width:0;border-radius:4px;background:linear-gradient(90deg,var(--accent,var(--cyan)),var(--accent,var(--pink,#ff2d95)));animation:fill 1.4s .8s ease forwards;box-shadow:0 0 10px var(--accent,var(--cyan))}
+  @keyframes fill{to{width:var(--w)}}
+
+  /* 雷达容器 */
+  .radar-box{
+    grid-row:span 2;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    border-radius:16px;background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(10px);
+    padding:14px;animation:rise .7s .29s ease both;position:relative;overflow:hidden;
+  }
+  .radar-box::after{
+    content:"";position:absolute;inset:0;border-radius:16px;pointer-events:none;
+    box-shadow:0 0 60px rgba(168,85,247,.12) inset;
+  }
+  .radar-box h3{font-size:15px;letter-spacing:4px;color:var(--purple);margin-bottom:4px;text-shadow:0 0 14px rgba(168,85,247,.6)}
+  .radar-box .en{font-size:10px;color:var(--dim);letter-spacing:2px;margin-bottom:8px}
+  canvas#radar{width:100%;max-width:330px;aspect-ratio:1}
+
+  /* 底部统计条 */
+  .stats{
+    grid-column:span 3;display:flex;justify-content:space-around;align-items:center;
+    border-radius:16px;background:var(--panel);border:1px solid var(--line);padding:18px 10px;
+    backdrop-filter:blur(10px);animation:rise .7s .6s ease both;
+  }
+  .stat{text-align:center;position:relative;flex:1}
+  .stat:not(:last-child)::after{content:"";position:absolute;right:0;top:12%;height:76%;width:1px;background:var(--line)}
+  .stat b{display:block;font-size:28px;font-weight:800;background:linear-gradient(90deg,var(--cyan),var(--purple));-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 10px rgba(0,240,255,.4))}
+  .stat span{font-size:12px;color:var(--dim);letter-spacing:2px}
+
+  footer{text-align:center;margin-top:26px;color:var(--dim);font-size:12px;letter-spacing:2px}
+  footer i{color:var(--cyan);font-style:normal;animation:pulse 2s infinite}
+
+  @media(max-width:860px){
+    .grid{grid-template-columns:1fr}
+    .radar-box{grid-row:auto;order:-1}
+    .stats{grid-column:auto;flex-direction:column;gap:16px}
+    .stat:not(:last-child)::after{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<div class="grid-overlay"></div>
+<div class="scanline"></div>
+
+<div class="wrap">
+  <header>
+    <div class="badge"><span class="dot"></span>BAIZE · AI CORE · ONLINE</div>
+    <h1>能力矩阵</h1>
+    <div class="sub">CAPABILITY MATRIX — 六大能力域 / 十八项技能 / 实时在线</div>
+  </header>
+
+  <main class="grid">
+
+    <!-- 卡1 -->
+    <div class="card" style="--accent:#00f0ff">
+      <div class="glow"></div>
+      <h3><span class="ico">📁</span>文件与开发</h3>
+      <div class="en">FILE &amp; DEV</div>
+      <ul>
+        <li>读写 / 编辑 / 移动文件</li>
+        <li>Shell &amp; PowerShell 命令执行</li>
+        <li>代码搜索与调用链探索</li>
+      </ul>
+      <div class="bar"><i style="--w:88%"></i></div>
+    </div>
+
+    <!-- 卡2 -->
+    <div class="card" style="--accent:#a855f7">
+      <div class="glow"></div>
+      <h3><span class="ico">🖥️</span>桌面与系统</h3>
+      <div class="en">DESKTOP &amp; OS</div>
+      <ul>
+        <li>软件搜索 / 安装 / 卸载管家</li>
+        <li>环境变量 / PATH / 开机自启</li>
+        <li>GUI 自动化 · 截屏 · OCR</li>
+      </ul>
+      <div class="bar"><i style="--w:80%"></i></div>
+    </div>
+
+    <!-- 卡3 -->
+    <div class="card" style="--accent:#00ffa3">
+      <div class="glow"></div>
+      <h3><span class="ico">🌐</span>浏览器与信息</h3>
+      <div class="en">BROWSER &amp; WEB</div>
+      <ul>
+        <li>网页打开 / 操作 / 截图</li>
+        <li>关键词搜索与结果解析</li>
+        <li>网页正文抓取（绕过内嵌限制）</li>
+      </ul>
+      <div class="bar"><i style="--w:85%"></i></div>
+    </div>
+
+    <!-- 卡4 -->
+    <div class="card" style="--accent:#ff2d95">
+      <div class="glow"></div>
+      <h3><span class="ico">📊</span>文档与可视化</h3>
+      <div class="en">DOC &amp; VIZ</div>
+      <ul>
+        <li>Markdown 文档写入 / 追加</li>
+        <li>HTML 数据可视化页面生成</li>
+        <li>统计图表 · 仪表盘 · 动态效果</li>
+      </ul>
+      <div class="bar"><i style="--w:92%"></i></div>
+    </div>
+
+    <!-- 雷达图（中间） -->
+    <div class="radar-box">
+      <h3>⚡ 能力雷达</h3>
+      <div class="en">CAPABILITY RADAR</div>
+      <canvas id="radar"></canvas>
+    </div>
+
+    <!-- 卡5 -->
+    <div class="card" style="--accent:#00f0ff">
+      <div class="glow"></div>
+      <h3><span class="ico">🧠</span>知识库</h3>
+      <div class="en">KNOWLEDGE BASE</div>
+      <ul>
+        <li>本地目录向量化索引</li>
+        <li>语义检索 · 自然语言问答</li>
+        <li>长期记忆与偏好画像</li>
+      </ul>
+      <div class="bar"><i style="--w:75%"></i></div>
+    </div>
+
+    <!-- 卡6 -->
+    <div class="card" style="--accent:#a855f7">
+      <div class="glow"></div>
+      <h3><span class="ico">⚙️</span>工程模式</h3>
+      <div class="en">ENGINEERING MODE</div>
+      <ul>
+        <li>任务拆解 · 需求 → 测试全流程</li>
+        <li>自研工具注册（Python/Node/Shell）</li>
+        <li>子代理并行 · 构建验证</li>
+      </ul>
+      <div class="bar"><i style="--w:90%"></i></div>
+    </div>
+
+    <!-- 底部统计 -->
+    <div class="stats">
+      <div class="stat"><b>6</b><span>能力域</span></div>
+      <div class="stat"><b>18</b><span>核心技能</span></div>
+      <div class="stat"><b>40+</b><span>内置工具</span></div>
+      <div class="stat"><b>∞</b><span>可扩展工具</span></div>
+      <div class="stat"><b>1</b><span>白泽 · 你的助手</span></div>
+    </div>
+  </main>
+
+  <footer><i>◆</i> BAIZE AI CORE SYSTEM · ALL SYSTEMS NOMINAL <i>◆</i></footer>
+</div>
+
+<script>
+/* ============ 粒子星空 ============ */
+const bg = document.getElementById('bg'), ctx = bg.getContext('2d');
+let W, H, pts = [];
+function size(){ W = bg.width = innerWidth; H = bg.height = innerHeight; }
+size();
+const N = Math.min(90, Math.floor(innerWidth/14));
+for(let i=0;i<N;i++) pts.push({x:Math.random()*W, y:Math.random()*H, vx:(Math.random()-.5)*.35, vy:(Math.random()-.5)*.35, r:Math.random()*1.8+.4, c:Math.random()<.33?'0,240,255':Math.random()<.5?'168,85,247':'255,45,149'});
+const mouse = {x:-999,y:-999};
+addEventListener('mousemove', e => {mouse.x=e.clientX;mouse.y=e.clientY});
+function tick(){
+  ctx.clearRect(0,0,W,H);
+  for(const p of pts){
+    p.x+=p.vx; p.y+=p.vy;
+    if(p.x<0||p.x>W)p.vx*=-1; if(p.y<0||p.y>H)p.vy*=-1;
+    const dm = Math.hypot(p.x-mouse.x,p.y-mouse.y);
+    if(dm<160){ p.x+=(p.x-mouse.x)/dm*.6; p.y+=(p.y-mouse.y)/dm*.6; }
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fillStyle=`rgba(${p.c},.8)`; ctx.fill();
+  }
+  for(let i=0;i<pts.length;i++)for(let j=i+1;j<pts.length;j++){
+    const a=pts[i],b=pts[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(d<110){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+      ctx.strokeStyle=`rgba(0,240,255,${(1-d/110)*.22})`; ctx.lineWidth=.6; ctx.stroke(); }
+  }
+  requestAnimationFrame(tick);
+}
+tick();
+addEventListener('resize', ()=>{size();});
+
+/* ============ 能力雷达图 ============ */
+const cv = document.getElementById('radar'), cx = cv.getContext('2d');
+const labels = ['文件开发','桌面系统','网络信息','文档可视化','知识库','工程模式'];
+const vals = [88,80,85,92,75,90];
+function drawRadar(t){
+  const s = cv.width = cv.height = Math.min(cv.clientWidth*2, 660);
+  const cx0=s/2, cy0=s/2, R=s*.34, layers=5;
+  cx.clearRect(0,0,s,s);
+  // 网格
+  for(let L=1;L<=layers;L++){
+    cx.beginPath();
+    for(let i=0;i<6;i++){
+      const a=-Math.PI/2+i*Math.PI/3;
+      const x=cx0+Math.cos(a)*R*L/layers, y=cy0+Math.sin(a)*R*L/layers;
+      i?cx.lineTo(x,y):cx.moveTo(x,y);
+    }
+    cx.closePath(); cx.strokeStyle=`rgba(0,240,255,${.08+L*.02})`; cx.lineWidth=1; cx.stroke();
+  }
+  // 轴线
+  for(let i=0;i<6;i++){
+    const a=-Math.PI/2+i*Math.PI/3;
+    cx.beginPath(); cx.moveTo(cx0,cy0); cx.lineTo(cx0+Math.cos(a)*R, cy0+Math.sin(a)*R);
+    cx.strokeStyle='rgba(0,240,255,.14)'; cx.stroke();
+    const lx=cx0+Math.cos(a)*(R+26), ly=cy0+Math.sin(a)*(R+26);
+    cx.font='600 15px "Microsoft YaHei"'; cx.textAlign='center'; cx.textBaseline='middle';
+    cx.fillStyle='#8fb8ff'; cx.shadowColor='rgba(0,240,255,.8)'; cx.shadowBlur=8;
+    cx.fillText(labels[i], lx, ly); cx.shadowBlur=0;
+  }
+  // 数据多边形（缓动生长 + 呼吸）
+  const k = vals.map(v=>v/100);
+  const breathe = 1+Math.sin(t/40)*.02;
+  cx.beginPath();
+  for(let i=0;i<6;i++){
+    const a=-Math.PI/2+i*Math.PI/3;
+    const x=cx0+Math.cos(a)*R*k[i]*breathe, y=cy0+Math.sin(a)*R*k[i]*breathe;
+    i?cx.lineTo(x,y):cx.moveTo(x,y);
+  }
+  cx.closePath();
+  const g=cx.createLinearGradient(0,0,s,s);
+  g.addColorStop(0,'rgba(0,240,255,.45)'); g.addColorStop(.5,'rgba(168,85,247,.4)'); g.addColorStop(1,'rgba(255,45,149,.4)');
+  cx.fillStyle=g; cx.fill();
+  cx.strokeStyle='rgba(0,240,255,.9)'; cx.lineWidth=2.5; cx.shadowColor='#00f0ff'; cx.shadowBlur=16; cx.stroke();
+  cx.shadowBlur=0;
+  // 数据点
+  for(let i=0;i<6;i++){
+    const a=-Math.PI/2+i*Math.PI/3;
+    const x=cx0+Math.cos(a)*R*k[i]*breathe, y=cy0+Math.sin(a)*R*k[i]*breathe;
+    cx.beginPath(); cx.arc(x,y,4,0,7);
+    cx.fillStyle='#fff'; cx.shadowColor='#00f0ff'; cx.shadowBlur=14; cx.fill();
+    cx.shadowBlur=0;
+  }
+  // 中心光晕
+  const rg=cx.createRadialGradient(cx0,cy0,0,cx0,cy0,R*.6);
+  rg.addColorStop(0,'rgba(168,85,247,.14)'); rg.addColorStop(1,'transparent');
+  cx.fillStyle=rg; cx.fillRect(0,0,s,s);
+  // 数值
+  cx.font='700 13px "Microsoft YaHei"'; cx.textAlign='center';
+  for(let i=0;i<6;i++){
+    const a=-Math.PI/2+i*Math.PI/3;
+    const x=cx0+Math.cos(a)*R*k[i]*breathe*.55, y=cy0+Math.sin(a)*R*k[i]*breathe*.55;
+    cx.fillStyle='rgba(255,255,255,.9)'; cx.shadowColor='#00f0ff'; cx.shadowBlur=8;
+    cx.fillText(vals[i], x, y); cx.shadowBlur=0;
+  }
+}
+let t=0;
+(function loop(){ t++; drawRadar(t); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>

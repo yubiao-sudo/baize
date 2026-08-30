@@ -1,0 +1,36 @@
+# 依赖与构建产物
+node_modules
+dist
+target
+
+# 运行时数据 / 日志 / 截图（不应入库）
+*.db
+*.db-wal
+*.db-shm
+*.log
+baize-screenshot-*.png
+baize-browser-*.png
+baize-som-*.png
+baize-ocr-pre-*.png
+baize-captcha-*.png
+diff-*.png
+
+# 密钥与环境配置
+.env
+.env.*
+*.pem
+
+# 系统与工具杂物
+*.jsonl
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+*.pyc
+.trae/
+
+# Tauri 生成物
+src-tauri/gen/
+
+# 工具杂物
+frontend/.workbuddy/

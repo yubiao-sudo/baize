@@ -1,0 +1,66 @@
+/* ═══════════════════════════════════════════════════════════════════
+   CRYSTAL WORKSHOP 水晶工坊设计令牌
+   紫晶极光 × 磨砂玻璃 × 暖奶油文 · 与终末地冷灰/警戒黄完全切割
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  /* 基底夜域（暖紫暗色，不是冷灰工业底） */
+  --void:        #0e0b14;
+  --void-deep:   #08060d;
+  --void-soft:   #15101f;
+
+  /* 面板：玻璃态叠加（半透明白 + 强模糊） */
+  --glass:       rgba(255, 255, 255, 0.035);
+  --glass-strong:rgba(255, 255, 255, 0.06);
+  --glass-solid: #1a1426;
+
+  /* 边线：暖紫透明白（≠ 终末地的青蓝工业线） */
+  --line:        rgba(255, 255, 255, 0.07);
+  --line-mid:    rgba(255, 255, 255, 0.13);
+  --line-orchid: rgba(255, 142, 203, 0.22);
+
+  /* 极光主色序列 */
+  --violet:      #8b5bff;      /* 紫晶主色（旧琥珀金 / 终末地青的取代） */
+  --violet-hi:   #c49dff;
+  --violet-dim:  rgba(139, 91, 255, 0.12);
+  --orchid:      #ff8ecb;      /* 玫瑰粉强调 · 发射/确认态 */
+  --orchid-hi:   #ffc4e4;
+  --aurora-g:    #6ef4c5;      /* 极光绿（薄荷）· 成功态 */
+  --rose:        #ff9ab0;      /* 暖珊瑚 · 中止/拒绝 */
+
+  /* 文字 · 暖奶油色（≠ 终末地冷白蓝） */
+  --ink:         #f5ecd9;
+  --ink-dim:     #c8bfae;
+  --faint:       #82786a;
+  --danger:      #ff6a6a;
+
+  /* 字体 */
+  --sans:  "Segoe UI Variable Text", "Microsoft YaHei UI", system-ui, -apple-system, sans-serif;
+  --serif: "Cormorant Garamond", "Noto Serif SC", Georgia, serif;
+  --mono:  "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+
+  /* 统一圆角（温润圆形 ≠ 终末地的硬切割缺角） */
+  --r-pill:  999px;
+  --r-card:  16px;
+  --r-chip:  10px;
+}
+
+/* 基础重置 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  background: var(--void-deep);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button { font-family: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+input, textarea { font-family: inherit; color: var(--ink); background: none; border: none; outline: none; }
+::selection { background: rgba(255, 142, 203, 0.28); }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-thumb { background: rgba(196, 157, 255, 0.25); border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }

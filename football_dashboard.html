@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>⚽ 足球赛况可视化仪表盘</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --card2: #1c2333;
+    --green: #3fb950;
+    --gold: #e3b341;
+    --red: #f85149;
+    --blue: #58a6ff;
+    --text: #e6edf3;
+    --muted: #8b949e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(160deg, #0d1117 0%, #101b2e 60%, #0d1117 100%);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 30px 5%;
+  }
+  .header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+  .header h1 { font-size: 30px; background: linear-gradient(90deg, #3fb950, #58a6ff); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .badge { background: rgba(63,185,80,.15); border: 1px solid var(--green); color: var(--green); padding: 4px 12px; border-radius: 20px; font-size: 13px; }
+  .date-tag { color: var(--muted); font-size: 14px; margin-left: auto; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; margin-bottom: 26px; }
+  .stat { background: var(--card); border: 1px solid #30363d; border-radius: 14px; padding: 18px 20px; transition: transform .2s; position: relative; overflow: hidden; }
+  .stat:hover { transform: translateY(-4px); }
+  .stat .num { font-size: 36px; font-weight: 700; margin: 6px 0 2px; }
+  .stat .label { color: var(--muted); font-size: 13px; }
+  .stat .icon { position: absolute; right: 14px; top: 14px; font-size: 26px; opacity: .5; }
+  .g { color: var(--green); } .r { color: var(--red); } .b { color: var(--blue); } .y { color: var(--gold); }
+  .section { margin: 30px 0 16px; font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .section::before { content: ""; width: 6px; height: 22px; background: var(--green); border-radius: 3px; }
+  .timeline { background: var(--card); border: 1px solid #30363d; border-radius: 14px; padding: 22px 24px; }
+  .tl-item { display: flex; gap: 18px; padding: 12px 0; border-bottom: 1px dashed #2d333b; }
+  .tl-item:last-child { border-bottom: none; }
+  .tl-date { min-width: 110px; font-weight: 700; color: var(--gold); font-size: 14px; padding-top: 2px; }
+  .tl-body h4 { font-size: 15px; margin-bottom: 4px; }
+  .tl-body p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .tl-status { display: inline-block; font-size: 11px; padding: 2px 10px; border-radius: 12px; margin-left: 8px; vertical-align: 2px; }
+  .s-done { background: rgba(63,185,80,.15); color: var(--green); }
+  .s-live { background: rgba(248,81,73,.15); color: var(--red); animation: pulse 1.6s infinite; }
+  .s-up { background: rgba(88,166,255,.15); color: var(--blue); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
+  .leagues { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .league { background: var(--card); border: 1px solid #30363d; border-radius: 14px; padding: 18px; }
+  .league .top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .league .emoji { font-size: 30px; }
+  .league h3 { font-size: 16px; }
+  .league .country { color: var(--muted); font-size: 12px; }
+  .bar-wrap { margin: 10px 0; }
+  .bar-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .bar { height: 10px; background: #21262d; border-radius: 6px; overflow: hidden; }
+  .bar > div { height: 100%; border-radius: 6px; width: 0; animation: grow 1.2s ease forwards; }
+  @keyframes grow { from { width: 0; } }
+  .channels { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .channel { background: var(--card2); border-radius: 12px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; font-size: 14px; }
+  .channel .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 36px; border-top: 1px solid #21262d; padding-top: 18px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚽ 足球赛况可视化仪表盘</h1>
+  <span class="badge">● 数据实时更新</span>
+  <span class="date-tag">数据截至：2026年8月24日</span>
+</div>
+
+<div class="grid">
+  <div class="stat">
+    <span class="icon">🏆</span>
+    <div class="label">2026 世界杯（美加墨）</div>
+    <div class="num g">已落幕</div>
+    <div class="label">7月19日决赛 · 四年一届</div>
+  </div>
+  <div class="stat">
+    <span class="icon">🔥</span>
+    <div class="label">欧洲五大联赛新赛季</div>
+    <div class="num r">揭幕中</div>
+    <div class="label">8月中旬起陆续开打</div>
+  </div>
+  <div class="stat">
+    <span class="icon">🌍</span>
+    <div class="label">欧冠 / 欧联资格赛</div>
+    <div class="num b">附加赛</div>
+    <div class="label">8月底决出正赛名额</div>
+  </div>
+  <div class="stat">
+    <span class="icon">🇨🇳</span>
+    <div class="label">中超 2026 赛季</div>
+    <div class="num y">下半程</div>
+    <div class="label">争冠保级白热化</div>
+  </div>
+</div>
+
+<div class="section">赛事日历时间线</div>
+<div class="timeline">
+  <div class="tl-item">
+    <div class="tl-date">2026.07.19</div>
+    <div class="tl-body">
+      <h4>2026 世界杯决赛<span class="tl-status s-done">✔ 已结束</span></h4>
+      <p>美加墨世界杯落幕，新科冠军加冕，全球足球盛宴收官。</p>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-date">2026.08.10-16</div>
+    <div class="tl-body">
+      <h4>法甲 / 英超 揭幕<span class="tl-status s-live">● 进行中</span></h4>
+      <p>2026-27 新赛季率先开踢，揭幕战点燃五大联赛战火。</p>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-date">2026.08.中旬</div>
+    <div class="tl-body">
+      <h4>西甲 / 德甲 / 意甲 相继开赛<span class="tl-status s-live">● 进行中</span></h4>
+      <p>五大联赛全面揭幕，各豪门夏窗引援悉数亮相。</p>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-date">2026.08.下旬</div>
+    <div class="tl-body">
+      <h4>欧冠 / 欧联 资格赛附加赛<span class="tl-status s-up">▲ 冲刺中</span></h4>
+      <p>附加赛两回合生死战，8月底决出进入正赛的最后名额。</p>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-date">2026.09.初</div>
+    <div class="tl-body">
+      <h4>欧国联 新赛季开打<span class="tl-status s-up">▲ 即将开始</span></h4>
+      <p>各国国家队集结，欧洲国家联赛战火重燃。</p>
+    </div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-date">2026.持续中</div>
+    <div class="tl-body">
+      <h4>中超 2026 赛季下半程<span class="tl-status s-live">● 进行中</span></h4>
+      <p>争冠集团与保级区竞争白热化，每轮都是关键战。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">欧洲五大联赛 2026-27 揭幕进度</div>
+<div class="leagues">
+  <div class="league">
+    <div class="top"><span class="emoji">🏴󠁧󠁢󠁥󠁮󠁧󠁿</span><div><h3>英超</h3><div class="country">英格兰 Premier League</div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>揭幕进度</span><span>第 1-2 轮</span></div><div class="bar"><div style="width:15%; background:var(--green)"></div></div></div>
+    <div class="bar-label" style="color:var(--muted)">状态：🔥 新赛季已开战</div>
+  </div>
+  <div class="league">
+    <div class="top"><span class="emoji">🇪🇸</span><div><h3>西甲</h3><div class="country">西班牙 La Liga</div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>揭幕进度</span><span>第 1 轮</span></div><div class="bar"><div style="width:8%; background:var(--red)"></div></div></div>
+    <div class="bar-label" style="color:var(--muted)">状态：🔥 8月中旬揭幕</div>
+  </div>
+  <div class="league">
+    <div class="top"><span class="emoji">🇩🇪</span><div><h3>德甲</h3><div class="country">德国 Bundesliga</div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>揭幕进度</span><span>第 1 轮</span></div><div class="bar"><div style="width:8%; background:var(--gold)"></div></div></div>
+    <div class="bar-label" style="color:var(--muted)">状态：🔥 8月中旬揭幕</div>
+  </div>
+  <div class="league">
+    <div class="top"><span class="emoji">🇮🇹</span><div><h3>意甲</h3><div class="country">意大利 Serie A</div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>揭幕进度</span><span>第 1 轮</span></div><div class="bar"><div style="width:8%; background:var(--blue)"></div></div></div>
+    <div class="bar-label" style="color:var(--muted)">状态：🔥 8月中旬揭幕</div>
+  </div>
+  <div class="league">
+    <div class="top"><span class="emoji">🇫🇷</span><div><h3>法甲</h3><div class="country">法国 Ligue 1</div></div></div>
+    <div class="bar-wrap"><div class="bar-label"><span>揭幕进度</span><span>第 1-2 轮</span></div><div class="bar"><div style="width:15%; background:var(--green)"></div></div></div>
+    <div class="bar-label" style="color:var(--muted)">状态：🔥 8月10日揭幕</div>
+  </div>
+</div>
+
+<div class="section">观赛 / 查分渠道推荐</div>
+<div class="channels">
+  <div class="channel"><span class="dot"></span>懂球帝 —— 中文足球社区，比分/资讯/集锦</div>
+  <div class="channel"><span class="dot"></span>雷速体育 —— 实时比分、指数、数据分析</div>
+  <div class="channel"><span class="dot"></span>FlashScore —— 全球赛事即时比分</div>
+  <div class="channel"><span class="dot"></span>央视体育 / 咪咕 —— 五大联赛直播</div>
+  <div class="channel"><span class="dot"></span>爱奇艺体育 —— 英超等版权直播</div>
+  <div class="channel"><span class="dot"></span>懂球帝 / 直播吧 —— 中超直播与战报</div>
+</div>
+
+<div class="footer">⚽ 白泽 · 足球赛况可视化仪表盘 —— 数据整理自公开赛程，具体比分请以官方渠道为准</div>
+
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BaiZe",
+  "version": "0.1.0",
+  "identifier": "com.baize.agent",
+  "build": {
+    "beforeDevCommand": "node scripts/kill-debug-baize.mjs && pnpm dev",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "node scripts/kill-debug-baize.mjs && pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "白泽 BaiZe",
+        "width": 1480,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 720,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#0b0d12"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**", "$HOME/**", "$VIDEO/**", "$DOWNLOAD/**", "$DESKTOP/**", "$DOCUMENT/**", "$PICTURE/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

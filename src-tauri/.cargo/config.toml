@@ -1,0 +1,7 @@
+# 使用 rsproxy.cn 国内高速镜像加速 crates.io 下载
+# （仅在网络受限/直连缓慢时启用；本机网络正常可删除此文件）
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"

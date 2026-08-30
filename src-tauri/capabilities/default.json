@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "白泽主窗口与侧窗（浏览器/文档）的默认能力",
+  "windows": ["main", "browser", "markdown", "terminal", "orb-float", "step", "halo"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
+    "core:window:allow-close",
+    "core:window:allow-set-size",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-is-maximized"
+  ]
+}
