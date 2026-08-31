@@ -645,7 +645,7 @@ fn run_powershell(command: &str) -> (String, String, Option<i32>) {
     use std::io::Read;
     use std::process::Stdio;
 
-    let mut child = match std::process::Command::new("powershell")
+    let mut child = match crate::tools::silent_command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", command])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

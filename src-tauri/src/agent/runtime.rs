@@ -479,6 +479,8 @@ impl<'a> AgentLoop<'a> {
                 return Ok("已停止。".to_string());
             }
             self.phase(AgentPhase::Executing);
+            // 接管看门狗心跳：本轮仍活跃
+            crate::takeover::touch_activity();
             let resp = match cancellable_stream_chat(self.app, self.state, &messages, &tools).await {
                 Ok(r) => r,
                 Err(e) if e == CANCELLED => return Ok("已停止。".to_string()),
@@ -771,6 +773,8 @@ impl<'a> AgentLoop<'a> {
                 }
 
                 self.thought("tool_result", &format!("工具完成 · {name}"), &output.to_string());
+                // 接管看门狗心跳：工具完成仍活跃
+                crate::takeover::touch_activity();
 
                 // 接管期间：结果状态推弹幕（✓/✕），点击类工具在目标位置闪一圈光环
                 if crate::takeover::is_active() {

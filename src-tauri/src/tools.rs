@@ -617,6 +617,19 @@ impl Tool for ShellTool {
     }
 }
 
+/// 在 Windows 上以隐藏窗口方式启动子进程（防控制台黑窗闪烁）。
+/// 全项目所有 powershell/cmd/python 等子进程启动统一走此入口。
+pub fn silent_command(program: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 /// 本机 PowerShell 直连执行（不走 Docker 沙箱，返回结构化输出 + 超时）
 pub struct PsExecTool;
 
@@ -649,7 +662,7 @@ impl Tool for PsExecTool {
         let timeout = args["timeout_secs"].as_u64().unwrap_or(60).clamp(1, 300);
         let start = std::time::Instant::now();
 
-        let mut child = std::process::Command::new("powershell")
+        let mut child = crate::tools::silent_command("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", command])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -761,7 +774,7 @@ fn run_in_docker(cmd: &str) -> Result<String, String> {
 
 fn run_on_host(cmd: &str) -> Result<String, String> {
     #[cfg(windows)]
-    let mut proc = std::process::Command::new("cmd");
+    let mut proc = crate::tools::silent_command("cmd");
     #[cfg(not(windows))]
     let mut proc = std::process::Command::new("sh");
 

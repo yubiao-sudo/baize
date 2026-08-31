@@ -69,7 +69,7 @@ impl Tool for PluginTool {
 
 pub(crate) fn run_command(cmd: &str) -> String {
     #[cfg(windows)]
-    let output = std::process::Command::new("cmd").args(["/c", cmd]).output();
+    let output = crate::tools::silent_command("cmd").args(["/c", cmd]).output();
     #[cfg(not(windows))]
     let output = std::process::Command::new("sh").args(["-c", cmd]).output();
 

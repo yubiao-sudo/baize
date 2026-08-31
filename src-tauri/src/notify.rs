@@ -345,7 +345,7 @@ impl EscalationManager {
                 // 系统提示音效
                 #[cfg(windows)]
                 {
-                    let _ = std::process::Command::new("powershell")
+                    let _ = crate::tools::silent_command("powershell")
                         .args(["-c", "[System.Media.SystemSounds]::Asterisk.Play()"])
                         .spawn();
                 }
@@ -387,7 +387,7 @@ impl EscalationManager {
                 );
                 #[cfg(windows)]
                 {
-                    let _ = std::process::Command::new("powershell")
+                    let _ = crate::tools::silent_command("powershell")
                         .args(["-c", "[System.Media.SystemSounds]::Hand.Play()"])
                         .spawn();
                 }
@@ -805,7 +805,7 @@ pub fn speak_local(text: &str) {
     if text.trim().is_empty() {
         return;
     }
-    let _ = std::process::Command::new("powershell")
+    let _ = crate::tools::silent_command("powershell")
         .args([
             "-NoProfile",
             "-Command",

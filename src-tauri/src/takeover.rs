@@ -44,6 +44,18 @@ static HOOK_STARTED: AtomicBool = AtomicBool::new(false);
 static CTRL_DOWN: AtomicBool = AtomicBool::new(false);
 /// 物理 Shift 是否处于按下状态（左/右任意一个）
 static SHIFT_DOWN: AtomicBool = AtomicBool::new(false);
+/// 最近一次 Agent 活动心跳（毫秒时间戳）：任务看门狗用——
+/// 接管激活但长时间无活动（Agent 卡死/退出未释放）时自动解除，防止键鼠永久被锁
+static LAST_ACTIVITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Agent 侧活动心跳：每轮对话、每个工具结果后调用
+pub fn touch_activity() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    LAST_ACTIVITY.store(now, Ordering::SeqCst);
+}
 
 // 虚拟键码：左右 Ctrl / Shift 以及 F12（vkCode 为 DWORD，与 u32 对应）
 const VK_LCONTROL: u32 = 0xA2;
@@ -62,6 +74,34 @@ pub fn init(app: AppHandle) {
         return;
     }
     std::thread::spawn(hook_thread_main);
+    // 任务看门狗：接管激活但 3 分钟无 Agent 活动（Agent 卡死/异常退出未释放）时
+    // 自动解除接管并恢复键鼠，防止桌面被永久锁死
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        if !TAKEOVER.load(Ordering::SeqCst) {
+            continue;
+        }
+        let last = LAST_ACTIVITY.load(Ordering::SeqCst);
+        if last == 0 {
+            continue;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if now.saturating_sub(last) > 180_000 {
+            if let Some(app) = APP_HANDLE.get() {
+                let handle = app.clone();
+                let _ = handle.clone().run_on_main_thread(move || {
+                    crate::windows::push_step(
+                        &handle,
+                        "⚠ 任务看门狗：3 分钟无活动，已自动解除接管并恢复键鼠",
+                    );
+                    disengage_screen(&handle);
+                });
+            }
+        }
+    });
 }
 
 /// 进入接管：阻断外界输入 + 最小化主窗口 + 清屏（最小化无关窗口）+ 显示弹幕浮窗。
@@ -69,6 +109,7 @@ pub fn init(app: AppHandle) {
 pub fn engage_screen(app: &AppHandle, task_hint: Option<&str>) {
     TAKEOVER.store(true, Ordering::SeqCst);
     let _ = APP_HANDLE.set(app.clone());
+    touch_activity();
     minimize_main_window(app);
     minimize_irrelevant_windows(app, task_hint);
     // 二次清扫（稳定性）：部分应用会在首次清屏后短暂延迟内弹出/恢复窗口，
@@ -285,14 +326,25 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
         }
 
         if TAKEOVER.load(Ordering::SeqCst) && !injected {
-            // 紧急解除：Ctrl + Shift + F12 同时按下即退出接管、恢复窗口
-            if is_down
-                && vk == VK_F12
-                && CTRL_DOWN.load(Ordering::SeqCst)
-                && SHIFT_DOWN.load(Ordering::SeqCst)
-            {
-                release_now();
-                return LRESULT(1); // 吞掉触发键
+            // 紧急解除：Ctrl + Shift + F12 同时按下即退出接管、恢复窗口。
+            // 除本钩子维护的物理键状态外，再用 GetAsyncKeyState 兜底校验——
+            // 钩子偶尔漏记某次 keydown（如接管瞬间组合键已按住）时仍能可靠解除
+            if is_down && vk == VK_F12 {
+                use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                let async_down = |vk: u32| {
+                    // 低层钩子回调中调用 GetAsyncKeyState 是安全的（同步查询异步键态）
+                    unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+                };
+                let ctrl = CTRL_DOWN.load(Ordering::SeqCst)
+                    || async_down(VK_LCONTROL)
+                    || async_down(VK_RCONTROL);
+                let shift = SHIFT_DOWN.load(Ordering::SeqCst)
+                    || async_down(VK_LSHIFT)
+                    || async_down(VK_RSHIFT);
+                if ctrl && shift {
+                    release_now();
+                    return LRESULT(1); // 吞掉触发键
+                }
             }
             // 接管期间吞掉所有物理键盘输入
             return LRESULT(1);

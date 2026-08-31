@@ -3296,7 +3296,7 @@ pub fn run_prepare_env(run_command: &str) -> Result<String, String> {
         return Ok("无启动命令，跳过环境准备".to_string());
     }
     #[cfg(target_os = "windows")]
-    let spawned = std::process::Command::new("cmd")
+    let spawned = crate::tools::silent_command("cmd")
         .arg("/C")
         .arg(run_command)
         .spawn();

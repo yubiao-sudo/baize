@@ -574,7 +574,7 @@ fn run_command_sandboxed(cmd_str: &str) -> String {
 
     let mut cmd = {
         #[cfg(windows)]
-        let c = std::process::Command::new("cmd");
+        let c = crate::tools::silent_command("cmd");
         #[cfg(not(windows))]
         let c = std::process::Command::new("sh");
         c

@@ -64,7 +64,7 @@ fn spawn(command: &str, args: &[String]) -> Result<Child, String> {
     #[cfg(windows)]
     {
         // Windows 上 npx/npm 等是 .cmd，需经 cmd.exe 执行
-        let mut c = Command::new("cmd");
+        let mut c = crate::tools::silent_command("cmd");
         c.arg("/c").arg(command).args(args);
         c.stdin(Stdio::piped())
             .stdout(Stdio::piped())
