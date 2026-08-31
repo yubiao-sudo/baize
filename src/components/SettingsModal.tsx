@@ -60,6 +60,7 @@ const SETTING_PAGES = [
   { id: "voice", label: "语音朗读", desc: "TTS 音色" },
   { id: "notify", label: "通知与音效", desc: "升级 · 提示音" },
   { id: "bots", label: "消息与机器人", desc: "IM · 微信 · 飞书" },
+  { id: "about", label: "关于与更新", desc: "版本 · 自更新" },
 ] as const;
 type SettingsPageId = (typeof SETTING_PAGES)[number]["id"];
 import type {
@@ -1141,7 +1142,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   "browser_act 桌面浏览器控制将使用此路径驱动真实 Chrome/Edge（保留登录态）。留空时按「注册表 → 默认安装目录」自动探测。"}
               </div>
             </section>
+            </div>
 
+            {/* 关于与更新页 */}
+            <div className="settings-page" style={{ display: page === "about" ? undefined : "none" }}>
             {/* ============ 关于与更新 ============ */}
             <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
               <h4 style={{ margin: "4px 0 8px", color: "var(--text)" }}>关于与更新</h4>
