@@ -1,6 +1,6 @@
 [package]
 name = "baize"
-version = "0.1.5"
+version = "0.1.6"
 description = "BaiZe 桌面 Agent 框架 · M0 骨架（本地 Ollama 对话 + 只读文件工具 + 权限审批）"
 edition = "2021"
 
@@ -31,9 +31,9 @@ notify = "6"
 uuid = { version = "1", features = ["v4"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 uiautomation = "0.5"
-windows = { version = "0.48", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory", "Foundation", "Foundation_Collections", "Globalization", "Graphics", "Graphics_Imaging", "Media", "Media_Ocr", "Storage", "Storage_Streams"] }
+windows = { version = "0.48", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Threading", "Foundation", "Foundation_Collections", "Globalization", "Graphics", "Graphics_Imaging", "Media", "Media_Ocr", "Storage", "Storage_Streams"] }
 xcap = "0.8"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 regex = "1"
 zip = "0.6"
 pdf-extract = "0.7"

@@ -825,16 +825,32 @@ impl MemoryStore {
     /// 任务复盘（工具失败→解决）写入的经验由此召回，注入 system prompt，
     /// 下次遇到同类问题时优先采用过往验证过的解决办法（程序性经验）。
     pub fn recall_lessons(&self, text: &str, limit: usize) -> Result<Vec<MemoryRow>, String> {
+        self.recall_by_kind(text, "lesson", limit)
+    }
+
+    /// 召回「成功操作配方」（kind='recipe'）：GUI 任务成功后沉淀的操作链。
+    /// 下次操作同类应用时注入 system prompt，直接照用已验证的步骤序列。
+    pub fn recall_recipes(&self, text: &str, limit: usize) -> Result<Vec<MemoryRow>, String> {
+        self.recall_by_kind(text, "recipe", limit)
+    }
+
+    /// 按 kind 召回（embedding 余弦优先 × salience × 遗忘衰减，n-gram 兜底）
+    pub fn recall_by_kind(
+        &self,
+        text: &str,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryRow>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
                 "SELECT mem_id, content, kind, salience, last_access, embedding
-                 FROM memories WHERE kind = 'lesson'
+                 FROM memories WHERE kind = ?1
                  ORDER BY salience DESC, last_access DESC LIMIT 100",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map([kind], |r| {
                 Ok((
                     MemoryRow {
                         mem_id: r.get(0)?,

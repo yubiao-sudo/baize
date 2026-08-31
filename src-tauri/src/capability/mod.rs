@@ -73,6 +73,10 @@ pub struct WindowInfo {
     /// Windows 窗口类名（如 "#32770" 对话框、空标题弹窗据此识别）
     pub class: String,
     pub bbox: Option<Rect>,
+    /// 窗口是否处于最小化状态（最小化窗口此前被直接过滤，导致「后台明明开着却找不到」）
+    pub minimized: bool,
+    /// 窗口所属进程 exe 名（自绘/Electron 应用标题不含中文关键词时靠它定位）
+    pub process: String,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +161,8 @@ pub enum Action {
     KeyUp { key: String },
     /// 通过系统剪贴板 + Ctrl+V 粘贴文本（适配中文/emoji/大段文本）
     PasteText { text: String },
+    /// 操作「另存为/保存」对话框：填入完整路径 → 回车 → 自动确认替换弹窗 → 校验文件落盘
+    SaveDialog { path: String },
     /// 最小化所有顶层窗口（except 为标题关键词列表，命中的窗口保持不被最小化）
     WindowMinimizeAll { except: Vec<String> },
     /// 将指定名称窗口置顶 / 取消置顶
@@ -822,7 +828,10 @@ impl Tool for ListWindowsTool {
         "list_windows"
     }
     fn description(&self) -> &str {
-        "枚举当前桌面上的顶层窗口（名称/角色/位置），了解打开了哪些应用（只读）。对自渲染窗口（Electron/DirectUI/Qt/自绘安装器等）UIA 读不到内部控件，可传 with_preview=true 对每个窗口做一次截屏 OCR，把窗口内文字/按钮塞进 preview 字段，一眼看清弹窗里有什么可点"
+        "枚举当前桌面上的顶层窗口（名称/角色/类名/位置/所属进程/是否最小化），了解打开了哪些应用（只读）。\
+         最小化的后台窗口也会列出（minimized=true，聚焦时会自动还原）；\
+         自绘应用标题不含关键词时看 process 列（进程 exe 名）。\
+         对自渲染窗口（Electron/DirectUI/Qt/自绘安装器等）UIA 读不到内部控件，可传 with_preview=true 对每个窗口做一次截屏 OCR，把窗口内文字/按钮塞进 preview 字段，一眼看清弹窗里有什么可点"
     }
     fn schema(&self) -> Value {
         json!({
@@ -874,6 +883,8 @@ impl Tool for ListWindowsTool {
                     "class": win.class,
                     "bbox": win.bbox.map(|r| format!("{},{},{},{}",
                         r.x as i32, r.y as i32, r.width as i32, r.height as i32)),
+                    "minimized": win.minimized,
+                    "process": win.process,
                 });
                 if with_preview {
                     let mut preview = String::new();
@@ -1822,6 +1833,107 @@ impl Tool for PasteTextTool {
             })
             .map_err(|e| e.to_string())?;
         Ok(json!({ "ok": res.ok, "description": res.description }))
+    }
+}
+
+/// 另存为对话框原语工具
+pub struct SaveDialogTool {
+    capability: Arc<dyn Capability>,
+}
+
+impl SaveDialogTool {
+    pub fn new(capability: Arc<dyn Capability>) -> Self {
+        Self { capability }
+    }
+}
+
+impl Tool for SaveDialogTool {
+    fn name(&self) -> &str {
+        "save_dialog"
+    }
+    fn description(&self) -> &str {
+        "操作当前打开的「另存为/保存」对话框（Win11 记事本等 Ctrl+S 行为不一致时的可靠保存通道）：\
+         填入完整目标路径 → 回车 → 自动确认「替换」弹窗 → 校验文件落盘，一步完成。\
+         前置：先在应用里触发另存为（ctrl+s / 右键另存为），弹出对话框后调用本工具。\
+         注意 path 要完整绝对路径（含文件名与扩展名），目录不存在会失败（写操作，会请求授权）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "完整保存路径（绝对路径，含文件名与扩展名），如 C:\\Users\\me\\Desktop\\todo.txt" }
+            },
+            "required": ["path"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::Write
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let path = args["path"].as_str().ok_or("缺少参数 path")?;
+        let res = self
+            .capability
+            .act(&Action::SaveDialog {
+                path: path.to_string(),
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "ok": res.ok, "description": res.description }))
+    }
+}
+
+/// UI 稳定性检测工具
+pub struct WaitStableTool {
+    capability: Arc<dyn Capability>,
+}
+
+impl WaitStableTool {
+    pub fn new(capability: Arc<dyn Capability>) -> Self {
+        Self { capability }
+    }
+}
+
+impl Tool for WaitStableTool {
+    fn name(&self) -> &str {
+        "wait_ui_stable"
+    }
+    fn description(&self) -> &str {
+        "等待界面安定（知道界面什么时候稳定）：连续截屏对比像素，动画/转场/加载结束后立即返回。\
+         在「窗口刚打开、点了按钮后界面跳转、页面加载」之后、find_element/screen_elements 定位之前调用，\
+         避免坐标漂移与「点了没反应」的误判——安定即坐标可靠。timeout_ms 默认 5000（只读）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "timeout_ms": { "type": "integer", "description": "最长等待毫秒数（默认 5000，最大 15000）" }
+            }
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let timeout_ms = args["timeout_ms"].as_u64().unwrap_or(5000).clamp(500, 15_000);
+        // 直接调用底层检测（不走 Capability action：返回结构化 stable/waited 字段）
+        let _ = &self.capability;
+        #[cfg(windows)]
+        {
+            let (stable, waited) = crate::capability::windows::wait_ui_stable(timeout_ms);
+            Ok(json!({
+                "ok": true,
+                "stable": stable,
+                "waited_ms": waited,
+                "description": if stable {
+                    format!("界面已安定（等待 {waited}ms），坐标可靠，可以放心定位/点击")
+                } else {
+                    format!("等待 {waited}ms 后界面仍有动画（可能视频/持续动效），建议改用键盘导航或重新 screen_elements 定位")
+                },
+            }))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(json!({ "ok": true, "stable": true, "waited_ms": 0, "description": "非 Windows 平台直接视为安定" }))
+        }
     }
 }
 

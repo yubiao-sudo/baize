@@ -1,11 +1,11 @@
-﻿# 创建/更新 GitHub Release 并上传 NSIS 安装包
+# 创建/更新 GitHub Release 并上传 NSIS 安装包
 # Token 从 git 凭据存储读取（git push 时已保存），不回显
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
 
-$tag  = "v0.1.5"
-$name = "v0.1.5 · 白泽终端实时可见"
-$body = "## 新增`n- 命令行任务优先在「白泽终端」窗口真实执行：命令与输出实时滚动可见，会话状态延续（cd/环境变量），ps_exec 降为后台后备`n## 修复`n- 黑窗闪窗二次清剿：docker 探测、winget、ffmpeg/whisper、tesseract、powershell 邮件/日历、python/node 沙箱等残留窗口全部隐藏，子进程启动 100% 无黑窗"
+$tag  = "v0.1.6"
+$name = "v0.1.6 · 越用越好用"
+$body = "## 新增`n- 成功操作配方库：GUI 任务成功后自动提炼操作链，下次同类任务直接照用（规划好就一路跑完）`n- 同类任务结果记忆：相似指令直接参考上次执行结果，高频任务越用越快`n- wait_ui_stable 界面稳定性感知：像素级检测动画结束再定位，告别坐标漂移与「点了没反应」`n- save_dialog 另存为对话框原语 / explorer_open 一步打开文件夹 / write_file 优先写入`n- software_locate 三路秒级定位已装软件（注册表+UWP+开始菜单），拒绝全盘搜索`n## 修复`n- list_windows 漏掉最小化后台窗口 + 新增进程名字段（自绘应用「后台开着却找不到」修复）`n- paste_text 剪贴板恢复时机与覆盖问题；assert_ui 视觉通道空输出假失败`n- 点击光环视觉加强（80px/2s），触发面扩到滚轮/悬停/输入"
 
 $credFile = Join-Path $env:USERPROFILE ".git-credentials"
 $token = $null

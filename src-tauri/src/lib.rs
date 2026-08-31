@@ -210,6 +210,7 @@ impl AppState {
         tools.register(Box::new(software::SoftwareSearchTool));
         tools.register(Box::new(software::SoftwareInfoTool));
         tools.register(Box::new(software::SoftwareListTool));
+        tools.register(Box::new(software::SoftwareLocateTool));
         tools.register(Box::new(software::DiskInfoTool));
         // SoftwareInstallTool 需要 AppHandle（安装时向前端实时推送进度），在 setup 中注册
         // SoftwareUninstallTool 需要 Capability（卸载时轮询点击确认弹窗），在 capability 创建后注册
@@ -235,6 +236,7 @@ impl AppState {
         tools.register(Box::new(agent::ChatCardTool));
         // 快捷启动应用：开始菜单索引 + UWP + 等窗返回（GUI 任务提速）
         tools.register(Box::new(tools::LaunchAppTool));
+        tools.register(Box::new(tools::ExplorerOpenTool));
         tools.register(Box::new(capability::CaptureScreenTool::new(capability.clone())));
         // 全屏元素标注：UIA 控件 + OCR 文字行一次汇总（批量规划 GUI 步骤用）
         tools.register(Box::new(capability::ScreenElementsTool::new(capability.clone())));
@@ -256,6 +258,8 @@ impl AppState {
         tools.register(Box::new(capability::KeyDownTool::new(capability.clone())));
         tools.register(Box::new(capability::KeyUpTool::new(capability.clone())));
         tools.register(Box::new(capability::PasteTextTool::new(capability.clone())));
+        tools.register(Box::new(capability::SaveDialogTool::new(capability.clone())));
+        tools.register(Box::new(capability::WaitStableTool::new(capability.clone())));
         // 窗口控制（防遮挡）：最小化其他窗口 / 置顶 / 聚焦目标窗口
         tools.register(Box::new(capability::WindowMinimizeAllTool::new(capability.clone())));
         tools.register(Box::new(capability::WindowSetTopmostTool::new(capability.clone())));

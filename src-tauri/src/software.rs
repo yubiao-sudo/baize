@@ -850,6 +850,160 @@ impl Tool for SoftwareListTool {
     }
 }
 
+// ───────────────────── 工具 4.2：已装软件定位（秒级三路匹配） ─────────────────────
+pub struct SoftwareLocateTool;
+
+impl Tool for SoftwareLocateTool {
+    fn name(&self) -> &str {
+        "software_locate"
+    }
+    fn description(&self) -> &str {
+        "定位本机软件——判断是否已安装 / 查找安装路径的首选（秒级完成，严禁全盘搜索）。\
+         三路匹配：① 注册表卸载项（传统桌面软件，含版本/厂商/安装位置）；\
+         ② UWP 商店应用（汽水音乐等，不在注册表里）；\
+         ③ 开始菜单快捷方式（解析 .lnk 真实目标路径，补齐安装位置）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "软件名称关键词，如 \"汽水\"、\"微信\"、\"vscode\"" }
+            },
+            "required": ["name"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let kw = args["name"]
+            .as_str()
+            .ok_or("缺少参数 name")?
+            .trim()
+            .trim_matches('*')
+            .to_string();
+        if kw.is_empty() {
+            return Err("缺少参数 name".into());
+        }
+        locate_installed(&kw)
+    }
+}
+
+/// 三路定位已装软件：注册表卸载项 → UWP 商店应用 → 开始菜单快捷方式
+fn locate_installed(kw: &str) -> Result<Value, String> {
+    let kw_lower = kw.to_lowercase();
+    let mut matches: Vec<Value> = Vec::new();
+
+    // ① 注册表卸载项（传统桌面软件：名称模糊包含即命中）
+    for p in list_registry() {
+        let name = p["name"].as_str().unwrap_or("").trim().to_string();
+        if name.is_empty() || !name.to_lowercase().contains(&kw_lower) {
+            continue;
+        }
+        matches.push(json!({
+            "name": name,
+            "version": p["version"].as_str().unwrap_or("").trim(),
+            "publisher": p["publisher"].as_str().unwrap_or("").trim(),
+            "location": p["location"].as_str().unwrap_or("").trim(),
+            "via": "registry",
+        }));
+    }
+
+    // ② UWP 商店应用（汽水音乐等，注册表卸载项里没有）
+    #[cfg(windows)]
+    {
+        let esc = kw.replace('\'', "''");
+        let script = format!(
+            "Get-AppxPackage -Name '*{esc}*' | Select-Object Name,Version,InstallLocation | ConvertTo-Json -Compress"
+        );
+        if let Ok(out) = run_pwsh(&script, 20) {
+            let v: Value =
+                serde_json::from_str(out.stdout.trim()).unwrap_or(Value::Null);
+            let arr = match v {
+                Value::Array(a) => a,
+                Value::Object(_) => vec![v],
+                _ => vec![],
+            };
+            for p in arr {
+                matches.push(json!({
+                    "name": p["Name"].as_str().unwrap_or("").trim(),
+                    "version": p["Version"].as_str().unwrap_or("").trim(),
+                    "publisher": "",
+                    "location": p["InstallLocation"].as_str().unwrap_or("").trim(),
+                    "via": "uwp",
+                }));
+            }
+        }
+    }
+
+    // ③ 开始菜单快捷方式：注册表未命中或命中项都缺 InstallLocation 时，
+    //    解析 .lnk 的真实目标路径补齐（不递归全盘，只扫两个开始菜单目录）
+    let need_lnk = matches.is_empty()
+        || matches
+            .iter()
+            .all(|m| m["location"].as_str().unwrap_or("").is_empty());
+    #[cfg(windows)]
+    if need_lnk {
+        let esc = kw.replace('\'', "''");
+        let script = format!(
+            r#"$sh = New-Object -ComObject WScript.Shell
+$dirs = @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs")
+Get-ChildItem $dirs -Recurse -Filter *.lnk -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.BaseName -like '*{esc}*' }} |
+  ForEach-Object {{
+    $t = $sh.CreateShortcut($_.FullName).TargetPath
+    if ($t) {{ [PSCustomObject]@{{ name=$_.BaseName; target=$t }} }}
+  }} | ConvertTo-Json -Compress"#
+        );
+        if let Ok(out) = run_pwsh(&script, 30) {
+            let v: Value =
+                serde_json::from_str(out.stdout.trim()).unwrap_or(Value::Null);
+            let arr = match v {
+                Value::Array(a) => a,
+                Value::Object(_) => vec![v],
+                _ => vec![],
+            };
+            for p in arr {
+                let name = p["name"].as_str().unwrap_or("").trim().to_string();
+                let target = p["target"].as_str().unwrap_or("").trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                // 与注册表命中项去重（同名视为同款）：有注册表项但缺位置时，用快捷方式目标补齐
+                if let Some(m) = matches
+                    .iter_mut()
+                    .find(|m| m["location"].as_str().unwrap_or("").is_empty())
+                {
+                    m["location"] = json!(target);
+                    continue;
+                }
+                if matches.len() >= 20 {
+                    break;
+                }
+                matches.push(json!({
+                    "name": name,
+                    "version": "",
+                    "publisher": "",
+                    "location": target,
+                    "via": "startmenu",
+                }));
+            }
+        }
+    }
+
+    let installed = !matches.is_empty();
+    Ok(json!({
+        "query": kw,
+        "installed": installed,
+        "matches": matches,
+        "note": if installed {
+            "已在本机定位到（via 标注来源：registry=注册表卸载项 / uwp=商店应用 / startmenu=快捷方式目标）"
+        } else {
+            "三路均未命中，本机大概率未安装；如需安装用 software_search 从包管理器查找"
+        },
+    }))
+}
+
 // ───────────────────── 工具 4.5：磁盘与装机习惯 ─────────────────────
 pub struct DiskInfoTool;
 

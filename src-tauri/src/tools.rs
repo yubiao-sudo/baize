@@ -867,9 +867,78 @@ impl Tool for LaunchAppTool {
     }
 }
 
+/// 打开文件夹/路径宏：一步打开资源管理器并等待窗口出现（替代 launch_app+导航多步流程）
+pub struct ExplorerOpenTool;
+
+impl Tool for ExplorerOpenTool {
+    fn name(&self) -> &str {
+        "explorer_open"
+    }
+    fn description(&self) -> &str {
+        "打开文件资源管理器并定位到指定路径（一步宏）：启动 explorer + 轮询等待窗口出现返回位置，\
+         替代 launch_app(\"explorer\") 后再手动导航的多步流程。path 传文件夹绝对路径；传文件路径则在父目录打开并选中该文件"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "文件夹或文件的绝对路径" }
+            },
+            "required": ["path"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::Write
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let path = args["path"]
+            .as_str()
+            .ok_or("缺少参数 path")?
+            .trim()
+            .trim_matches('"')
+            .to_string();
+        if path.is_empty() {
+            return Err("缺少参数 path".into());
+        }
+        let path = resolve_path(&path);
+        if !std::path::Path::new(&path).exists() {
+            return Err(format!("路径不存在: {path}"));
+        }
+        let start = std::time::Instant::now();
+        crate::tools::silent_command("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("启动资源管理器失败: {e}"))?;
+        // 等待资源管理器窗口出现（窗口标题 = 文件夹显示名；选文件模式 = 父目录名）
+        let expect = std::path::Path::new(&path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut window: Option<[i32; 4]> = None;
+        while start.elapsed().as_millis() < 8000 {
+            if !expect.is_empty() {
+                if let Some(rect) = crate::capability::windows::find_window_rect(&expect) {
+                    window = Some(rect);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        Ok(json!({
+            "ok": true,
+            "window_ready": window.is_some(),
+            "window_rect": window,
+            "note": if window.is_some() {
+                "资源管理器已打开，可直接 window_prepare 清屏 + screen_elements 规划操作"
+            } else {
+                "已发出打开命令但窗口未检测到（可能复用了同目录的现有窗口），可 list_windows 确认"
+            },
+        }))
+    }
+}
+
 /// 本机 PowerShell 直连执行（不走 Docker 沙箱，返回结构化输出 + 超时）
 pub struct PsExecTool;
-
 impl Tool for PsExecTool {
     fn name(&self) -> &str {
         "ps_exec"

@@ -80,11 +80,11 @@ export default function HaloOverlay() {
           const w = e.w ?? 0;
           const h = e.h ?? 0;
           const rect =
-            w > 4 && h > 4 ? toCss(x, y, w, h) : { x: x / dpr() - 26, y: y / dpr() - 26, w: 52, h: 52 };
+            w > 4 && h > 4 ? toCss(x, y, w, h) : { x: x / dpr() - 40, y: y / dpr() - 40, w: 80, h: 80 };
           setFlashes((prev) => [...prev.slice(-5), { ...rect, seq: id }]);
           window.setTimeout(() => {
             setFlashes((prev) => prev.filter((f) => f.seq !== id));
-          }, 1300);
+          }, 2200);
         }
       });
     })();

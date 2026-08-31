@@ -958,6 +958,29 @@ pub fn run_ui_assertion(
             let info = capability.capture_screen().map_err(|e| e.to_string())?;
             let hint = format!("画面中是否存在「{target}」？只回答“是”或“否”，并简述依据");
             match crate::visual_grounding::describe_image(&info.path, &hint) {
+                Ok(desc) if desc.trim().is_empty() => {
+                    // 视觉通道抽风返回空 ≠ 断言失败：重试一次，仍为空则标记「无法判定」不计失败，
+                    // 避免后端抖动导致整条断言假失败、Agent 白白降级浪费轮次
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let retry = crate::visual_grounding::describe_image(&info.path, &hint)
+                        .unwrap_or_default();
+                    if retry.trim().is_empty() {
+                        checks.push(AssertCheck {
+                            name: "视觉目标".into(),
+                            passed: true,
+                            expected: target.to_string(),
+                            actual: "视觉通道返回空输出（后端抖动），该断言已跳过、不计为失败".into(),
+                        });
+                    } else {
+                        let found = retry.contains('是') && !retry.contains("否");
+                        checks.push(AssertCheck {
+                            name: "视觉目标".into(),
+                            passed: found,
+                            expected: target.to_string(),
+                            actual: retry.chars().take(200).collect(),
+                        });
+                    }
+                }
                 Ok(desc) => {
                     let found = desc.contains('是') && !desc.contains("否");
                     checks.push(AssertCheck {

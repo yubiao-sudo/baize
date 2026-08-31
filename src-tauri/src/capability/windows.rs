@@ -301,6 +301,14 @@ impl Capability for WindowsCapability {
                     description: format!("粘贴文本（{} 字符）", text.chars().count()),
                 })
             }
+            Action::SaveDialog { path } => {
+                let (ok, note) = operate_save_dialog(path)
+                    .map_err(|e| CapError::InvalidState(format!("另存为对话框操作失败: {e}")))?;
+                Ok(ActionResult {
+                    ok,
+                    description: note,
+                })
+            }
             Action::WindowMinimizeAll { except } => {
                 let mut ctx = MinimizeCtx {
                     except: except.clone(),
@@ -991,6 +999,30 @@ fn wheel_scroll(clicks: i32, horizontal: bool) {
     std::thread::sleep(std::time::Duration::from_millis(120));
 }
 
+// ───────────────────── 实时镜像小窗 · 人工操作注入入口 ─────────────────────
+
+/// 镜像画面人工左键点击（double=true 为双击；与 Agent 点击共用拟人化前置）
+pub fn mirror_click(x: i32, y: i32, double: bool) {
+    if double {
+        double_click_left(x, y);
+    } else {
+        click_left(x, y);
+    }
+}
+
+/// 镜像画面人工右键点击
+pub fn mirror_right(x: i32, y: i32) {
+    click_right(x, y);
+}
+
+/// 镜像画面人工滚轮：先把光标移到目标位置（滚轮作用于光标下窗口）再滚动。
+/// delta 为齿感格数，正=向上
+pub fn mirror_wheel(x: i32, y: i32, delta: i32) {
+    mouse_move_abs(x, y);
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    wheel_scroll(delta, false);
+}
+
 /// 把人类可读的组合键转成 uiautomation 的 `{Ctrl}` 格式，如 "ctrl+s" → "{Ctrl}s"
 fn normalize_keys(keys: &str) -> String {
     let mut out = String::new();
@@ -1135,14 +1167,196 @@ fn paste_via_clipboard(text: &str) -> Result<(), String> {
     Keyboard::new()
         .send_keys("{Ctrl}v")
         .map_err(|e| format!("发送 Ctrl+V 失败: {e}"))?;
-    // 等目标应用完成粘贴
-    std::thread::sleep(Duration::from_millis(120));
+    // 等目标应用完成粘贴（太短会让「恢复原剪贴板」抢在应用读取之前，粘贴出旧内容）
+    std::thread::sleep(Duration::from_millis(500));
 
-    // 恢复原剪贴板
+    // 恢复原剪贴板：仅当期间没有别的程序改写过（仍是我们要粘贴的内容）才恢复，
+    // 避免覆盖掉用户/其他工具刚放上去的新内容
     if let Some(orig) = original {
-        let _ = clipboard.set_text(orig);
+        if clipboard.get_text().ok().as_deref() == Some(text) {
+            let _ = clipboard.set_text(orig);
+        }
     }
     Ok(())
+}
+
+// ───────────────────── 另存为对话框原语 ─────────────────────
+
+/// 操作「另存为/保存」对话框（Win11 记事本 Ctrl+S 行为不一致时的可靠保存通道）：
+/// 找到对话框 → 确保前台 → 全选文件名 → 粘贴完整路径 → 回车 → 自动确认「替换」弹窗 → 轮询文件落盘。
+/// 返回 (是否成功, 说明)
+fn operate_save_dialog(path: &str) -> Result<(bool, String), String> {
+    use std::time::Duration;
+
+    // 1) 找另存为对话框：前台窗口优先，其次任意可见的 #32770 且标题含 保存/另存为/Save
+    let find_dialog = || -> Option<HWND> {
+        struct Ctx {
+            hit: Option<HWND>,
+        }
+        unsafe extern "system" fn proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &mut *(lparam.0 as *mut Ctx);
+            if ctx.hit.is_some() {
+                return BOOL(1);
+            }
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            if window_class(hwnd) != "#32770" {
+                return BOOL(1);
+            }
+            let title = window_title(hwnd).unwrap_or_default().to_lowercase();
+            if title.contains("另存为")
+                || title.contains("保存")
+                || title.contains("save")
+            {
+                ctx.hit = Some(hwnd);
+            }
+            BOOL(1)
+        }
+        let mut ctx = Ctx { hit: None };
+        unsafe {
+            EnumWindows(Some(proc), LPARAM(&mut ctx as *mut Ctx as isize));
+        }
+        ctx.hit
+    };
+
+    let dlg = find_dialog().ok_or("未找到「另存为/保存」对话框（class #32770）")?;
+    unsafe {
+        let _ = SetForegroundWindow(dlg);
+    }
+    std::thread::sleep(Duration::from_millis(150));
+
+    // 2) 全选文件名 → 粘贴完整路径（文件名框在对话框打开时默认持有焦点）
+    Keyboard::new()
+        .send_keys("{Ctrl}a")
+        .map_err(|e| format!("全选文件名失败: {e}"))?;
+    std::thread::sleep(Duration::from_millis(80));
+    paste_via_clipboard(path).map_err(|e| format!("填入路径失败: {e}"))?;
+    std::thread::sleep(Duration::from_millis(150));
+
+    // 3) 回车触发保存
+    Keyboard::new()
+        .send_keys("{Enter}")
+        .map_err(|e| format!("回车失败: {e}"))?;
+
+    // 4) 「确认另存为/替换」弹窗自动确认（轮询 2.5s，出现即回车，默认按钮=是）
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(500));
+        struct Ctx {
+            hit: Option<HWND>,
+        }
+        unsafe extern "system" fn confirm_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &mut *(lparam.0 as *mut Ctx);
+            if ctx.hit.is_some() || !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            if window_class(hwnd) != "#32770" {
+                return BOOL(1);
+            }
+            let title = window_title(hwnd).unwrap_or_default().to_lowercase();
+            if title.contains("确认另存为")
+                || title.contains("替换")
+                || title.contains("confirm save")
+            {
+                ctx.hit = Some(hwnd);
+            }
+            BOOL(1)
+        }
+        let mut ctx = Ctx { hit: None };
+        unsafe {
+            EnumWindows(Some(confirm_proc), LPARAM(&mut ctx as *mut Ctx as isize));
+        }
+        if let Some(confirm) = ctx.hit {
+            unsafe {
+                let _ = SetForegroundWindow(confirm);
+            }
+            std::thread::sleep(Duration::from_millis(120));
+            let _ = Keyboard::new().send_keys("{Enter}"); // 默认按钮 = 是(Y)
+        }
+        // 5) 校验文件已落盘
+        if std::path::Path::new(path).exists() {
+            return Ok((
+                true,
+                format!("已通过另存为对话框保存到 {path}（含替换确认自动处理）"),
+            ));
+        }
+    }
+
+    if std::path::Path::new(path).exists() {
+        Ok((true, format!("已通过另存为对话框保存到 {path}")))
+    } else {
+        Ok((
+            false,
+            format!(
+                "对话框已操作但 {path} 未落盘：可能路径目录不存在或被应用弹窗拦截，建议截屏查看对话框当前状态"
+            ),
+        ))
+    }
+}
+
+// ───────────────────── UI 稳定性感知（知道界面什么时候稳定） ─────────────────────
+
+/// UI 稳定性检测：间隔截屏缩成 16×16 灰度指纹，连续两次对比几乎一致即认为界面安定。
+/// 用于「窗口刚打开/页面切换后等动画结束再定位」，解决坐标漂移与「点了没反应」的误判。
+/// 返回 (是否安定, 实际等待毫秒)
+pub fn wait_ui_stable(timeout_ms: u64) -> (bool, u64) {
+    let start = std::time::Instant::now();
+    let elapsed = || start.elapsed().as_millis() as u64;
+    // 截光标所在显示器 → 16×16 灰度指纹（256 字节，抗噪且足够感知动画/转场）
+    let snap = || -> Option<[u8; 256]> {
+        let monitors = xcap::Monitor::all().ok()?;
+        let monitor = monitors
+            .iter()
+            .find(|m| {
+                let (mx, my) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
+                let (mw, mh) =
+                    (m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+                let (cx, cy) = cursor_pos();
+                cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
+            })
+            .or_else(|| monitors.first())?;
+        let img = monitor.capture_image().ok()?;
+        let small =
+            image::imageops::resize(&img, 16, 16, image::imageops::FilterType::Triangle);
+        let mut out = [0u8; 256];
+        for (i, p) in small.pixels().enumerate() {
+            if i < 256 {
+                out[i] = ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8;
+            }
+        }
+        Some(out)
+    };
+
+    let mut prev = match snap() {
+        Some(s) => s,
+        None => return (false, elapsed()),
+    };
+    let mut stable_hits = 0u8;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if elapsed() >= timeout_ms {
+            return (false, elapsed());
+        }
+        let cur = match snap() {
+            Some(s) => s,
+            None => return (false, elapsed()),
+        };
+        let diff: u32 = prev
+            .iter()
+            .zip(cur.iter())
+            .map(|(a, b)| a.abs_diff(*b) as u32)
+            .sum();
+        prev = cur;
+        // 指纹总差 <120（均 0.5 灰阶/点）≈ 无可见动画；连续 2 次达标才安定
+        if diff < 120 {
+            stable_hits += 1;
+            if stable_hits >= 2 {
+                return (true, elapsed());
+            }
+        } else {
+            stable_hits = 0;
+        }
+    }
 }
 
 // ───────────────────── 窗口控制（防遮挡） ─────────────────────
@@ -1200,8 +1414,9 @@ struct WindowEnumCtx {
 
 unsafe extern "system" fn window_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let ctx = &mut *(lparam.0 as *mut WindowEnumCtx);
-    // 只保留可见且未最小化的窗口（含拥有者弹出的对话框；弹窗标题可能为空）
-    if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+    // 保留所有可见窗口；最小化的后台窗口不再过滤（曾导致「应用明明开着却找不到」），
+    // 以 minimized=true 标记列出（聚焦时会自动 SW_RESTORE）
+    if !IsWindowVisible(hwnd).as_bool() {
         return BOOL(1);
     }
     let name = window_title(hwnd).unwrap_or_default();
@@ -1210,16 +1425,21 @@ unsafe extern "system" fn window_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     if name.is_empty() && class.is_empty() {
         return BOOL(1);
     }
+    let iconic = IsIconic(hwnd).as_bool();
     let role = if class == "#32770" || class == "#32769" {
         "Dialog"
     } else {
         "Window"
     };
+    // 最小化窗口的 GetWindowRect 是 (-32000,-32000) 占位值，置 None 避免误导
+    let bbox = if iconic { None } else { window_rect(hwnd) };
     ctx.wins.push(WindowInfo {
         name,
         role: role.to_string(),
         class,
-        bbox: window_rect(hwnd),
+        bbox,
+        minimized: iconic,
+        process: window_process_name(hwnd).unwrap_or_default(),
     });
     BOOL(1)
 }
@@ -1256,6 +1476,8 @@ unsafe extern "system" fn minimize_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL
 struct FindCtx {
     name: String,
     found: Option<HWND>,
+    /// 进程名兜底命中（标题不含关键词但进程 exe 名含，如「汽水」→ QishuiMusic.exe）
+    process_hit: Option<HWND>,
 }
 
 unsafe extern "system" fn find_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -1268,7 +1490,48 @@ unsafe extern "system" fn find_enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         ctx.found = Some(hwnd);
         return BOOL(0); // 找到即停止
     }
+    // 兜底：进程 exe 名含关键词（自绘/Electron 应用标题常常不含中文产品名）
+    if ctx.process_hit.is_none() {
+        if let Some(proc_name) = window_process_name(hwnd) {
+            if proc_name.to_lowercase().contains(&ctx.name.to_lowercase()) {
+                ctx.process_hit = Some(hwnd);
+            }
+        }
+    }
     BOOL(1)
+}
+
+/// 窗口所属进程的 exe 文件名（如 "QishuiMusic.exe"；自绘应用标题不含关键词时靠进程名定位）
+fn window_process_name(hwnd: HWND) -> Option<String> {
+    use ::windows::Win32::Foundation::CloseHandle;
+    use ::windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let full = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            ::windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .as_bool();
+        let _ = CloseHandle(handle);
+        if !full || len == 0 {
+            return None;
+        }
+        // 取路径最后一段作为 exe 名
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit(['\\', '/']).next().map(|s| s.to_string())
+    }
 }
 
 /// 按标题关键词返回第一个匹配的顶层窗口句柄
@@ -1276,6 +1539,7 @@ fn find_window_by_name(name: &str) -> Option<HWND> {
     let mut ctx = FindCtx {
         name: name.trim().to_string(),
         found: None,
+        process_hit: None,
     };
     if ctx.name.is_empty() {
         return None;
@@ -1286,7 +1550,8 @@ fn find_window_by_name(name: &str) -> Option<HWND> {
             LPARAM(&mut ctx as *mut FindCtx as isize),
         );
     }
-    ctx.found
+    // 标题命中优先，进程名命中兜底
+    ctx.found.or(ctx.process_hit)
 }
 
 /// 置顶 / 取消置顶指定窗口（带验证：确认 WS_EX_TOPMOST 位生效）

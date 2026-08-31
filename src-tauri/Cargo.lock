@@ -387,7 +387,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "baize"
-version = "0.1.2"
+version = "0.1.6"
 dependencies = [
  "aes",
  "arboard",
@@ -2971,6 +2971,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
