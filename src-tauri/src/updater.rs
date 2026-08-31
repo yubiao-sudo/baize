@@ -10,9 +10,20 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const RELEASES_API: &str = "https://api.github.com/repos/yubiao-sudo/baize/releases/latest";
 
+/// 下载候选镜像前缀（按序回退）：GitHub 直连时常被墙，gh 加速代理前缀 + 完整原始 URL。
+/// 空串 = 直连优先；某个候选连接失败/非 2xx 时自动尝试下一个。
+/// 2026-08-31 实测：gh-proxy.com 可用，ghfast.top 超时，ghproxy.net 证书异常——故 gh-proxy 优先
+const DOWNLOAD_MIRRORS: &[&str] = &[
+    "",
+    "https://gh-proxy.com/",
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+];
+
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent("baize-updater")
+        .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败: {e}"))
@@ -103,12 +114,28 @@ pub async fn update_install(app: AppHandle) -> Result<Value, String> {
         json!({ "phase": "download", "pct": 0, "downloaded": 0, "total": info["size"] }),
     );
 
-    let resp = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(600))
-        .send()
-        .await
-        .map_err(|e| format!("下载请求失败: {e}"))?;
+    // 直连 + 镜像按序回退：GitHub 直连被墙时自动切加速代理
+    let mut last_err = String::new();
+    let mut resp = None;
+    for prefix in DOWNLOAD_MIRRORS {
+        let candidate = format!("{}{}", prefix, url);
+        match client
+            .get(&candidate)
+            .timeout(std::time::Duration::from_secs(600))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                resp = Some(r);
+                break;
+            }
+            Ok(r) => last_err = format!("HTTP {}", r.status()),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    let mut resp = resp.ok_or_else(|| {
+        format!("下载请求失败（直连与镜像均不可用）: {last_err}；可手动从发布页下载安装")
+    })?;
     if !resp.status().is_success() {
         return Err(format!("下载失败：HTTP {}", resp.status()));
     }
@@ -121,7 +148,6 @@ pub async fn update_install(app: AppHandle) -> Result<Value, String> {
 
     let mut downloaded: u64 = 0;
     let mut last_emit = 0u64;
-    let mut resp = resp;
     use std::io::Write;
     while let Some(chunk) = resp
         .chunk()

@@ -3,9 +3,9 @@
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
 
-$tag  = "v0.1.3"
-$name = "v0.1.3 · 停止即真停 + 唤醒自愈"
-$body = "## 修复`n- 停止即真正停止：ps_exec/run_shell/docker 子进程与并行子代理响应停止立即终止，定时任务不再被残留取消标志误吞`n- 唤醒无响应自愈：TTS 状态卡死自动复位回声门（长朗读不受影响）；识别重启指数退避；双实例抢麦防护；麦克风不可用自动重试`n- 多模态逻辑理清：勾选后视觉调用复用主模型端点，系统提示词注入多模态自我认知"
+$tag  = "v0.1.4"
+$name = "v0.1.4 · 自更新镜像回退"
+$body = "## 修复`n- 应用内更新下载失败：GitHub 直连被墙时自动回退 gh 加速镜像（直连 → gh-proxy.com → ghfast.top → ghproxy.net 按序尝试）`n- 注：从 v0.1.3 升级到 v0.1.4 本次需手动下载安装，之后的应用内自更新即具备镜像回退能力"
 
 $credFile = Join-Path $env:USERPROFILE ".git-credentials"
 $token = $null
