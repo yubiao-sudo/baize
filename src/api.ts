@@ -336,6 +336,38 @@ export async function logFrontend(msg: string): Promise<void> {
   }
 }
 
+// ---------------- 应用内自更新 ----------------
+
+export type UpdateInfo = {
+  current: string;
+  latest: string;
+  has_update: boolean;
+  notes?: string;
+  url?: string;
+  download_url?: string;
+  size?: number;
+};
+
+/** 检查 GitHub Releases 上的最新版本 */
+export async function updateCheck(): Promise<UpdateInfo> {
+  return invoke<UpdateInfo>("update_check");
+}
+
+/** 下载最新安装包（触发 update-progress 进度事件）并静默安装后重启 */
+export async function updateInstall(): Promise<void> {
+  return invoke("update_install");
+}
+
+/** 订阅更新下载进度 */
+export function onUpdateProgress(
+  cb: (p: { phase: string; pct: number; downloaded: number; total: number }) => void
+): Promise<() => void> {
+  return listen<{ phase: string; pct: number; downloaded: number; total: number }>(
+    "update-progress",
+    (e) => cb(e.payload)
+  );
+}
+
 /** 把「多模型对比」结果写入会话（分支存 trace.branches），重启后仍可回看 */
 export async function saveCompareResult(convId: string, branches: ModelAnswer[]): Promise<boolean> {
   return invoke<boolean>("save_compare_result", { convId, branches });

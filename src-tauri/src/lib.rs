@@ -13,6 +13,7 @@ mod embedding;
 mod feishu;
 mod grep;
 mod im;
+mod updater;
 mod markdown;
 mod maintenance;
 mod mcp;
@@ -232,6 +233,8 @@ impl AppState {
         tools.register(Box::new(agent::ExpectedStateTool));
         // 万能聊天卡片：模型推送 HTML 卡片在聊天框中精美展示结构化信息（天气/日程等）
         tools.register(Box::new(agent::ChatCardTool));
+        // 快捷启动应用：开始菜单索引 + UWP + 等窗返回（GUI 任务提速）
+        tools.register(Box::new(tools::LaunchAppTool));
         tools.register(Box::new(capability::CaptureScreenTool::new(capability.clone())));
         // 全屏元素标注：UIA 控件 + OCR 文字行一次汇总（批量规划 GUI 步骤用）
         tools.register(Box::new(capability::ScreenElementsTool::new(capability.clone())));
@@ -1091,6 +1094,8 @@ pub fn run() {
             windows::get_step_log,
             windows::halo_get_last,
             windows::frontend_log,
+            updater::update_check,
+            updater::update_install,
             wechat::wechat_get_status,
             wechat::wechat_login,
             wechat::wechat_start,

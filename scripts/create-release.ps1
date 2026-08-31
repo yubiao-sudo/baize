@@ -19,10 +19,10 @@ $headers = @{
 
 # 1) 建标签与 Release
 $body = @{
-    tag_name         = "v0.1.0"
+    tag_name         = "v0.1.2"
     target_commitish = "main"
-    name             = "v0.1.0 · 白泽首个公开版"
-    body             = "白泽 BaiZe 首个公开版本。`n`n## 亮点`n- 万能聊天卡片（天气/日程/比分精美可视化）`n- GUI 自动化：screen_elements 全屏元素标注 + window_prepare 一键清屏 + 拟人化点击注入`n- 微信/飞书机器人：图片真实回传、消息去重、IM 审批`n- 受控浏览器与用户 Chrome 冲突治理、单实例保护`n- 水球风格全新桌面图标`n`n下载下方 x64-setup.exe 安装即可。"
+    name             = "v0.1.2 · GUI 提速 + 应用内更新"
+    body             = "## 新增`n- launch_app 快捷启动应用：开始菜单/UWP 索引匹配启动 + 等窗返回，替代慢速的 GUI 启动流程`n- 常见应用操作预案库（浏览器/资源管理器/编辑器/聊天/设置类提速策略）注入系统提示词`n- 应用内自更新：设置 → 关于与更新 → 检查更新 / 下载并安装（进度条 + 静默安装 + 自动重启）"
     draft            = $false
     prerelease       = $false
 } | ConvertTo-Json

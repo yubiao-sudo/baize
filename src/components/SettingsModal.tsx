@@ -37,8 +37,8 @@ import {
   wechatStop,
 } from "../api";
 import { reactiveSpeak, speakWithCloud, stopSpeaking } from "../voiceReactive";
-import type { TtsConfig } from "../api";
-import { KOKORO_VOICES, getKokoroVoices, getBrowserPathSetting, setBrowserPathSetting } from "../api";
+import type { TtsConfig, UpdateInfo } from "../api";
+import { KOKORO_VOICES, getKokoroVoices, getBrowserPathSetting, setBrowserPathSetting, updateCheck, updateInstall, onUpdateProgress } from "../api";
 import {
   getNotifyStyle,
   getSfxVolume,
@@ -107,6 +107,26 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [mcpArgsText, setMcpArgsText] = useState("");
   // 桌面浏览器控制：手动指定的 Chrome/Edge 路径（留空自动探测）与探测状态
   const [browserPath, setBrowserPath] = useState("");
+  // 应用内自更新状态
+  const [upInfo, setUpInfo] = useState<UpdateInfo | null>(null);
+  const [upStatus, setUpStatus] = useState("");
+  const [upPct, setUpPct] = useState(-1); // -1 = 未在下载
+  const [upBusy, setUpBusy] = useState(false);
+  // 更新下载进度订阅（组件挂载期持续有效）
+  useEffect(() => {
+    let un: (() => void) | null = null;
+    void onUpdateProgress((p) => {
+      setUpPct(p.pct);
+      setUpStatus(
+        p.phase === "install"
+          ? "下载完成，正在静默安装，白泽即将重启…"
+          : `正在下载更新 ${p.pct}%`
+      );
+    }).then((f) => (un = f));
+    return () => {
+      if (un) un();
+    };
+  }, []);
   const [browserPathStatus, setBrowserPathStatus] = useState("");
   // 进入工具页时刷新一次探测状态
   useEffect(() => {
@@ -1120,6 +1140,102 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 {browserPathStatus ||
                   "browser_act 桌面浏览器控制将使用此路径驱动真实 Chrome/Edge（保留登录态）。留空时按「注册表 → 默认安装目录」自动探测。"}
               </div>
+            </section>
+
+            {/* ============ 关于与更新 ============ */}
+            <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+              <h4 style={{ margin: "4px 0 8px", color: "var(--text)" }}>关于与更新</h4>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  当前版本 v{upInfo?.current ?? "…"}
+                  {upInfo ? (upInfo.has_update ? ` · 发现新版本 v${upInfo.latest}` : " · 已是最新") : ""}
+                </span>
+                <span className="side-spacer" style={{ flex: 1 }} />
+                <button
+                  className="acui-btn"
+                  disabled={upBusy}
+                  onClick={async () => {
+                    setUpBusy(true);
+                    setUpStatus("正在检查更新…");
+                    try {
+                      const info = await updateCheck();
+                      setUpInfo(info);
+                      setUpStatus(
+                        info.has_update
+                          ? `发现新版本 v${info.latest}，可下载更新`
+                          : "当前已是最新版本"
+                      );
+                    } catch (e) {
+                      setUpStatus("检查失败: " + e);
+                    }
+                    setUpBusy(false);
+                  }}
+                >
+                  检查更新
+                </button>
+              </div>
+              {upInfo?.has_update && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: "var(--text-dim)",
+                    marginBottom: 8,
+                    whiteSpace: "pre-wrap",
+                    maxHeight: 130,
+                    overflowY: "auto",
+                    background: "rgba(255,255,255,0.03)",
+                    borderRadius: 8,
+                    padding: 8,
+                  }}
+                >
+                  {upInfo.notes || "（无更新说明）"}
+                </div>
+              )}
+              {upPct >= 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div
+                    style={{
+                      height: 6,
+                      borderRadius: 3,
+                      background: "rgba(255,255,255,0.08)",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${upPct}%`,
+                        background: "linear-gradient(90deg,#22d3ee,#3b82f6)",
+                        transition: "width .3s",
+                      }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 4 }}>
+                    {upPct >= 100 ? "下载完成，正在静默安装并重启…" : `下载中 ${upPct}%`}
+                  </div>
+                </div>
+              )}
+              {upInfo?.has_update && upPct < 0 && (
+                <button
+                  className="acui-btn primary"
+                  disabled={upBusy}
+                  onClick={async () => {
+                    setUpBusy(true);
+                    setUpStatus("正在下载更新…");
+                    try {
+                      await updateInstall();
+                      setUpStatus("安装器已启动，白泽即将退出并完成更新…");
+                    } catch (e) {
+                      setUpStatus("更新失败: " + e);
+                      setUpPct(-1);
+                      setUpBusy(false);
+                    }
+                  }}
+                >
+                  下载并安装更新
+                </button>
+              )}
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>{upStatus}</div>
             </section>
             </div>
 

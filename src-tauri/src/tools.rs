@@ -630,6 +630,171 @@ pub fn silent_command(program: &str) -> std::process::Command {
     c
 }
 
+// ───────────────── launch_app 快捷启动应用 ─────────────────
+// 开始菜单索引（用户 + 常用，含子目录 .lnk）一次性缓存；未命中再查 UWP（Get-StartApps）。
+// 启动后轮询等待目标窗口出现并返回窗口信息——把「找图标→点开始菜单→搜索→点开→等窗口」
+// 的多轮 GUI 慢流程折叠成一次工具调用。
+
+static APP_INDEX: OnceLock<Vec<(String, std::path::PathBuf)>> = OnceLock::new();
+
+fn start_menu_apps() -> &'static Vec<(String, std::path::PathBuf)> {
+    APP_INDEX.get_or_init(|| {
+        let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(u) = std::env::var("USERPROFILE") {
+            roots.push(std::path::PathBuf::from(format!(
+                "{u}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs"
+            )));
+        }
+        if let Ok(pd) = std::env::var("ProgramData") {
+            roots.push(std::path::PathBuf::from(format!(
+                "{pd}\\Microsoft\\Windows\\Start Menu\\Programs"
+            )));
+        }
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, std::path::PathBuf)>, depth: usize) {
+            if depth > 6 {
+                return;
+            }
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        walk(&p, out, depth + 1);
+                    } else if p
+                        .extension()
+                        .map(|x| x.eq_ignore_ascii_case("lnk"))
+                        .unwrap_or(false)
+                    {
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            out.push((stem.to_lowercase(), p.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        for r in roots {
+            walk(&r, &mut out, 0);
+        }
+        out
+    })
+}
+
+/// UWP / 商店应用：Get-StartApps 枚举（名称, AppID），explorer shell:AppsFolder 启动
+fn find_uwp_app(name: &str) -> Option<(String, String)> {
+    let out = crate::tools::silent_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-StartApps | ConvertTo-Json -Compress",
+        ])
+        .output()
+        .ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let arr = v.as_array()?;
+    let ql = name.to_lowercase();
+    for it in arr {
+        let app_name = it["Name"].as_str().unwrap_or("").to_lowercase();
+        let app_id = it["AppID"].as_str().unwrap_or("");
+        if !app_id.is_empty()
+            && (app_name.contains(&ql) || ql.contains(app_name.as_str()))
+        {
+            return Some((app_name, app_id.to_string()));
+        }
+    }
+    None
+}
+
+pub struct LaunchAppTool;
+
+impl Tool for LaunchAppTool {
+    fn name(&self) -> &str {
+        "launch_app"
+    }
+    fn description(&self) -> &str {
+        "启动桌面应用（首选方式，一次调用完成）：从开始菜单索引（含 UWP 商店应用）按名称匹配并启动，\
+         然后轮询等待应用窗口出现（最长 wait_secs 秒），返回窗口标题与位置——拿到窗口信息即可直接接 \
+         window_prepare/screen_elements 规划操作，无需再 GUI 点开始菜单或 ps_exec Start-Process"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "应用名称关键词，如 \"汽水音乐\"、\"记事本\"、\"Calculator\"" },
+                "wait_secs": { "type": "number", "description": "等待窗口出现的秒数，默认 12" }
+            },
+            "required": ["name"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::Write
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let name = args["name"]
+            .as_str()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or("缺少 name 参数")?;
+        let wait_secs = args["wait_secs"].as_u64().unwrap_or(12).clamp(2, 30);
+        let ql = name.to_lowercase();
+
+        // 1) 开始菜单 .lnk 匹配（最短名最贴近）
+        let apps = start_menu_apps();
+        let matched = apps
+            .iter()
+            .filter(|(n, _)| n.contains(&ql) || ql.contains(n.as_str()))
+            .min_by_key(|(n, _)| n.len())
+            .cloned();
+
+        let (via, launched) = if let Some((n, p)) = matched {
+            let r = silent_command("cmd")
+                .args(["/c", "start", "", &p.to_string_lossy()])
+                .spawn();
+            match r {
+                Ok(_) => ("start_menu".to_string(), true),
+                Err(e) => return Err(format!("启动失败: {e}")),
+            }
+        } else if let Some((app_name, app_id)) = find_uwp_app(name) {
+            // 2) UWP 回退
+            let arg = format!("shell:AppsFolder\\{app_id}");
+            let mut cmd = silent_command("explorer.exe");
+            cmd.args([&arg]);
+            let r = cmd.spawn();
+            match r {
+                Ok(_) => (format!("uwp:{app_name}"), true),
+                Err(e) => return Err(format!("UWP 启动失败: {e}")),
+            }
+        } else {
+            return Err(format!(
+                "开始菜单与 UWP 应用列表中未找到「{name}」，可让用户手动安装，或改用 ps_exec 启动已知路径"
+            ));
+        };
+
+        // 3) 等待窗口出现（标题包含应用名关键词即视为就绪）
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+        let mut window: Option<[i32; 4]> = None;
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            if let Some(rect) = crate::capability::windows::find_window_rect(name) {
+                window = Some(rect);
+                break;
+            }
+        }
+
+        Ok(json!({
+            "ok": true,
+            "via": via,
+            "window_ready": window.is_some(),
+            "window_rect": window,
+            "note": if window.is_some() {
+                "窗口已出现，可直接 window_prepare 清屏 + screen_elements 规划操作"
+            } else {
+                "已发出启动命令但窗口尚未出现（可能仍在加载），可稍后 list_windows 确认"
+            },
+        }))
+    }
+}
+
 /// 本机 PowerShell 直连执行（不走 Docker 沙箱，返回结构化输出 + 超时）
 pub struct PsExecTool;
 
