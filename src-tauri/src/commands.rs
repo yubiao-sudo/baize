@@ -23,6 +23,7 @@ pub async fn chat(
     attachments: Vec<String>,
 ) -> Result<String, String> {
     state.cancel.store(false, Ordering::SeqCst);
+    crate::tools::clear_global_cancel();
     // 清空本轮思考日志，开始累积执行流
     state.clear_thought_log();
 
@@ -197,6 +198,8 @@ pub async fn chat(
 #[tauri::command]
 pub fn stop_chat(state: State<'_, AppState>) -> bool {
     state.cancel.store(true, Ordering::SeqCst);
+    // 同步置位全局工具取消标志：ps_exec/run_shell/docker 子进程轮询感知后自行 kill
+    crate::tools::request_global_cancel();
     true
 }
 

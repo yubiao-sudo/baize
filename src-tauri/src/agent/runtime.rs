@@ -362,6 +362,18 @@ impl<'a> AgentLoop<'a> {
 
         let mut system_content = base.to_string();
 
+        // 多模态自我认知：主模型勾选 multimodal 时，所有视觉调用（grounding/SoM/截图描述/状态校验）
+        // 实际都由主模型自己的端点完成——明确告知它，避免它误以为存在另一个「视觉模型」
+        if crate::visual_grounding::multimodal_main().is_some() {
+            system_content.push_str(
+                "\n\n【多模态能力（自我认知）】你自己就是多模态模型，配置已启用图片输入。\
+                 系统中所有视觉调用（click_element 的视觉降级定位、Set-of-Marks 标注、capture_screen 的 question 图像理解、批量操作后的预期状态校验）\
+                 都由你自己完成，不存在另一个独立视觉模型。因此：① 这些调用返回的是你自己看图后的结论，可信度按自己的视觉能力评估；\
+                 ② 视觉坐标估计有 ±10-20px 误差，精确点击仍优先 screen_elements/OCR 坐标；\
+                 ③ 用户发来图片附件时，图片内容会以描述文本形式注入对话，你基于描述作答即可。",
+            );
+        }
+
         // Token 节约：精简回复风格（约束输出长度与格式，直接省输出 token）
         if crate::token_saver::config().concise_reply {
             system_content.push_str(

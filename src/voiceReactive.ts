@@ -97,8 +97,10 @@ export function cleanForSpeech(text: string): string {
 
 /** 包装 speechSynthesis.speak：自动清洗文本 + 状态与边界事件广播 */
 export function reactiveSpeak(text: string, opts?: SpeakOptions) {
-  speakSession++; // 本地朗读接管：中止正在进行的云端分句管线，保证同一时刻只有一个声音
+  // 空文本/不支持时直接返回，不递增会话令牌——否则正在进行的云端朗读会因会话失效
+  // 静默退出却无人派发 speaking=false，回声门永久关闭（唤醒词全盲的根因之一）
   if (!("speechSynthesis" in window) || !text) return;
+  speakSession++; // 本地朗读接管：中止正在进行的云端分句管线，保证同一时刻只有一个声音
   try {
     stopCloudAudio();
     speechSynthesis.cancel();
@@ -232,9 +234,11 @@ function playChunk(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let failsafe = 0;
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
+      window.clearTimeout(failsafe);
       resolve(ok);
     };
     const audio = new Audio(src.startsWith("data:") ? src : convertFileSrc(src));
@@ -277,6 +281,9 @@ function playChunk(
     audio.onended = () => finish(true);
     audio.onerror = () => finish(false);
     audio.play().catch(() => finish(false));
+    // 兜底：onended/onerror 均不触发时（WebView2 偶发挂起），超时强制放行，
+    // 避免整条朗读管线 await 挂死、speaking 状态永不复位、回声门永久关闭
+    failsafe = window.setTimeout(() => finish(false), 120000);
   });
 }
 
@@ -323,6 +330,9 @@ export async function speakWithCloud(text: string, onend?: () => void): Promise<
   for (let i = 0; i < chunks.length; i++) {
     if (session !== speakSession) return; // 被新朗读接管：静默退出
     ensure(i + 1);
+    // 合成等待期心跳：低能量脉冲（<0.12 不会触发水球律动），仅向语音对话的
+    // 卡死兜底证明「朗读管线还活着」，避免 Kokoro 冷启动等长等待被误判卡死强停
+    dispatchTtsPulse(0.08);
     const src = await pending[i];
     if (session !== speakSession) return;
     if (!src) continue; // 该句合成失败，跳过读下一句

@@ -164,6 +164,8 @@ pub fn cancel_task(state: State<'_, AppState>, id: String) -> bool {
         }
     }
     state.cancel.store(true, Ordering::SeqCst);
+    // 同步置位全局工具取消标志：长跑子进程（ps_exec 等）感知后自行终止
+    crate::tools::request_global_cancel();
     set_status(&cell, "cancelled", None);
     true
 }

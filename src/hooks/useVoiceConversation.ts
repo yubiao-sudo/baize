@@ -27,6 +27,11 @@ const LISTEN_TIMEOUT_MS = 12000;
 const SILENCE_RESTART_MS = 10000;
 /** 看门狗巡检间隔 */
 const WATCHDOG_TICK_MS = 4000;
+/** TTS 卡死兜底：speaking=true 期间连续该时长无任何朗读活动（脉冲/状态变化），
+ *  视为状态卡死（WebView2 偶发 onend/onerror 不触发），强制停止以复位回声门 */
+const TTS_STALL_MS = 120000;
+/** 识别重启退避上限 */
+const RESTART_BACKOFF_MAX_MS = 8000;
 
 function dispatchVoiceMode(mode: VoiceConvMode) {
   window.dispatchEvent(new CustomEvent("baize:voice-mode", { detail: { mode } }));
@@ -75,12 +80,22 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
   }, [onCommand]);
 
   useEffect(() => {
+    let ttsFailsafe = 0;
+    const armFailsafe = () => {
+      window.clearTimeout(ttsFailsafe);
+      ttsFailsafe = window.setTimeout(() => {
+        // 卡死兜底：speaking 仍为 true 但长时间无朗读活动 → 强制停止。
+        // stopSpeaking 内部会派发 speaking=false，回声门随之复位，唤醒不再全盲
+        if (ttsSpeakingRef.current) stopSpeaking();
+      }, TTS_STALL_MS);
+    };
     const onTts = (e: Event) => {
       const speaking = !!(e as CustomEvent<{ speaking?: boolean }>).detail?.speaking;
       ttsSpeakingRef.current = speaking;
       // 朗读结束瞬间，识别器里可能还残留刚被拾进去的尾音（含「白泽」），
       // 稍等片刻再放行，避免最后一句回声在门开的瞬间漏过去
       if (!speaking) {
+        window.clearTimeout(ttsFailsafe);
         const until = echoCooldownUntil.current;
         if (until) window.clearTimeout(until);
         echoCooldownUntil.current = window.setTimeout(() => {
@@ -90,10 +105,20 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
       } else {
         echoGate.current = false;
         if (echoCooldownUntil.current) window.clearTimeout(echoCooldownUntil.current);
+        armFailsafe();
       }
     };
+    // 朗读活动心跳：逐词/频谱脉冲都算「活着」，持续重置卡死计时（长文档朗读不受时限影响）
+    const onPulse = () => {
+      if (ttsSpeakingRef.current) armFailsafe();
+    };
     window.addEventListener("baize:tts-state", onTts);
-    return () => window.removeEventListener("baize:tts-state", onTts);
+    window.addEventListener("baize:tts-pulse", onPulse);
+    return () => {
+      window.removeEventListener("baize:tts-state", onTts);
+      window.removeEventListener("baize:tts-pulse", onPulse);
+      window.clearTimeout(ttsFailsafe);
+    };
   }, []);
   /** 朗读结束后 800ms 的回声冷却窗（放行前的最后一道闸） */
   const echoGate = useRef(false);
@@ -157,12 +182,23 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
     const SR = (window as unknown as Record<string, unknown>).SpeechRecognition
       || (window as unknown as Record<string, unknown>).webkitSpeechRecognition;
     if (!SR) return;
-    // 最近一次识别事件时间戳（onresult / onend 都会刷新），供看门狗判断静默失联
-    let lastEventAt = Date.now();
+    /** 最近一次真正产出识别结果的时间：看门狗以此判断链路健康——
+     *  网络错误风暴会不断产生 error/onend 事件喂饱旧的「事件级」看门狗，却永远拿不到结果 */
+    let lastResultAt = Date.now();
     let watchdog = 0;
+    /** 连续失败计数（network/aborted 等非致命错误累加，出结果即清零）：重启按指数退避 */
+    let failCount = 0;
+    /** audio-capture 连续失败次数：麦克风长期不可用（被占用/未插）时重试几次后退出，避免无限空转 */
+    let audioFailCount = 0;
 
     const spawn = () => {
       if (!activeRef.current) return;
+      // 先确保旧识别实例已停止：看门狗重启与迟到 onend 竞态时避免双实例并发抢麦
+      try {
+        recRef.current?.stop();
+      } catch {
+        /* 已停止 */
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rec = new (SR as any)();
       rec.lang = "zh-CN";
@@ -170,7 +206,9 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
       rec.interimResults = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       rec.onresult = (e: any) => {
-        lastEventAt = Date.now();
+        lastResultAt = Date.now();
+        failCount = 0; // 出了结果：识别链路健康，重置退避
+        audioFailCount = 0;
         let interim = "";
         let finalTxt = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -181,16 +219,19 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
         const chunk = (finalTxt || interim).trim();
         if (chunk) handleChunk(chunk, !!finalTxt && !interim);
       };
-      // 识别进程结束（正常/异常）→ 快速重启，保持常驻聆听
+      // 识别进程结束（正常/异常）→ 退避后重启，保持常驻聆听
       rec.onend = () => {
-        lastEventAt = Date.now();
         if (!activeRef.current) return;
+        // 已被看门狗替换：迟到的 onend 不再触发重启（防止双实例并发）
+        if (recRef.current !== rec) return;
         window.clearTimeout(restartTimer.current);
-        restartTimer.current = window.setTimeout(spawn, 300);
+        restartTimer.current = window.setTimeout(
+          spawn,
+          Math.min(300 * 2 ** failCount, RESTART_BACKOFF_MAX_MS)
+        );
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       rec.onerror = (e: any) => {
-        lastEventAt = Date.now();
         const err = String(e?.error ?? "");
         // 致命错误：重启也无意义，直接退出对话模式并提示
         if (err === "not-allowed" || err === "service-not-allowed") {
@@ -199,35 +240,45 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
           setActive(false);
           setModeSafe("off");
         } else if (err === "audio-capture") {
-          setError("找不到可用麦克风");
-          activeRef.current = false;
-          setActive(false);
-          setModeSafe("off");
+          // 麦克风暂时不可用（被占用/休眠恢复设备重枚举）：先按退避重试几次
+          audioFailCount++;
+          if (audioFailCount >= 5) {
+            setError("找不到可用麦克风（已自动重试多次仍失败）");
+            activeRef.current = false;
+            setActive(false);
+            setModeSafe("off");
+          }
+          /* 交给 onend 以退避节奏重启（audioFailCount 在下次出结果时清零） */
+        } else {
+          failCount++; // no-speech / network / aborted 等：累加进退避
         }
-        /* no-speech / network / aborted 等交由 onend 重启 */
       };
       try {
         rec.start();
         recRef.current = rec;
       } catch {
-        /* start 抛错（上一轮还没停干净）→ 稍后重启兜底 */
+        /* start 抛错（上一轮还没停干净）→ 退避后重启兜底 */
         window.clearTimeout(restartTimer.current);
-        restartTimer.current = window.setTimeout(spawn, 500);
+        restartTimer.current = window.setTimeout(
+          spawn,
+          Math.min(500 * 2 ** failCount, RESTART_BACKOFF_MAX_MS)
+        );
         return;
       }
-      // 看门狗：识别进程静默失联（无事件也不触发 onend）时强制 stop→重启。
-      // onend 若正常触发会由 onend 分支重启，这里兜住「彻底没事件」的情况。
+      // 看门狗：识别链路「拿不到结果」超过阈值时强制 stop→重启。
+      // 以 lastResultAt（真实产出）而非任意事件计时——错误风暴不再能喂饱看门狗
       const armWatchdog = () => {
         window.clearTimeout(watchdog);
         watchdog = window.setTimeout(() => {
           if (!activeRef.current) return;
-          if (Date.now() - lastEventAt > SILENCE_RESTART_MS) {
+          if (Date.now() - lastResultAt > SILENCE_RESTART_MS) {
             try {
               rec.stop();
             } catch {
               /* 已停止 */
             }
-            // onend 万一不来，直接再 spawn 一个新识别进程兜底
+            // 置空当前实例：让迟到的 onend 知道已被替换，不再竞争重启
+            recRef.current = null;
             window.clearTimeout(restartTimer.current);
             restartTimer.current = window.setTimeout(spawn, 500);
           } else {

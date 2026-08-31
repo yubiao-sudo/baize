@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::model::{ChatMessage, ModelRouter};
-use crate::tools::{PermissionClass, Tool, ToolRegistry};
+use crate::tools::{global_cancelled, PermissionClass, Tool, ToolRegistry};
 
 // ───────────────── 执行流透出 ─────────────────
 
@@ -197,6 +197,17 @@ async fn run_subagent_inner(
     let mut files_examined: Vec<String> = Vec::new();
 
     for round in 0..max_rounds {
+        // 用户点击停止：立即终止子代理，不再发起下一轮模型请求
+        if global_cancelled() {
+            return SubAgentResult {
+                agent_type: agent_type.label().to_string(),
+                task: task.to_string(),
+                summary: "已被用户停止".to_string(),
+                files_examined,
+                success: false,
+                duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
         // 调用模型
         let schemas = tools.schemas_filtered(&allowed);
         let resp = match model.chat(&messages, &schemas).await {
@@ -224,6 +235,10 @@ async fn run_subagent_inner(
             messages.push(assistant_msg);
 
             for tc in tool_calls {
+                // 停止请求：跳过本子代理剩余工具调用
+                if global_cancelled() {
+                    break;
+                }
                 let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
                 let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
                 let args: Value = serde_json::from_str(args_str).unwrap_or(Value::Null);

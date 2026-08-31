@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use serde_json::{json, Value};
@@ -65,6 +66,77 @@ pub fn set_workspace(path: &str) {
 /// 获取当前工作空间
 pub fn get_workspace() -> Option<String> {
     workspace_lock().lock().unwrap().clone()
+}
+
+// ---------------- 全局取消标志：用户点击停止时，长时间子进程工具能提前感知并终止 ----------------
+
+static TOOL_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 置位全局取消标志（stop_chat 时调用）
+pub fn request_global_cancel() {
+    TOOL_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// 复位全局取消标志（新一轮任务开始 / 定时任务入口调用）
+pub fn clear_global_cancel() {
+    TOOL_CANCEL.store(false, Ordering::SeqCst);
+}
+
+/// 是否已请求取消
+pub fn global_cancelled() -> bool {
+    TOOL_CANCEL.load(Ordering::SeqCst)
+}
+
+/// 带取消感知的子进程执行：等待期间轮询全局取消标志，命中即 kill 子进程并返回错误。
+/// 用于 run_on_host / run_in_docker 等此前用 .output() 一黑到底的阻塞调用
+fn run_child_cancellable(
+    mut command: std::process::Command,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动进程失败: {e}"))?;
+    let stdout_reader = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        })
+    });
+    let stderr_reader = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        })
+    });
+    loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => {
+                let stdout = stdout_reader
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                let stderr = stderr_reader
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                return Ok(std::process::Output {
+                    status,
+                    stdout: stdout.into_bytes(),
+                    stderr: stderr.into_bytes(),
+                });
+            }
+            None => {
+                if global_cancelled() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("任务已被用户停止，进程已终止".to_string());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// 解析路径：绝对路径原样返回；相对路径拼到工作空间根目录（未设置工作空间则原样返回）
@@ -862,6 +934,12 @@ impl Tool for PsExecTool {
                 let _ = child.wait();
                 return Err(format!("命令超时（{timeout}s），已终止"));
             }
+            // 用户点击停止：终止子进程而不是让它跑到底（spawn_blocking 无法中止，只能进程级 kill）
+            if global_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("任务已被用户停止，命令已终止".to_string());
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
 
@@ -923,10 +1001,9 @@ fn run_in_docker(cmd: &str) -> Result<String, String> {
     args.push(workdir);
     args.extend(["alpine:3.18".into(), "sh".into(), "-c".into(), cmd.to_string()]);
 
-    let output = std::process::Command::new("docker")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("Docker 执行失败: {e}"))?;
+    let mut cmd = silent_command("docker");
+    cmd.args(&args);
+    let output = run_child_cancellable(cmd)?;
     let mut result = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !stderr.is_empty() {
@@ -951,11 +1028,11 @@ fn run_on_host(cmd: &str) -> Result<String, String> {
     }
 
     #[cfg(windows)]
-    let output = proc.args(["/c", cmd]).output();
+    proc.args(["/c", cmd]);
     #[cfg(not(windows))]
-    let output = proc.args(["-c", cmd]).output();
+    proc.args(["-c", cmd]);
 
-    let output = output.map_err(|e| format!("执行失败: {e}"))?;
+    let output = run_child_cancellable(proc).map_err(|e| format!("执行失败: {e}"))?;
     let mut result = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !stderr.is_empty() {

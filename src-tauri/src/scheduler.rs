@@ -518,7 +518,11 @@ impl SchedulerState {
         let job_id = job.id.clone();
         let self_arc = self.clone();
         tauri::async_runtime::spawn(async move {
+            // 复位取消标志：用户停止主对话后残留的脏标志不应吞掉定时任务
+            // （stop 的意图是终止当时正在跑的对话，不是终止之后才触发的任务）
+            crate::tools::clear_global_cancel();
             let state = handle.state::<crate::AppState>();
+            state.cancel.store(false, std::sync::atomic::Ordering::SeqCst);
             let result = crate::agent::Supervisor::new(&handle, state.inner())
                 .run(&task, vec![])
                 .await;

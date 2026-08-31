@@ -66,7 +66,8 @@ pub fn set_vision_cloud(base_url: &str, api_key: &str) {
 /// None 表示当前未启用「复用主模型做视觉」。
 static MULTIMODAL_MAIN: Mutex<Option<(ProviderKind, String, String, String)>> = Mutex::new(None);
 
-fn multimodal_main() -> Option<(ProviderKind, String, String, String)> {
+/// 主模型是否已勾选多模态（供系统提示词判断是否做自我认知告知）
+pub fn multimodal_main() -> Option<(ProviderKind, String, String, String)> {
     MULTIMODAL_MAIN.lock().unwrap().clone()
 }
 
