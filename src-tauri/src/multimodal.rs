@@ -229,7 +229,7 @@ fn extract_frames(video_path: &str, count: usize) -> Result<Vec<String>, String>
 
 /// 用 ffprobe 获取视频时长（秒）；失败返回 None
 fn video_duration(path: &str) -> Option<f64> {
-    let out = std::process::Command::new("ffprobe")
+    let out = crate::tools::silent_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -320,7 +320,7 @@ impl Tool for SttTranscribeTool {
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建转写目录失败: {e}"))?;
         let out_dir_str = out_dir.to_string_lossy().to_string();
 
-        let status = std::process::Command::new(tool)
+        let status = crate::tools::silent_command(tool)
             .args([
                 path.as_str(),
                 "--language",

@@ -7,8 +7,6 @@
 //!   - [`ListMailTool`]（`list_mail`，只读）：读取收件箱最近 N 封（标题/发件人/时间/已读/附件/摘要）。
 //!   - [`SendMailTool`]（`send_mail`，高危需审批）：按收件人/主题/正文发送邮件。
 
-use std::process::Command;
-
 use serde_json::{json, Value};
 
 use crate::tools::{PermissionClass, Tool};
@@ -80,14 +78,14 @@ fn run_powershell(script: &str, script_args: &[String]) -> Result<String, String
     let script_str = script_path.to_string_lossy().to_string();
 
     let mut shell = "powershell";
-    let mut ok = Command::new(shell)
+    let mut ok = crate::tools::silent_command(shell)
         .args(["-NoProfile", "-Command", "exit 0"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
         shell = "pwsh";
-        ok = Command::new(shell)
+        ok = crate::tools::silent_command(shell)
             .args(["-NoProfile", "-Command", "exit 0"])
             .status()
             .map(|s| s.success())
@@ -95,7 +93,7 @@ fn run_powershell(script: &str, script_args: &[String]) -> Result<String, String
     }
 
     let out = if ok {
-        let mut cmd = Command::new(shell);
+        let mut cmd = crate::tools::silent_command(shell);
         cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &script_str]);
         for a in script_args {
             cmd.arg(a);

@@ -8,15 +8,13 @@
 //!   - [`MicRecordTool`]（`mic_record`）：录音 N 秒 → 可选立即本地转写，返回 WAV 路径与文字。
 //!   转写的文字可继续交给 Agent 用 markdown_set 整理成会议纪要。
 
-use std::process::Command;
-
 use serde_json::{json, Value};
 
 use crate::tools::{PermissionClass, Tool, resolve_path};
 
 /// 探测系统默认麦克风名称（ffmpeg dshow 设备列表），失败返回 None
 fn discover_mic_name() -> Option<String> {
-    let out = Command::new("ffmpeg")
+    let out = crate::tools::silent_command("ffmpeg")
         .args([
             "-hide_banner",
             "-list_devices",
@@ -52,7 +50,7 @@ fn discover_mic_name() -> Option<String> {
 
 /// 用 ffmpeg dshow 把默认麦克风录成单声道 16k WAV
 fn record(duration_secs: u64, mic: &str, out: &str) -> Result<(), String> {
-    let status = Command::new("ffmpeg")
+    let status = crate::tools::silent_command("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -81,21 +79,21 @@ fn record(duration_secs: u64, mic: &str, out: &str) -> Result<(), String> {
 /// 本地转写：探测 whisper/whisper-cpp/whisper-cli 并转写，返回文字
 fn transcribe(path: &str, lang: &str, model: &str) -> Result<String, String> {
     let mut tool = "whisper";
-    let mut ok = Command::new("whisper")
+    let mut ok = crate::tools::silent_command("whisper")
         .args(["--help"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !ok {
         tool = "whisper-cpp";
-        ok = Command::new("whisper-cpp")
+        ok = crate::tools::silent_command("whisper-cpp")
             .args(["--help"])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if !ok {
             tool = "whisper-cli";
-            ok = Command::new("whisper-cli")
+            ok = crate::tools::silent_command("whisper-cli")
                 .args(["--help"])
                 .output()
                 .map(|o| o.status.success())
@@ -121,7 +119,7 @@ fn transcribe(path: &str, lang: &str, model: &str) -> Result<String, String> {
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建转写目录失败: {e}"))?;
     let out_dir_str = out_dir.to_string_lossy().to_string();
 
-    let status = Command::new(tool)
+    let status = crate::tools::silent_command(tool)
         .args([
             path,
             "--language",

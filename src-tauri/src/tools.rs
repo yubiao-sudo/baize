@@ -974,7 +974,7 @@ fn run_shell(cmd: &str) -> Result<String, String> {
 }
 
 fn docker_available() -> bool {
-    std::process::Command::new("docker")
+    crate::tools::silent_command("docker")
         .args(["info", "--format", "{{.ServerVersion}}"])
         .output()
         .map(|o| o.status.success())

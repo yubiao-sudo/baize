@@ -7,8 +7,6 @@
 //!   - [`CalendarEventsTool`]（`calendar_events`）：读取未来 N 天的日历事件（含重复事件展开），
 //!     返回结构化 JSON（主题/开始/结束/地点/会议类型）。Agent 可据此感知日程并配合 set_reminder 提醒。
 
-use std::process::Command;
-
 use serde_json::{json, Value};
 
 use crate::tools::{PermissionClass, Tool};
@@ -60,14 +58,14 @@ fn run_calendar_script(days: u64) -> Result<String, String> {
 
     // 探测 powershell（Windows 自带）或 pwsh
     let mut shell = "powershell";
-    let mut ok = Command::new(shell)
+    let mut ok = crate::tools::silent_command(shell)
         .args(["-NoProfile", "-Command", "exit 0"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
         shell = "pwsh";
-        ok = Command::new(shell)
+        ok = crate::tools::silent_command(shell)
             .args(["-NoProfile", "-Command", "exit 0"])
             .status()
             .map(|s| s.success())
@@ -75,7 +73,7 @@ fn run_calendar_script(days: u64) -> Result<String, String> {
     }
 
     let out = if ok {
-        Command::new(shell)
+        crate::tools::silent_command(shell)
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",

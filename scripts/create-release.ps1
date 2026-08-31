@@ -3,9 +3,9 @@
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
 
-$tag  = "v0.1.4"
-$name = "v0.1.4 · 自更新镜像回退"
-$body = "## 修复`n- 应用内更新下载失败：GitHub 直连被墙时自动回退 gh 加速镜像（直连 → gh-proxy.com → ghfast.top → ghproxy.net 按序尝试）`n- 注：从 v0.1.3 升级到 v0.1.4 本次需手动下载安装，之后的应用内自更新即具备镜像回退能力"
+$tag  = "v0.1.5"
+$name = "v0.1.5 · 白泽终端实时可见"
+$body = "## 新增`n- 命令行任务优先在「白泽终端」窗口真实执行：命令与输出实时滚动可见，会话状态延续（cd/环境变量），ps_exec 降为后台后备`n## 修复`n- 黑窗闪窗二次清剿：docker 探测、winget、ffmpeg/whisper、tesseract、powershell 邮件/日历、python/node 沙箱等残留窗口全部隐藏，子进程启动 100% 无黑窗"
 
 $credFile = Join-Path $env:USERPROFILE ".git-credentials"
 $token = $null

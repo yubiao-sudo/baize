@@ -30,7 +30,7 @@ struct CmdOut {
 /// 以超时方式执行命令，后台线程读 stdout/stderr 避免输出量大时死锁
 fn run(program: &str, args: &[&str], timeout_secs: u64) -> Result<CmdOut, String> {
     let start = std::time::Instant::now();
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::tools::silent_command(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -96,7 +96,7 @@ where
     H: FnMut(u64),
 {
     let start = Instant::now();
-    let mut child = std::process::Command::new(program)
+    let mut child = crate::tools::silent_command(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

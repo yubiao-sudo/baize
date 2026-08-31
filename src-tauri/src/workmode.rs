@@ -557,7 +557,7 @@ fn execute_script_sandboxed(name: &str, lang: &str, code: &str) -> String {
         return format!("写脚本失败: {e}");
     }
 
-    let mut cmd = std::process::Command::new(prog);
+    let mut cmd = crate::tools::silent_command(prog);
     cmd.arg(&script).current_dir(&sandbox);
     apply_sandbox_env(&mut cmd, &sandbox);
     run_child_sandboxed(cmd)

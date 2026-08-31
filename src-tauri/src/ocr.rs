@@ -261,7 +261,7 @@ mod ocr_tests {
 }
 
 fn run_tesseract(path: &str, lang: &str) -> Result<(String, String), String> {
-    let output = std::process::Command::new("tesseract")
+    let output = crate::tools::silent_command("tesseract")
         .arg(path)
         .arg("stdout")
         .args(["-l", lang])
