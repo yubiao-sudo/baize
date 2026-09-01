@@ -111,6 +111,12 @@ impl SecurityManager {
         self.pending.lock().unwrap().values().cloned().collect()
     }
 
+    /// 注册一个外部构造的审批请求（如 plan_confirm 计划确认），进入统一审批链：
+    /// 前端审批卡 / 消息中心 / IM 回复「允许」均可 resolve
+    pub fn submit_request(&self, req: PermissionRequest) {
+        self.pending.lock().unwrap().insert(req.id.clone(), req);
+    }
+
     pub fn pending_by_id(&self, id: &str) -> Option<PermissionRequest> {
         self.pending.lock().unwrap().get(id).cloned()
     }

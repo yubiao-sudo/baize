@@ -10,7 +10,6 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 use crate::model::ChatMessage;
-use crate::task::Todo;
 use crate::AppState;
 
 use super::runtime::cancellable_chat_with_tier;
@@ -50,7 +49,9 @@ impl<'a> Supervisor<'a> {
         self
     }
 
-    /// 监督执行：拆解 todo → 执行 → 标记完成 → （可选）审查
+    /// 监督执行：回答 → 标记完成 → （可选）审查。
+    /// 预拆解已移除：多步任务的计划改由模型在回答过程中用 plan_confirm 提交，
+    /// 用户在聊天卡片/消息中心/IM 上确认后再执行——首响应不再等任何拆解调用
     pub async fn run(&self, message: &str, history: Vec<ChatMessage>) -> Result<String, String> {
         if self.state.cancel.load(Ordering::SeqCst) {
             return Ok("已停止。".to_string());
@@ -74,51 +75,11 @@ impl<'a> Supervisor<'a> {
         self.state.cancel.store(false, Ordering::SeqCst);
         crate::tools::clear_global_cancel();
 
-        // 1) 任务拆解 → todo 列表（仅对疑似多步骤任务拆解；简单问答直接跳过）
-        //    拆解与回答并行执行：拆解不再阻塞回答的首个 token
-        let plan_enabled = needs_planning(message);
-        let plan_fut = async {
-            if !plan_enabled {
-                return;
-            }
-            let _ = self.app.emit(
-                "thought",
-                json!({ "kind": "thinking", "label": "拆解任务", "detail": "正在分析任务步骤…" }),
-            );
-            self.state.log_thought("thinking", "拆解任务", "正在分析任务步骤…");
-            let mut todos = self.plan_todos(message).await;
-            if todos.len() >= 2 {
-                let _ = self.app.emit(
-                    "thought",
-                    json!({
-                        "kind": "plan",
-                        "label": format!("拆解为 {} 步", todos.len()),
-                        "detail": todos.iter().map(|t| t.title.as_str()).collect::<Vec<_>>().join(" → "),
-                    }),
-                );
-                self.state.log_thought(
-                    "plan",
-                    &format!("拆解为 {} 步", todos.len()),
-                    &todos.iter().map(|t| t.title.as_str()).collect::<Vec<_>>().join(" → "),
-                );
-                if let Some(first) = todos.first_mut() {
-                    first.status = "in_progress".to_string();
-                }
-                *self.state.todos.lock().unwrap() = todos.clone();
-                crate::task::save_task_checkpoint(&self.state.store, &todos);
-                crate::task::emit_todo_list(self.app, &todos);
-            }
-        };
-
-        // 2) Executor：AgentLoop 执行（与拆解并行；模型可用 todo_update 工具更新进度）
+        // Executor：AgentLoop 直接回答/执行（模型可用 todo_update 维护 plan_confirm 注册的步骤进度）
         let executor = AgentLoop::new(self.app, self.state).with_project(self.project.clone());
-        let (_, answer) = tokio::join!(
-            plan_fut,
-            executor.run(message, history),
-        );
-        let answer = answer?;
+        let answer = executor.run(message, history).await?;
 
-        // 3) 完成：把所有步骤标为 completed（若已拆解出步骤）
+        // 完成：把所有步骤标为 completed（若 plan_confirm 注册过步骤）
         {
             let mut t = self.state.todos.lock().unwrap();
             if !t.is_empty() {
@@ -132,7 +93,7 @@ impl<'a> Supervisor<'a> {
             }
         }
 
-        // 4) Critic：自我审查（可选，默认关闭）
+        // Critic：自我审查（可选，默认关闭）
         if REFLECT {
             if self.state.cancel.load(Ordering::SeqCst) {
                 return Ok("已停止。".to_string());
@@ -141,31 +102,6 @@ impl<'a> Supervisor<'a> {
         }
 
         Ok(answer)
-    }
-
-    /// 让模型把任务拆解成步骤列表（简单问答返回空数组）
-    async fn plan_todos(&self, message: &str) -> Vec<Todo> {
-        let prompt = format!(
-            "把下面的用户请求拆解成 2-6 个可执行的步骤。\
-             注意：写文章、写报告、写文档、写总结、做调研、整理资料、分析问题等都属于多步骤任务，必须拆解成多个步骤，不要返回空数组。\
-             只有真正的简单问题（一句话就能直接回答、无需任何工具操作）才返回空数组 []。\
-             只输出 JSON 数组，每项格式 {{\"title\":\"步骤描述\"}}，不要任何解释：\n\n{message}"
-        );
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-        // 规划用云端强模型（无云端时回退到默认路由）
-        if let Ok(resp) = cancellable_chat_with_tier(self.state, ModelTier::Cloud, &msgs, &[]).await {
-            if let Some(text) = resp.content {
-                if let Ok(todos) = crate::task::parse_todos(&text) {
-                    return todos;
-                }
-            }
-        }
-        Vec::new()
     }
 
     async fn review(&self, message: &str, answer: &str) {
@@ -195,27 +131,4 @@ impl<'a> Supervisor<'a> {
             }
         }
     }
-}
-
-/// 判断是否需要「任务拆解」这一步。
-/// 拆解会额外触发一次完整模型调用（非流式、优先云端/回退本地），是每轮对话延迟的主要来源。
-/// 仅对「疑似多步骤」的请求拆解：含明确动作信号或文本较长；简单短问句直接跳过以避免空耗一次模型调用。
-fn needs_planning(message: &str) -> bool {
-    let m = message.trim();
-    if m.is_empty() {
-        return false;
-    }
-    const TRIGGERS: &[&str] = &[
-        "写", "生成", "创建", "分析", "调研", "整理", "下载", "搜索", "列出", "对比",
-        "总结", "报告", "文档", "测试", "安装", "运行", "修复", "实现", "设计", "转换",
-        "构建", "部署", "配置", "开发", "优化", "重构", "批量", "步骤", "教程", "文章",
-        "代码", "编译", "脚本", "执行", "规划", "安排", "爬取", "采集", "同步", "备份",
-        "迁移", "清理", "摘要",
-        "按住", "选中", "框选", "拖拽", "点击", "鼠标", "快捷键", "截屏", "屏幕",
-    ];
-    if TRIGGERS.iter().any(|k| m.contains(k)) {
-        return true;
-    }
-    // 较长文本通常蕴含多步骤需求，保留拆解
-    m.chars().count() > 24
 }

@@ -179,6 +179,47 @@ function PermissionCards() {
     <>
       {pending.map((req) => {
         const esc = escalations[req.id];
+        // 计划确认卡：plan_confirm 提交的多步任务计划（确认后才执行）
+        if (req.tool === "plan_confirm") {
+          const plan = (req.detail ?? {}) as { title?: string; steps?: string[] };
+          return (
+            <div key={req.id} className="acui-card permission">
+              <div className="acui-head">
+                <span className="agent">泽</span>
+                <span>任务计划 · 等待确认</span>
+              </div>
+              <div className="acui-body">
+                <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--text)" }}>
+                  {plan.title || "任务计划"}
+                </div>
+                <ol className="plan-steps">
+                  {(plan.steps || []).map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ol>
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
+                  确认后白泽按步骤执行（15 分钟内有效）；手机 IM 上回复「允许/拒绝」同样生效。
+                </div>
+              </div>
+              <ChannelNote channels={channels[req.id]} />
+              <EscalationBar esc={esc} />
+              <div className="acui-actions">
+                <button
+                  className="acui-btn danger"
+                  onClick={() => void decide(req.id, false, false)}
+                >
+                  取消
+                </button>
+                <button
+                  className="acui-btn primary"
+                  onClick={() => void decide(req.id, true, false)}
+                >
+                  开始执行
+                </button>
+              </div>
+            </div>
+          );
+        }
         // 软件安装用专用富卡片
         if (req.tool === "software_install" && req.detail) {
           return (

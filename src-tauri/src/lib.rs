@@ -232,6 +232,7 @@ impl AppState {
         tools.register(Box::new(capability::GuiUndoTool::new(capability.clone())));
         // 回退原则第 1 级：批量派发前登记预期状态，批尾自动校验正确性
         tools.register(Box::new(agent::ExpectedStateTool));
+        tools.register(Box::new(agent::PlanConfirmTool));
         // 万能聊天卡片：模型推送 HTML 卡片在聊天框中精美展示结构化信息（天气/日程等）
         tools.register(Box::new(agent::ChatCardTool));
         // 快捷启动应用：开始菜单索引 + UWP + 等窗返回（GUI 任务提速）

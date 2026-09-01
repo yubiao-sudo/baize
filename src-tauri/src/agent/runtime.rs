@@ -156,6 +156,42 @@ impl crate::tools::Tool for ExpectedStateTool {
     }
 }
 
+/// plan_confirm：多步任务计划确认工具（schema 供模型查看；调用在 AgentLoop 派发层拦截异步处理）
+pub struct PlanConfirmTool;
+
+impl crate::tools::Tool for PlanConfirmTool {
+    fn name(&self) -> &str {
+        "plan_confirm"
+    }
+    fn description(&self) -> &str {
+        "提交多步任务计划并等待用户确认（聊天界面弹确认卡，也可在 IM 上回复允许）。\
+         多步骤任务（安装软件/批量整理/多应用操作/调研+写文档等需要连续 ≥2 个操作）先一句话说明情况，\
+         再用本工具提交 2-8 步计划；用户确认后才继续执行。简单问答与单步操作不要调用。\
+         用户已明确说「直接做/别问」时跳过本工具直接执行"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "任务名（一句话概括要做什么）" },
+                "steps": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "执行步骤（2-8 条，每条一句话，具体可执行）"
+                }
+            },
+            "required": ["title", "steps"]
+        })
+    }
+    fn permission(&self) -> crate::tools::PermissionClass {
+        crate::tools::PermissionClass::ReadOnly
+    }
+    fn run(&self, _args: Value) -> Result<Value, String> {
+        // 真正的确认流程在 AgentLoop 派发层异步拦截处理（需要等待用户决策）
+        Ok(json!({ "ok": true, "note": "已提交计划" }))
+    }
+}
+
 fn is_gui_task(message: &str) -> bool {
     const GUI_KEYWORDS: &[&str] = &[
         "点击", "双击", "右键", "拖拽", "按住", "选中", "框选", "鼠标", "shift", "ctrl",
@@ -178,6 +214,7 @@ const PROMPT_CORE: &str = r#"你是白泽，一个本地优先的桌面助手。
 当指令来自微信/飞书消息且回复需要附截图或图片时，调用 wechat_send_image 工具（path 传图片本地路径即可真实发出图片消息，不要把文件路径当文字回复）；回复文本中的截图路径系统也会自动转成图片消息。wechat_send_image 是白泽的内部工具，只能作为工具调用，严禁把它当命令行程序丢给 run_command/ps_exec 执行。
 你运行在 Windows 系统上。执行命令行操作、运行脚本、构建项目、安装依赖、查看进程等任务时，优先使用 terminal_send 工具（在「白泽终端」窗口里真实执行，用户能实时看到命令与滚动输出，体验最佳；首次调用会自动打开终端窗口；返回终端输出文本供你判断成败，失败就分析纠正重试；长命令把 timeout_ms 调大，如构建/安装传 60000~120000；同一终端会话状态延续，cd/环境变量设置对后续命令持续生效）。ps_exec 作为后备：需要结构化 stdout/stderr/exit_code、无需展示的后台快速命令时用它。两者不要对同一条命令混用。
 执行命令后检查输出中的错误信息（如 error、failed、not found、cannot），失败则分析原因并纠正后重试。
+多步骤任务的处理方式（重要）：需要连续执行 ≥2 个操作才能完成的任务（如安装软件、批量整理、多应用操作、调研后写文档等），先用一句话向用户说明你打算做什么，然后调用 plan_confirm 工具提交 2-8 步计划（title=任务名，steps=步骤数组，每条具体可执行），等用户确认后再开始执行；确认后用 todo_update 把步骤标记为 in_progress/completed。用户已明确说「直接做 / 别问 / 马上执行」时跳过 plan_confirm 直接执行。简单问答、单步操作、纯查询不要调用 plan_confirm。
 回答中可自行对关键的结论、数字、术语、文件路径或需要用户注意的内容用 ==文字== 包裹做高亮强调（例如 ==重点==），其余保持普通文本，不要过度使用。
 当用户请求不清晰、缺少关键参数或存在歧义时，先向用户提出一个简短的澄清问题（例如「你指的是哪个文件？」「要写到哪里？」），等用户回复后再继续，不要擅自假设或直接执行。"#;
 
@@ -853,6 +890,18 @@ impl<'a> AgentLoop<'a> {
                     crate::windows::push_step(self.app, &format!("▶ {} {}", name, brief));
                 }
 
+                // ── plan_confirm：计划确认拦截（提交计划 → 统一审批链等待用户决策 → 注册 todo） ──
+                if name == "plan_confirm" {
+                    let output = handle_plan_confirm(self.app, self.state, &args).await;
+                    messages.push(ChatMessage {
+                        role: "tool".into(),
+                        content: output.to_string(),
+                        tool_calls: None,
+                        tool_call_id: Some(call_id),
+                    });
+                    continue;
+                }
+
                 let tool = match self.state.tools.get(&name) {
                     Some(t) => t.clone(),
                     None => {
@@ -1230,6 +1279,86 @@ impl<'a> AgentLoop<'a> {
 /// 带升级通知的审批等待：启动升级链，用户在超时前响应则返回决定
 /// `what`: 简短标题（Agent 动态生成或回退）
 /// `detail`: 带上下文的人性化消息（Agent 动态生成或回退）
+/// plan_confirm 处理：提交计划 → 统一审批链（前端确认卡/消息中心/IM 回复均可批准）→
+/// 确认后注册 todo 供 AgentLoop 逐步执行。取消/超时(15min)返回未批准，由模型礼貌收尾
+async fn handle_plan_confirm(app: &AppHandle, state: &AppState, args: &Value) -> Value {
+    let title = args["title"].as_str().unwrap_or("").trim().to_string();
+    let steps: Vec<String> = args["steps"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(|x| x.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if title.is_empty() || steps.len() < 2 {
+        return json!({
+            "error": "plan_confirm 需要 title 与至少 2 条 steps；简单任务直接执行即可，不要调用本工具"
+        });
+    }
+    let steps: Vec<String> = steps.into_iter().take(8).collect();
+
+    // 构造计划审批请求，进入统一审批链（前端审批卡 / 消息中心 / IM 均可批准）
+    let detail = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format!("{}. {}", i + 1, s))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let req = crate::security::PermissionRequest {
+        id: format!("plan-{}", uuid::Uuid::new_v4()),
+        tool: "plan_confirm".to_string(),
+        args: json!({ "title": title, "steps": steps }),
+        class: crate::tools::PermissionClass::HighRisk,
+        detail: Some(json!({ "title": title, "steps": steps })),
+    };
+    let id = req.id.clone();
+    state.security.submit_request(req);
+    let _ = app.emit(
+        "permission-request",
+        &state.security.pending_by_id(&id).unwrap(),
+    );
+    let what = format!("任务计划：{title}");
+
+    // IM 二次确认：手机上回复「允许 / 拒绝」同样生效
+    let channels = state.im_bus.push_approval(&id, &what, &detail).await;
+    let _ = app.emit(
+        "permission-channel",
+        json!({ "approval_id": id, "channels": channels }),
+    );
+
+    let approved = wait_for_decision_with_escalation(app, state, &state.security, &id, &what, &detail)
+        .await;
+
+    if !approved {
+        return json!({
+            "ok": true,
+            "approved": false,
+            "note": "用户未确认或已取消：不要执行该计划，礼貌收尾并告知用户「需要时说一声即可开始」"
+        });
+    }
+
+    // 注册 todo（第一步置为进行中）并广播，交由 AgentLoop 用 todo_update 维护进度
+    let todos: Vec<crate::task::Todo> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| crate::task::Todo {
+            id: i,
+            title: s.clone(),
+            status: if i == 0 { "in_progress".into() } else { "pending".into() },
+        })
+        .collect();
+    *state.todos.lock().unwrap() = todos.clone();
+    crate::task::save_task_checkpoint(&state.store, &todos);
+    crate::task::emit_todo_list(app, &todos);
+    json!({
+        "ok": true,
+        "approved": true,
+        "note": "用户已确认计划：按步骤依次执行，用 todo_update 把步骤标记为 in_progress/completed"
+    })
+}
+
 async fn wait_for_decision_with_escalation(
     app: &AppHandle,
     state: &AppState,

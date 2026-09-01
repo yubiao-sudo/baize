@@ -15,6 +15,7 @@ const SchedulePanel = lazy(() => import("./components/SchedulePanel"));
 const WorkflowPanel = lazy(() => import("./components/WorkflowPanel"));
 const PlazaPanel = lazy(() => import("./components/PlazaPanel"));
 const ImLogPanel = lazy(() => import("./components/ImLogPanel"));
+const MessageCenterPanel = lazy(() => import("./components/MessageCenterPanel"));
 const MeetingRoomPanel = lazy(() => import("./components/MeetingRoomPanel"));
 const ChromePanel = lazy(() => import("./components/ChromePanel"));
 const UiTestPanel = lazy(() => import("./components/UiTestPanel"));
@@ -174,6 +175,7 @@ const TB_MENU_ITEMS: Array<{ label: string; panel: string }> = [
 
 export default function App() {
   const addPending = useChat((s) => s.addPending);
+  const pendingCount = useChat((s) => s.pending.length);
   const addThought = useChat((s) => s.addThought);
   const setTodos = useChat((s) => s.setTodos);
   const appendStream = useChat((s) => s.appendStream);
@@ -570,6 +572,9 @@ export default function App() {
                       }}
                     >
                       {item.label}
+                      {item.panel === "messages" && pendingCount > 0 && (
+                        <span className="tb-menu-badge">{pendingCount}</span>
+                      )}
                     </button>
                   ))}
                   {workMode === "qa-engineer" && (
@@ -656,6 +661,8 @@ export default function App() {
             <PlazaPanel onClose={closePanel} />
           ) : activePanel === "imlog" ? (
             <ImLogPanel onClose={closePanel} />
+          ) : activePanel === "messages" ? (
+            <MessageCenterPanel onClose={closePanel} />
           ) : activePanel === "meeting" ? (
             <MeetingRoomPanel onClose={closePanel} />
           ) : activePanel === "chrome" ? (
