@@ -585,6 +585,18 @@ export async function onThought(cb: (t: ThoughtEvent) => void): Promise<() => vo
   return unlisten;
 }
 
+/** 心跳事件（后端 HeartbeatCenter 广播）：a=活跃度 0~1，p=窗口内有新脉冲 */
+export interface VitalEvent {
+  a: number;
+  p: boolean;
+}
+
+/** 订阅系统心跳（银河背景星光随心跳明灭） */
+export async function onVital(cb: (v: VitalEvent) => void): Promise<() => void> {
+  const unlisten = await listen<VitalEvent>("baize:vital", (e) => cb(e.payload));
+  return unlisten;
+}
+
 /** 订阅「记忆召回」事件（携带实际召回的记忆 id，供意识网络精确高亮） */
 export async function onMemoryRecall(cb: (ids: string[]) => void): Promise<() => void> {
   const unlisten = await listen<{ ids: string[] }>("memory-recall", (e) => cb(e.payload.ids));

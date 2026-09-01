@@ -329,7 +329,7 @@ pub fn restore_main_window(app: &AppHandle) {
     });
 }
 
-/// 确保底部弹幕浮窗存在并显示（透明、无边框、置顶、鼠标穿透）
+/// 确保顶部弹幕横幅浮窗存在并显示（透明、无边框、置顶、鼠标穿透）
 pub fn ensure_step_window(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -341,6 +341,12 @@ pub fn ensure_step_window(app: &AppHandle) {
             return;
         }
         let (w, h, x, y) = top_bar_geometry(&handle);
+        diag_log(&format!(
+            "[弹幕] 创建步骤横幅 geometry=({x:.0},{y:.0} {w:.0}x{h:.0})"
+        ));
+        // 与光圈覆盖层同款创建序列：先隐藏创建 → 配置穿透/置顶 → 再显示。
+        // 透明窗口「先显示后设穿透」在部分 WebView2 环境会触发合成层竞态导致进程崩溃
+        // （GUI 自动化时上方横幅一出现就崩的主嫌疑）；halo 用此序列已稳定运行数天
         match WebviewWindowBuilder::new(&handle, "step", WebviewUrl::App("index.html#/step".into()))
             .title("白泽 · 步骤")
             .decorations(false)
@@ -351,14 +357,20 @@ pub fn ensure_step_window(app: &AppHandle) {
             .resizable(false)
             .inner_size(w, h)
             .position(x, y)
+            .visible(false)
             .build()
         {
             Ok(win) => {
                 // 鼠标穿透：弹幕浮窗不拦截对桌面/目标窗口的点击；并锁死最高层
                 let _ = win.set_ignore_cursor_events(true);
                 let _ = win.set_always_on_top(true);
+                let _ = win.show();
+                diag_log("[弹幕] 步骤横幅创建成功并已显示");
             }
-            Err(e) => eprintln!("[窗口] 创建步骤浮窗失败: {e}"),
+            Err(e) => {
+                eprintln!("[窗口] 创建步骤浮窗失败: {e}");
+                diag_log(&format!("[弹幕] 创建步骤横幅失败: {e}"));
+            }
         }
     });
 }

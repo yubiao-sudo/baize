@@ -7,6 +7,7 @@ mod capability;
 mod clipboard;
 mod commands;
 mod datapipeline;
+mod heartbeat;
 mod document;
 mod email;
 mod embedding;
@@ -559,6 +560,19 @@ pub(crate) fn load_mcp_config(store: &MemoryStore) -> mcp::McpConfig {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 全局 panic 钩子：任何线程 panic 都落盘 exe 同目录 baize-crash.log（附时间与线程名），
+    // GUI 场景控制台不可见，此前崩溃无现场可查——这是「横幅出现就崩」类问题的取证通道
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let line = format!(
+            "[崩溃] {} | 线程: {}",
+            info,
+            thread.name().unwrap_or("<unnamed>")
+        );
+        eprintln!("{line}");
+        crate::windows::diag_log(&line);
+    }));
+
     tauri::Builder::default()
         // 单实例保护（必须最先注册）：双开白泽时旧实例的孤儿清理会误杀新实例的
         // 受控 Chrome 进程（profile 目录互踩），第二个实例启动时聚焦已有窗口并退出
@@ -897,6 +911,9 @@ pub fn run() {
 
             // 后台启动主动心跳（长期未互动 → 主动问候，每日限流）
             proactive::run_heartbeat(app.handle().clone());
+
+            // 统一心跳中心：聚合子系统打点 → baize:vital 广播（银河背景星光随心跳明灭）
+            heartbeat::init(app.handle().clone());
 
             // 后台记忆治理守护：每日一次 去重合并 + 衰减清理（星图更干净）
             {

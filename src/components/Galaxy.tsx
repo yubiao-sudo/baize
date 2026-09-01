@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { onVital } from "../api";
 
 /** 近似高斯随机（三次均匀随机求和居中） */
 const gauss = () => Math.random() + Math.random() + Math.random() - 1.5;
@@ -56,6 +57,7 @@ interface BandStar {
   dim: number; // 暗尘带压暗系数
   halo?: string; // 亮星彩色光晕（群星堆积处的「多彩星」）
   drift: number; // 沿河漂移速度（s/秒），极缓慢的「看着像在动又没动」
+  beatStar: boolean; // 心跳星：系统心跳脉冲时强闪的「灯塔」（约 1.5% 星星）
 }
 
 /** 暗色星色 → 浅色主题下的对应暗色（浅底上可见） */
@@ -134,6 +136,17 @@ export default function Galaxy() {
       attributeFilter: ["data-theme"],
     });
 
+    // ── 系统心跳：活跃度 + 脉冲（来自后端 HeartbeatCenter，驱动星光明灭） ──
+    // 全部走闭包变量/ref，不触发任何 React 渲染
+    let vitalActivity = 0; // 最近一次广播的活跃度（0~1）
+    let act = 0; // 前端平滑后的活跃度
+    let lastPulseAt = 0; // 最近一次脉冲到达时刻（performance.now 时基）
+    let unVital: (() => void) | undefined;
+    void onVital((v) => {
+      vitalActivity = v.a;
+      if (v.p) lastPulseAt = performance.now();
+    }).then((f) => (unVital = f));
+
     // ── 星带粒子：直线星河 + 高斯横向散布 + 中央暗尘带 ──
     const band: BandStar[] = [];
     const N = 2600;
@@ -179,6 +192,8 @@ export default function Galaxy() {
               ]
             : undefined,
         drift: 0.0005 + 0.0022 * depth,
+        // 心跳星：不在暗尘带里的星星中抽 ~1.5% 担任「灯塔」
+        beatStar: !inRift && Math.random() < 0.015,
       });
     }
 
@@ -281,6 +296,7 @@ export default function Galaxy() {
     // 性能：30fps 限帧（星空动效足够顺滑，渲染量减半）+ 页面隐藏时整循环暂停
     const FRAME_MS = 33;
     let paused = false;
+    let breathePhase = 0; // 呼吸相位（频率随活跃度可变，故用累加器而非 t 直乘）
     const onVisibility = () => {
       paused = document.hidden;
       if (paused) {
@@ -299,6 +315,11 @@ export default function Galaxy() {
       last = now;
       t += dt;
 
+      // ── 心跳信号：活跃度平滑 + 脉冲强度（1.2s 指数衰减）+ 传导波前（银心→两端 1.5s） ──
+      act += (vitalActivity - act) * Math.min(1, dt * 3);
+      const pulse = lastPulseAt > 0 ? Math.exp(-Math.max(0, now - lastPulseAt) / 1200) : 0;
+      const waveR = (Math.max(0, now - lastPulseAt) / 1500) * 0.65;
+
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
@@ -312,12 +333,14 @@ export default function Galaxy() {
       ctx.fillStyle = amb;
       ctx.fillRect(0, 0, w, h);
       // 2) 沿河铺设软边光斑——精灵版（无硬边，中心密两端稀）
-      const breathe = 0.92 + 0.08 * Math.sin(t * 0.12); // 极缓慢的呼吸
+      // 呼吸频率随活跃度加快（空闲 ~8s/周期 → 忙碌 ~3s），忙时整体略亮
+      breathePhase += (0.12 + act * 0.25) * dt;
+      const breathe = 0.92 + 0.08 * Math.sin(breathePhase) + 0.03 * act;
       for (let s = 0.02; s <= 0.99; s += 0.018) {
         const [bx, by] = bez(s);
         const midK = Math.max(0, 1 - Math.abs(s - 0.5) * 1.3);
         const radius = 140 + 220 * midK;
-        const a = (0.002 + 0.005 * midK) * breathe;
+        const a = (0.002 + 0.005 * midK) * breathe * (1 + 0.12 * pulse);
         drawGlow(ctx, "150,195,255", bx, by, radius, a);
       }
       ctx.globalAlpha = 1;
@@ -355,11 +378,21 @@ export default function Galaxy() {
         const x = bx + nx * st.off;
         const y = by + ny * st.off;
         const tw = 0.55 + 0.45 * Math.sin(t * st.tw + st.ph);
+        // 心跳传导波：亮度波前从银心扫向两端，扫过谁谁微亮（+10% 峰值）
+        const d = Math.abs(sc - 0.46);
+        const bump = pulse * Math.exp(-Math.pow(d - waveR, 2) / 0.006);
+        // 心跳星「灯塔」强闪：脉冲时彩色光晕 + 亮度倍增
+        if (st.beatStar && pulse > 0.15 && !themeLight) {
+          drawGlow(ctx, "150,195,255", x, y, st.sz * 9, 0.22 * pulse);
+        }
         // 亮星彩色光晕：精灵合成（浅色下停用，浅底上会发灰）
         if (st.halo && !themeLight) {
           drawGlow(ctx, st.halo, x, y, st.sz * 7, 0.05 * st.base * st.dim * tw);
         }
-        ctx.globalAlpha = st.base * st.dim * tw * (themeLight ? 0.75 : 1);
+        ctx.globalAlpha = Math.min(
+          1,
+          st.base * st.dim * tw * (themeLight ? 0.75 : 1) * (1 + 0.1 * bump) * (st.beatStar ? 1 + pulse * 1.2 : 1),
+        );
         ctx.fillStyle = themeLight ? `rgb(${st.colLight})` : `rgb(${st.col})`;
         ctx.fillRect(x - st.sz / 2, y - st.sz / 2, st.sz, st.sz);
       }
@@ -439,6 +472,7 @@ export default function Galaxy() {
       window.removeEventListener("resize", resize);
       document.removeEventListener("visibilitychange", onVisibility);
       themeMo.disconnect();
+      unVital?.();
     };
   }, []);
 

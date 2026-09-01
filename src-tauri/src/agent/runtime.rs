@@ -525,6 +525,7 @@ impl<'a> AgentLoop<'a> {
     /// 运行一轮对话：规划 → 执行（含工具调用/审批）→ 反思 → 完成
     pub async fn run(&self, message: &str, history: Vec<ChatMessage>) -> Result<String, String> {
         self.phase(AgentPhase::Planning);
+        crate::heartbeat::beat("round");
         // 新一轮任务开始：清空 GUI 关键帧日志，避免混入上一轮的截屏
         crate::replay::clear_keyframes();
         // 清空上一轮残留的聊天卡片（chat_card 槽位与关键帧同生命周期）
@@ -1078,6 +1079,8 @@ impl<'a> AgentLoop<'a> {
                 self.state.log_thought("tool_result", &result_label, &output.to_string());
                 // 接管看门狗心跳：工具完成仍活跃
                 crate::takeover::touch_activity();
+                // 统一心跳：银河背景星光随工具节律明灭
+                crate::heartbeat::beat("tool");
 
                 // 接管期间：结果状态推弹幕（✓/✕），点击类工具在目标位置闪一圈光环
                 if crate::takeover::is_active() {
