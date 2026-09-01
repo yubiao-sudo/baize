@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getMemoryGraph, onMemoryRecall } from "../api";
+import { deleteMemoryById, getMemoryGraph, listMemoriesPanel, onMemoryRecall, pinMemoryById } from "../api";
 import type { MemoryGraph, MemoryRow } from "../types";
 
 /**
@@ -8,6 +8,7 @@ import type { MemoryGraph, MemoryRow } from "../types";
  * - 记忆间关联画成极淡的星链
  * - 白泽检索记忆时光线从星图射回（视觉上「取回记忆」）
  * - 顶部搜索即时点亮匹配星、压暗其余
+ * - 「列表」视图：按类型浏览明细，支持置顶（提升召回权重）与删除
  */
 
 const KIND_COLOR: Record<string, string> = {
@@ -17,7 +18,36 @@ const KIND_COLOR: Record<string, string> = {
   event: "#fbbf24",
   person: "#a78bfa",
   topic: "#22d3ee",
+  lesson: "#fb7185",
+  recipe: "#2dd4bf",
+  task: "#c084fc",
+  episodic: "#94a3b8",
 };
+
+const KIND_LABEL: Record<string, string> = {
+  fact: "事实",
+  preference: "偏好",
+  skill: "技能",
+  event: "事件",
+  person: "人物",
+  topic: "话题",
+  lesson: "经验",
+  recipe: "配方",
+  task: "任务",
+  episodic: "情景",
+  project: "项目",
+  habit: "习惯",
+};
+
+/** 列表视图的类型页签（全部 + 高价值类型优先） */
+const KIND_TABS: { key: string; label: string }[] = [
+  { key: "", label: "全部" },
+  { key: "lesson", label: "经验" },
+  { key: "recipe", label: "配方" },
+  { key: "task", label: "任务" },
+  { key: "preference", label: "偏好" },
+  { key: "fact", label: "事实" },
+];
 
 function hashPos(id: string): number {
   let h = 2166136261;
@@ -42,10 +72,37 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
   const [graph, setGraph] = useState<MemoryGraph | null>(null);
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<MemoryRow | null>(null);
+  const [view, setView] = useState<"map" | "list">("map");
+  const [rows, setRows] = useState<MemoryRow[]>([]);
+  const [kindTab, setKindTab] = useState("");
   const queryRef = useRef("");
   queryRef.current = query;
   const pickedRef = useRef<MemoryRow | null>(null);
   pickedRef.current = picked;
+
+  const loadRows = (kind: string) => {
+    void listMemoriesPanel(kind || undefined)
+      .then(setRows)
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (view === "list") loadRows(kindTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, kindTab]);
+
+  const handlePin = async (id: string) => {
+    await pinMemoryById(id).catch(() => {});
+    loadRows(kindTab);
+    void getMemoryGraph().then(setGraph).catch(() => {});
+  };
+
+  const handleDelete = async (id: string) => {
+    await deleteMemoryById(id).catch(() => {});
+    setRows((r) => r.filter((x) => x.mem_id !== id));
+    setPicked(null);
+    void getMemoryGraph().then(setGraph).catch(() => {});
+  };
 
   useEffect(() => {
     void getMemoryGraph().then(setGraph).catch(() => {});
@@ -208,22 +265,85 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="galaxy-mask">
-      <canvas ref={canvasRef} className="galaxy-canvas" />
+      {view === "map" && <canvas ref={canvasRef} className="galaxy-canvas" />}
       <div className="galaxy-head">
         <span className="galaxy-title">✦ 记忆星图</span>
-        <input
-          className="galaxy-search"
-          placeholder="搜索记忆…（回车无效，即时过滤）"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoFocus
-        />
+        {view === "map" ? (
+          <input
+            className="galaxy-search"
+            placeholder="搜索记忆…（回车无效，即时过滤）"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+        ) : (
+          <div className="galaxy-tabs">
+            {KIND_TABS.map((t) => (
+              <button
+                key={t.key}
+                className={`galaxy-tab${kindTab === t.key ? " active" : ""}`}
+                onClick={() => setKindTab(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          className="galaxy-view-btn"
+          onClick={() => setView(view === "map" ? "list" : "map")}
+          title={view === "map" ? "切换到列表视图（可置顶/删除）" : "切换到星图视图"}
+        >
+          {view === "map" ? "☰ 列表" : "✦ 星图"}
+        </button>
         <button className="replay-close" onClick={onClose} title="关闭 (Esc)">
           ✕
         </button>
       </div>
-      {graph && graph.nodes.length === 0 && (
+      {view === "map" && graph && graph.nodes.length === 0 && (
         <div className="galaxy-empty">这片宇宙还很空——聊得越多，星星越多。</div>
+      )}
+      {view === "list" && (
+        <div className="galaxy-list">
+          {rows.length === 0 && <div className="galaxy-empty">该类型下暂无记忆。</div>}
+          {rows.map((m) => (
+            <div key={m.mem_id} className="galaxy-row" onClick={() => setPicked(m)}>
+              <span
+                className="galaxy-row-kind"
+                style={{
+                  color: KIND_COLOR[m.kind] || "#93c5fd",
+                  borderColor: (KIND_COLOR[m.kind] || "#93c5fd") + "66",
+                }}
+              >
+                {KIND_LABEL[m.kind] || m.kind}
+              </span>
+              <span className="galaxy-row-content">{m.content}</span>
+              <span className="galaxy-row-sal" title="显著度（置顶或常用心会提升）">
+                {m.salience}
+              </span>
+              <button
+                className="galaxy-row-btn"
+                title="置顶：提升召回权重"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handlePin(m.mem_id);
+                }}
+              >
+                ↑
+              </button>
+              <button
+                className="galaxy-row-btn del"
+                title="删除这条记忆"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleDelete(m.mem_id);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
       )}
       {picked && (
         <div className="galaxy-tip" onClick={() => setPicked(null)}>
@@ -232,7 +352,11 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
           <p>{picked.content}</p>
         </div>
       )}
-      <div className="galaxy-foot">点击星星查看记忆 · Esc 关闭 · 白泽检索记忆时光线会射向水球</div>
+      <div className="galaxy-foot">
+        {view === "map"
+          ? "点击星星查看记忆 · Esc 关闭 · 白泽检索记忆时光线会射向水球"
+          : "置顶提升召回优先级 · ✕ 删除 · Esc 关闭"}
+      </div>
     </div>
   );
 }

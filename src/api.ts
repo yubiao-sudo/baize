@@ -495,6 +495,21 @@ export async function getMemoryGraph(): Promise<MemoryGraph> {
   return invoke<MemoryGraph>("get_memory_graph");
 }
 
+/** 记忆看板明细：按 kind 过滤列出（空=全部），置顶（salience 降序）优先 */
+export async function listMemoriesPanel(kind?: string, limit = 200): Promise<MemoryRow[]> {
+  return invoke<MemoryRow[]>("list_memories_panel", { kind: kind || null, limit });
+}
+
+/** 删除一条记忆（按 mem_id） */
+export async function deleteMemoryById(memId: string): Promise<boolean> {
+  return invoke<boolean>("delete_memory_by_id", { memId });
+}
+
+/** 置顶记忆：salience +10 并刷新访问时间，召回排序优先 */
+export async function pinMemoryById(memId: string): Promise<boolean> {
+  return invoke<boolean>("pin_memory", { memId });
+}
+
 // ---------------- 知识库管理 ----------------
 
 export async function getRagState(): Promise<RagDoc[]> {

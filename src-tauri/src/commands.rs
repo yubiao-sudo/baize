@@ -1505,6 +1505,42 @@ pub fn forget_memory(state: State<'_, AppState>, keyword: String) -> Result<usiz
     state.store.forget_matching(&keyword)
 }
 
+/// 记忆看板明细：按 kind 过滤列出（None=全部），置顶（salience 降序）优先，再按最近访问
+#[tauri::command]
+pub async fn list_memories_panel(
+    state: State<'_, AppState>,
+    kind: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<crate::memory::MemoryRow>, String> {
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.list_memories_by_kind(kind.as_deref(), limit.unwrap_or(200).max(1) as usize)
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
+/// 删除一条记忆（按 mem_id），返回是否存在并删除
+#[tauri::command]
+pub async fn delete_memory_by_id(
+    state: State<'_, AppState>,
+    mem_id: String,
+) -> Result<bool, String> {
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || store.delete_memory(&mem_id))
+        .await
+        .map_err(|e| format!("任务失败: {e}"))?
+}
+
+/// 置顶记忆：salience +10（上限 100）并刷新访问时间，召回排序优先
+#[tauri::command]
+pub async fn pin_memory(state: State<'_, AppState>, mem_id: String) -> Result<bool, String> {
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || store.pin_memory(&mem_id))
+        .await
+        .map_err(|e| format!("任务失败: {e}"))?
+}
+
 // ---------------- 知识库管理（RAG） ----------------
 
 #[tauri::command]

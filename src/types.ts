@@ -252,9 +252,12 @@ export interface ThoughtEvent {
     | "author_tool"
     | "test_pipeline"
     | "subagent"
+    | "queue"
     | "saying";
   label: string;
   detail: string;
+  /** 工具执行耗时（毫秒），仅 tool_result 事件携带，用于执行流耗时显示 */
+  duration_ms?: number;
   /** 进度百分比（0-100），仅 tool_progress 类事件携带，用于渲染进度条 */
   progress?: number;
   /** 单元标题（如用例标题），test_pipeline「自动执行」逐条进度携带 */

@@ -48,7 +48,16 @@ function dropRedundantExecPhase<T extends ThoughtEvent>(thoughts: T[]): T[] {
 }
 
 // 合并「调用工具 · x」「工具完成 · x」为一条，状态用 √/✕ 展示；夹在中间的 phase/审批等事件保持原位
-type MergedThought = ThoughtEvent & { status?: "success" | "failed"; callArgs?: string };
+type MergedThought = ThoughtEvent & { status?: "success" | "failed"; callArgs?: string; dur?: string };
+
+/** 从工具结果 label 尾巴提取耗时（后端 label 形如「工具完成 · x · 1.2s」，回放事件无 duration_ms 字段） */
+function parseDur(label: string, durationMs?: number): string | undefined {
+  if (typeof durationMs === "number" && durationMs >= 0) {
+    return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${durationMs}ms`;
+  }
+  const m = /·\s*([\d.]+(?:ms|s))\s*$/.exec(label);
+  return m ? m[1] : undefined;
+}
 
 /** 命令执行类工具：执行流条目提供「终端查看」入口 */
 const COMMAND_TOOLS = new Set(["ps_exec", "run_command"]);
@@ -119,6 +128,7 @@ function mergeToolEvents(thoughts: ThoughtEvent[]): MergedThought[] {
           label: toolName(t.label),
           status: toolFailed(result.detail) ? "failed" : "success",
           detail: result.detail,
+          dur: parseDur(result.label, result.duration_ms),
           callArgs: t.detail, // 调用参数（命令类工具的「终端查看」依据）
         };
         for (const b of between) out.push(b);
@@ -149,6 +159,7 @@ const NODE_COLOR: Record<string, string> = {
   mode: "violet",
   author_tool: "cyan",
   test_pipeline: "cyan",
+  queue: "amber",
 };
 
 /** 常见图片扩展名（用于识别关键帧截图路径） */
@@ -266,6 +277,7 @@ function FlowLine({ t }: { t: MergedThought }) {
           {isExec ? "执行" : "思考"}
         </span>
         <span className="think-label">{t.label}</span>
+        {t.dur && <span className="flow-dur">{t.dur}</span>}
         {status && (
           <span className={`tool-status ${status}`}>{status === "success" ? "✓" : "✕"}</span>
         )}

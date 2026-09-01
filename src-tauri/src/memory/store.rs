@@ -737,6 +737,51 @@ impl MemoryStore {
         Ok(out)
     }
 
+    /// 按类型列出记忆（记忆看板明细）：kind=None 列全部；置顶（salience 降序）优先，再按最近访问
+    pub fn list_memories_by_kind(
+        &self,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryRow>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT mem_id, content, kind, salience, last_access FROM memories
+                 WHERE (?1 IS NULL OR kind = ?1)
+                 ORDER BY salience DESC, last_access DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![kind, limit as i64], |r| {
+                Ok(MemoryRow {
+                    mem_id: r.get(0)?,
+                    content: r.get(1)?,
+                    kind: r.get(2)?,
+                    salience: r.get(3)?,
+                    last_access: r.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 置顶记忆：salience +10（上限 100）并刷新访问时间，让召回排序优先。返回是否存在
+    pub fn pin_memory(&self, mem_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn
+            .execute(
+                "UPDATE memories SET salience = MIN(100, salience + 10), last_access = ?2
+                 WHERE mem_id = ?1",
+                params![mem_id, Self::now()],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(affected > 0)
+    }
+
     /// 相关记忆召回：语义（embedding 余弦相似度）优先，回退 n-gram 相关度
     pub fn recall_related(&self, text: &str, limit: usize) -> Result<Vec<MemoryRow>, String> {
         // 1) 语义召回：embedding 相似度（若 Ollama embedding 可用）

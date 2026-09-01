@@ -1388,6 +1388,16 @@ select option:checked {
 .tool-status.success { color: #16a34a; }
 .tool-status.failed { color: #ef4444; }
 
+/* 工具耗时徽标（执行流条目状态点旁） */
+.flow-dur {
+  margin-left: 8px;
+  font-size: 11px;
+  line-height: 1;
+  font-family: "Cascadia Code", Consolas, monospace;
+  color: #64748b;
+  white-space: nowrap;
+}
+
 .think-icon {
   flex-shrink: 0;
   font-size: 11px;
@@ -5019,6 +5029,93 @@ select option:checked {
   color: var(--text-faint);
   pointer-events: none;
 }
+
+/* 记忆星图 · 列表视图（类型页签 + 明细行：徽章/内容/显著度/置顶/删除） */
+.galaxy-view-btn {
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--cyan);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.galaxy-view-btn:hover { background: rgba(34, 211, 238, 0.16); }
+.galaxy-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.galaxy-tab {
+  border: 1px solid rgba(148, 197, 253, 0.25);
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.galaxy-tab.active {
+  color: var(--cyan);
+  border-color: rgba(34, 211, 238, 0.55);
+  background: rgba(34, 211, 238, 0.1);
+}
+.galaxy-list {
+  position: absolute;
+  top: 76px;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(860px, 92vw);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+.galaxy-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(13, 18, 28, 0.72);
+  border: 1px solid rgba(148, 197, 253, 0.14);
+  border-radius: 10px;
+  padding: 9px 14px;
+  cursor: pointer;
+}
+.galaxy-row:hover { border-color: rgba(34, 211, 238, 0.4); }
+.galaxy-row-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.galaxy-row-content {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.galaxy-row-sal {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  color: var(--text-faint);
+}
+.galaxy-row-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(148, 197, 253, 0.25);
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.galaxy-row-btn:hover { color: var(--cyan); border-color: rgba(34, 211, 238, 0.5); }
+.galaxy-row-btn.del:hover { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); }
 
 /* ============ 桌面悬浮球（#/orb 独立透明窗口） ============ */
 .orb-float-root {

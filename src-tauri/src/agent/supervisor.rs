@@ -3,7 +3,8 @@
 //! 任务拆解结果通过「todo-list / todo-update」事件推给前端流程面板；
 //! 执行过程中模型可用 todo_update 工具自主维护步骤状态。
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -18,6 +19,14 @@ use crate::model::ModelTier;
 
 /// 是否启用「审查」额外模型调用（默认关闭）
 const REFLECT: bool = false;
+
+// ─────────────── 任务单飞门闩（任务队列） ───────────────
+// 所有入口（聊天/微信/飞书/定时/后台/看门狗/自测）都经 Supervisor::run 进入，
+// 在这里统一排队串行执行，防止并发 Agent 实例互踩 cancel/todos/关键帧/卡片等共享槽位。
+// tokio::sync::Mutex 是 FIFO 公平锁：先到先执行，后到自动排队。
+static AGENT_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+/// 正在排队等待的任务数（不含正在执行的）
+static QUEUE_WAITING: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Supervisor<'a> {
     app: &'a AppHandle,
@@ -46,6 +55,24 @@ impl<'a> Supervisor<'a> {
         if self.state.cancel.load(Ordering::SeqCst) {
             return Ok("已停止。".to_string());
         }
+
+        // 任务排队：忙时自动入队（推「任务排队」thought 让用户可见），拿到门闩后串行执行
+        let waiting = QUEUE_WAITING.fetch_add(1, Ordering::SeqCst);
+        if waiting > 0 {
+            let brief: String = message.trim().chars().take(24).collect();
+            let detail = format!("「{brief}…」等待当前任务完成（前面还有 {waiting} 个任务）");
+            let _ = self.app.emit(
+                "thought",
+                json!({ "kind": "queue", "label": "任务排队", "detail": detail }),
+            );
+            self.state.log_thought("queue", "任务排队", &format!("前面还有 {waiting} 个任务"));
+        }
+        let _gate = AGENT_GATE.get_or_init(|| tokio::sync::Mutex::new(())).lock().await;
+        QUEUE_WAITING.fetch_sub(1, Ordering::SeqCst);
+        // 复位上一任务可能残留的取消脏标志：用户停止的是上一个任务，排队中的本任务不应被误吞
+        // （这也是「定时任务被残留标志吞掉」问题的根治：复位点统一收敛到拿锁之后）
+        self.state.cancel.store(false, Ordering::SeqCst);
+        crate::tools::clear_global_cancel();
 
         // 1) 任务拆解 → todo 列表（仅对疑似多步骤任务拆解；简单问答直接跳过）
         //    拆解与回答并行执行：拆解不再阻塞回答的首个 token
