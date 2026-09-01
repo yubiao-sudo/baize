@@ -260,6 +260,10 @@ impl AppState {
         tools.register(Box::new(capability::PasteTextTool::new(capability.clone())));
         tools.register(Box::new(capability::SaveDialogTool::new(capability.clone())));
         tools.register(Box::new(capability::WaitStableTool::new(capability.clone())));
+        // 游戏自动化原语：区域 OCR / 局面缓存增量 diff / 宏序列
+        tools.register(Box::new(capability::RegionOcrTool));
+        tools.register(Box::new(capability::BoardDiffTool));
+        tools.register(Box::new(capability::MacroTool));
         // 窗口控制（防遮挡）：最小化其他窗口 / 置顶 / 聚焦目标窗口
         tools.register(Box::new(capability::WindowMinimizeAllTool::new(capability.clone())));
         tools.register(Box::new(capability::WindowSetTopmostTool::new(capability.clone())));

@@ -1294,6 +1294,203 @@ fn operate_save_dialog(path: &str) -> Result<(bool, String), String> {
     }
 }
 
+// ───────────────────── 游戏自动化原语（区域 OCR / 局面缓存 / 宏序列） ─────────────────────
+
+/// 区域 OCR：截区域所在显示器 → 裁剪 → 识别，返回 (合并文本, 词数组绝对屏幕坐标)。
+/// 回合制游戏局面感知的基础原语：只识别棋盘/商店/血条等固定小区域，比全屏快且噪音少
+pub fn region_ocr_impl(x: f64, y: f64, w: f64, h: f64) -> Result<(String, Vec<Value>), String> {
+    let (rx, ry, rw, rh) = (
+        x.round() as i32,
+        y.round() as i32,
+        w.round() as i32,
+        h.round() as i32,
+    );
+    if rw <= 0 || rh <= 0 {
+        return Err("区域宽高必须为正".into());
+    }
+    let monitors = xcap::Monitor::all().map_err(|e| format!("枚举显示器失败: {e}"))?;
+    let monitor = monitors
+        .iter()
+        .find(|m| {
+            let (mx, my) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
+            let (mw, mh) = (m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+            rx >= mx && rx < mx + mw && ry >= my && ry < my + mh
+        })
+        .or_else(|| monitors.first())
+        .ok_or("未找到显示器")?;
+    let (mox, moy) = (monitor.x().unwrap_or(0), monitor.y().unwrap_or(0));
+    let img = monitor.capture_image().map_err(|e| format!("截屏失败: {e}"))?;
+    // 区域 → 截图像素坐标（钳制边界）
+    let ix = (rx - mox).clamp(0, img.width() as i32 - 1) as u32;
+    let iy = (ry - moy).clamp(0, img.height() as i32 - 1) as u32;
+    let iw = rw.min(img.width() as i32 - ix as i32).max(1) as u32;
+    let ih = rh.min(img.height() as i32 - iy as i32).max(1) as u32;
+    let crop = image::imageops::crop(&mut { img }, ix, iy, iw, ih).to_image();
+
+    let dir = std::env::temp_dir().join("baize-region");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let crop_path = dir.join("crop.png");
+    crop.save(&crop_path).map_err(|e| format!("保存裁剪图失败: {e}"))?;
+
+    let (text, words) = crate::ocr::ocr_detect_gui(&crop_path.to_string_lossy())
+        .map_err(|e| format!("区域识别失败: {e}"))?;
+    // 词坐标（相对裁剪图）→ 绝对屏幕坐标（可直接用于 mouse_click）
+    let abs_words: Vec<Value> = words
+        .into_iter()
+        .map(|mut w| {
+            let wx = w["x"].as_f64().unwrap_or(0.0) + ix as f64 + mox as f64;
+            let wy = w["y"].as_f64().unwrap_or(0.0) + iy as f64 + moy as f64;
+            w["x"] = json!(wx);
+            w["y"] = json!(wy);
+            w
+        })
+        .collect();
+    Ok((text, abs_words))
+}
+
+/// 局面缓存增量 diff：按 key 读写 %TEMP%\baize-board\{key}.json 快照，
+/// 每次调用对全部命名区域 OCR，与上次快照对比返回 changed/unchanged。
+/// 回合制游戏下一回合只看变化项，不再全量重新决策
+pub fn board_diff_impl(key: &str, regions: &Value) -> Result<Value, String> {
+    let arr = regions.as_array().ok_or("regions 必须为数组")?;
+    if arr.is_empty() {
+        return Err("regions 不能为空".into());
+    }
+    if arr.len() > 12 {
+        return Err("regions 最多 12 个区域（太多请拆分）".into());
+    }
+    // 快照路径：key 清洗掉文件系统非法字符
+    let safe: String = key
+        .chars()
+        .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+        .collect();
+    if safe.trim().is_empty() {
+        return Err("key 不能为空".into());
+    }
+
+    let dir = std::env::temp_dir().join("baize-board");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建缓存目录失败: {e}"))?;
+    let snap_path = dir.join(format!("{safe}.json"));
+    let prev: Value = std::fs::read_to_string(&snap_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+
+    let mut current = serde_json::Map::new();
+    let mut regions_out: Vec<Value> = Vec::new();
+    for r in arr {
+        let name = r["name"]
+            .as_str()
+            .ok_or("每个 region 必须有 name")?
+            .to_string();
+        let (text, words) = region_ocr_impl(
+            r["x"].as_f64().unwrap_or(0.0),
+            r["y"].as_f64().unwrap_or(0.0),
+            r["w"].as_f64().unwrap_or(0.0),
+            r["h"].as_f64().unwrap_or(0.0),
+        )?;
+        current.insert(name.clone(), json!(text));
+        regions_out.push(json!({ "name": name, "text": text, "words": words }));
+    }
+
+    let mut changed: Vec<Value> = Vec::new();
+    let mut unchanged: Vec<Value> = Vec::new();
+    for (name, text) in &current {
+        let prev_text = prev["regions"][name].as_str().unwrap_or("");
+        if prev_text == *text {
+            unchanged.push(json!({ "name": name, "text": text }));
+        } else {
+            changed.push(json!({ "name": name, "text": text, "prev": prev_text }));
+        }
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let snapshot = json!({ "ts": ts, "regions": current });
+    std::fs::write(&snap_path, snapshot.to_string())
+        .map_err(|e| format!("写入快照失败: {e}"))?;
+
+    Ok(json!({
+        "key": safe,
+        "first_scan": prev.is_null(),
+        "changed": changed,
+        "unchanged": unchanged,
+        "regions": regions_out,
+        "note": "changed=与本回合上次快照不同的区域（重点决策依据）；unchanged=未变化可跳过",
+    }))
+}
+
+/// 宏序列：按键/点击/等待按顺序批量执行——把「截屏-决策-多点几次」压成一次调用。
+/// steps 每项：{action:"key",keys} | {action:"click"|"double_click"|"right_click",x,y} |
+///            {action:"wait",ms} | {action:"type",text(ASCII)}
+/// 上限 30 步 / 总时长 60s，游戏注入沿用拟人化点击
+pub fn macro_impl(steps: &Value) -> Result<Value, String> {
+    let arr = steps.as_array().ok_or("steps 必须为数组")?;
+    if arr.is_empty() {
+        return Err("steps 不能为空".into());
+    }
+    if arr.len() > 30 {
+        return Err("steps 最多 30 步（更多请拆成多次调用）".into());
+    }
+    let t0 = std::time::Instant::now();
+    let mut executed: Vec<String> = Vec::new();
+    for (i, s) in arr.iter().enumerate() {
+        if t0.elapsed().as_millis() > 60_000 {
+            return Err(format!("宏执行超过 60s，在第 {} 步中止", i + 1));
+        }
+        let action = s["action"]
+            .as_str()
+            .ok_or_else(|| format!("第 {} 步缺少 action", i + 1))?;
+        match action {
+            "key" => {
+                let keys = s["keys"]
+                    .as_str()
+                    .ok_or_else(|| format!("第 {} 步缺少 keys", i + 1))?;
+                Keyboard::new()
+                    .send_keys(&normalize_keys(keys))
+                    .map_err(|e| format!("第 {} 步按键失败: {e}", i + 1))?;
+                executed.push(format!("key:{keys}"));
+            }
+            "click" | "double_click" | "right_click" => {
+                let x = s["x"].as_f64().ok_or_else(|| format!("第 {} 步缺少 x", i + 1))? as i32;
+                let y = s["y"].as_f64().ok_or_else(|| format!("第 {} 步缺少 y", i + 1))? as i32;
+                match action {
+                    "click" => click_left(x, y),
+                    "double_click" => double_click_left(x, y),
+                    _ => click_right(x, y),
+                }
+                executed.push(format!("{action}:({x},{y})"));
+            }
+            "wait" => {
+                let ms = s["ms"].as_u64().unwrap_or(300).clamp(50, 5000);
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+            "type" => {
+                let text = s["text"]
+                    .as_str()
+                    .ok_or_else(|| format!("第 {} 步缺少 text", i + 1))?;
+                Keyboard::new()
+                    .send_keys(text)
+                    .map_err(|e| format!("第 {} 步输入失败: {e}", i + 1))?;
+                executed.push(format!("type:{text}"));
+            }
+            other => {
+                return Err(format!(
+                    "第 {} 步未知 action「{other}」（支持 key/click/double_click/right_click/wait/type）",
+                    i + 1
+                ));
+            }
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "executed": executed,
+        "duration_ms": t0.elapsed().as_millis() as u64,
+    }))
+}
+
 // ───────────────────── UI 稳定性感知（知道界面什么时候稳定） ─────────────────────
 
 /// UI 稳定性检测：间隔截屏缩成 16×16 灰度指纹，连续两次对比几乎一致即认为界面安定。

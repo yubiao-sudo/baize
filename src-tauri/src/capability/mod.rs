@@ -1937,6 +1937,139 @@ impl Tool for WaitStableTool {
     }
 }
 
+/// 区域 OCR 工具（游戏局面感知原语）
+pub struct RegionOcrTool;
+
+impl Tool for RegionOcrTool {
+    fn name(&self) -> &str {
+        "region_ocr"
+    }
+    fn description(&self) -> &str {
+        "只识别屏幕指定矩形区域的文字（回合制游戏局面感知原语，比全屏 capture_screen 快且噪音少）。\
+         返回合并文本 + 每个词的绝对屏幕坐标（可直接喂给 mouse_click 点击对应牌/按钮）。\
+         先用 capture_screen(ocr=true) 全屏看一次拿到棋盘/商店区域坐标，之后每回合只 region_ocr 固定区域（只读）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "x": { "type": "number", "description": "区域左上角 X（屏幕物理坐标）" },
+                "y": { "type": "number", "description": "区域左上角 Y（屏幕物理坐标）" },
+                "w": { "type": "number", "description": "区域宽" },
+                "h": { "type": "number", "description": "区域高" }
+            },
+            "required": ["x", "y", "w", "h"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let _ = &self;
+        #[cfg(windows)]
+        {
+            let (text, words) = crate::capability::windows::region_ocr_impl(
+                args["x"].as_f64().unwrap_or(0.0),
+                args["y"].as_f64().unwrap_or(0.0),
+                args["w"].as_f64().unwrap_or(0.0),
+                args["h"].as_f64().unwrap_or(0.0),
+            )?;
+            Ok(json!({ "ok": true, "text": text, "words": words }))
+        }
+        #[cfg(not(windows))]
+        {
+            Err("仅支持 Windows".into())
+        }
+    }
+}
+
+/// 游戏局面缓存工具（多区域 OCR + 增量 diff）
+pub struct BoardDiffTool;
+
+impl Tool for BoardDiffTool {
+    fn name(&self) -> &str {
+        "board_diff"
+    }
+    fn description(&self) -> &str {
+        "局面缓存：按 key 缓存多个命名区域的 OCR 快照（本地 JSON），每次调用自动与上次快照增量 diff，\
+         只突出返回 changed 区域——回合制游戏（金铲铲/云顶/崩铁等）下一回合只看变化项做决策，\
+         不再全屏反复识别。regions 最多 12 个区域；key 用游戏+界面名（如 tft_shop）（只读）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "key": { "type": "string", "description": "局面缓存键，如 tft_shop、hsr_minimap" },
+                "regions": {
+                    "type": "array",
+                    "description": "要监控的区域列表，每项 {name, x, y, w, h}，如 [{\"name\":\"商店\",\"x\":600,\"y\":900,\"w\":700,\"h\":150}]",
+                    "items": { "type": "object" }
+                }
+            },
+            "required": ["key", "regions"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let _ = &self;
+        #[cfg(windows)]
+        {
+            crate::capability::windows::board_diff_impl(
+                args["key"].as_str().unwrap_or(""),
+                &args["regions"],
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            Err("仅支持 Windows".into())
+        }
+    }
+}
+
+/// 宏序列工具（重复性按键/点击一次调用）
+pub struct MacroTool;
+
+impl Tool for MacroTool {
+    fn name(&self) -> &str {
+        "macro"
+    }
+    fn description(&self) -> &str {
+        "宏序列：按键/点击/等待按顺序一次调用批量执行（上限 30 步）。\
+         游戏高频场景专用：「D 牌 5 次」= [{action:'wait',ms:300},{action:'key',keys:'d'}] 重复 5 组；\
+         战斗连招 = 多个 {action:'key'} 加 {action:'wait',ms} 控制节奏；种植/点点点 = 多个 {action:'click',x,y}。\
+         点击沿用拟人化注入，wait 单步 50-5000ms，总时长上限 60s（写操作，会请求授权）"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": "步骤数组，每项 {action:'key',keys:'d'} / {action:'click',x,y} / {action:'double_click',x,y} / {action:'right_click',x,y} / {action:'wait',ms} / {action:'type',text}",
+                    "items": { "type": "object" }
+                }
+            },
+            "required": ["steps"]
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::Write
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let _ = &self;
+        #[cfg(windows)]
+        {
+            crate::capability::windows::macro_impl(&args["steps"])
+        }
+        #[cfg(not(windows))]
+        {
+            Err("仅支持 Windows".into())
+        }
+    }
+}
+
 /// 最小化所有窗口工具（支持按标题关键词豁免）
 pub struct WindowMinimizeAllTool {
     capability: Arc<dyn Capability>,
