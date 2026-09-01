@@ -1076,7 +1076,7 @@ fn extract_reply_images(answer: &str) -> (String, Vec<String>) {
     )
     .expect("产物文件名正则编译失败");
 
-    let mut try_push = |raw: &str, out: &mut String, images: &mut Vec<String>| {
+    let try_push = |raw: &str, out: &mut String, images: &mut Vec<String>| {
         let p = crate::tools::resolve_path(raw);
         if !std::path::Path::new(&p).is_file() {
             return;

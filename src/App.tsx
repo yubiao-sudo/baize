@@ -643,12 +643,17 @@ export default function App() {
           </div>
         </div>
       </header>
-      <Sidebar />
-
-      <main className="main">
+      {/* 银河背景铺满整个窗口（根层），侧边栏/右侧面板的毛玻璃才能透出星河，
+          缝隙与收起区域也不再是死黑断层 */}
+      <div className="app-bg" aria-hidden>
         <Suspense fallback={null}>
           <Galaxy />
         </Suspense>
+      </div>
+
+      <Sidebar />
+
+      <main className="main">
         <ChatView />
       </main>
 

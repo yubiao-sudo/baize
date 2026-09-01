@@ -818,12 +818,12 @@ impl Tool for LaunchAppTool {
             .min_by_key(|(n, _)| n.len())
             .cloned();
 
-        let (via, launched) = if let Some((n, p)) = matched {
+        let via = if let Some((_, p)) = matched {
             let r = silent_command("cmd")
                 .args(["/c", "start", "", &p.to_string_lossy()])
                 .spawn();
             match r {
-                Ok(_) => ("start_menu".to_string(), true),
+                Ok(_) => "start_menu".to_string(),
                 Err(e) => return Err(format!("启动失败: {e}")),
             }
         } else if let Some((app_name, app_id)) = find_uwp_app(name) {
@@ -833,7 +833,7 @@ impl Tool for LaunchAppTool {
             cmd.args([&arg]);
             let r = cmd.spawn();
             match r {
-                Ok(_) => (format!("uwp:{app_name}"), true),
+                Ok(_) => format!("uwp:{app_name}"),
                 Err(e) => return Err(format!("UWP 启动失败: {e}")),
             }
         } else {

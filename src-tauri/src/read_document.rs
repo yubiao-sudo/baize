@@ -82,7 +82,7 @@ fn run_python(request: &Value) -> Result<Value, String> {
     let script = script_dir.join("read_document.py");
     std::fs::write(&script, PARSER_PY).map_err(|e| format!("写入解析脚本失败: {e}"))?;
 
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let mut child = crate::tools::silent_command("python")
         .arg(&script)
         .stdin(Stdio::piped())
@@ -305,7 +305,6 @@ print(json.dumps({"ver": sys.version.split()[0], "missing": missing}))
 /// 检查 Python 及文档解析库是否就绪，返回结构化报告（供 env_check / 安装引导展示）。
 /// 用单次子进程探测，避免逐库反复启动 Python。
 pub fn deps_report() -> Value {
-    use std::process::Command;
     let all_missing = || -> Vec<String> { DOC_LIBS.iter().map(|(_, pkg)| pkg.to_string()).collect() };
     let mut python: Option<String> = None;
     let mut missing: Vec<String> = all_missing();

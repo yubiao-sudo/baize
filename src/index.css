@@ -2298,6 +2298,9 @@ select option:checked {
   margin: 0;
   opacity: 0;
   pointer-events: none;
+  /* 收起时禁用毛玻璃：WebView2 下 backdrop-filter 在 opacity:0 时仍会残留一块模糊色块 */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 /* 内嵌到右侧面板的面板容器（替代原全屏弹窗遮罩） */

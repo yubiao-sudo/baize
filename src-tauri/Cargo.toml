@@ -1,6 +1,6 @@
 [package]
 name = "baize"
-version = "0.2.2"
+version = "0.3.0"
 description = "BaiZe 桌面 Agent 框架 · M0 骨架（本地 Ollama 对话 + 只读文件工具 + 权限审批）"
 edition = "2021"
 
@@ -59,3 +59,17 @@ csv = "1"
 calamine = { version = "0.26", features = ["dates"] }
 rust_xlsxwriter = "0.83"
 qrcode = "0.14"
+
+# ── 调试编译提速 ──────────────────────────────────────────────
+# 本 crate：基础优化 + 仅保留行号调试信息（足够产生崩溃 backtrace），
+# 降低增量编译/链接的耗时
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+# 依赖以 opt-level 3 编译（一次性成本、结果常驻缓存）：
+# 避免 dev 模式下依赖不优化导致图像/PDF/OCR/数据库处理极慢；
+# 依赖不常变，不影响日常迭代速度
+[profile.dev.package."*"]
+opt-level = 3
+debug = false

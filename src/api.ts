@@ -40,6 +40,8 @@ import type {
   PlazaItem,
   WeChatStatus,
   FeishuStatus,
+  GatewayConfig,
+  GatewayStatus,
   ImChannelInfo,
   ImLogEntry,
   PermissionChannelUpdate,
@@ -485,6 +487,24 @@ export async function getMcpConfig(): Promise<McpConfig> {
 
 export async function setMcpConfig(config: McpConfig): Promise<McpConfig> {
   return invoke<McpConfig>("set_mcp_config", { config });
+}
+
+// ---------------- 本地 AI 网关 ----------------
+
+export async function getGatewayStatus(): Promise<GatewayStatus> {
+  return invoke<GatewayStatus>("gateway_get_status");
+}
+
+export async function gatewayStart(): Promise<GatewayStatus> {
+  return invoke<GatewayStatus>("gateway_start");
+}
+
+export async function gatewayStop(): Promise<GatewayStatus> {
+  return invoke<GatewayStatus>("gateway_stop");
+}
+
+export async function setGatewayConfig(config: GatewayConfig): Promise<GatewayStatus> {
+  return invoke<GatewayStatus>("gateway_set_config", { config });
 }
 
 export async function getMemories(): Promise<MemoryRow[]> {

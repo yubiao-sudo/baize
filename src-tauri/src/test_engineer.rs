@@ -3371,10 +3371,6 @@ struct RecordPaths {
     html: Option<std::path::PathBuf>,
 }
 
-fn prepare_record_paths(app: &AppHandle, project_name: &str, project_id: &str, title: &str) -> RecordPaths {
-    prepare_record_paths_in(&record_base_dir(app), project_name, project_id, title)
-}
-
 /// 带项目自定义保存目录的落盘路径（report_dir 留空回退系统文档目录）
 fn prepare_record_paths_for(
     app: &AppHandle,

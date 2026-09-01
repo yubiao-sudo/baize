@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::{GenericImageView, RgbaImage};
+use image::RgbaImage;
 use serde_json::{json, Value};
 
 use crate::capability::Capability;

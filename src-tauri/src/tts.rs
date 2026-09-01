@@ -59,13 +59,6 @@ pub fn set_config(cfg: TtsConfig) {
     *CFG.write().unwrap() = Some(cfg);
 }
 
-pub fn current() -> TtsConfig {
-    CFG.read()
-        .unwrap()
-        .clone()
-        .unwrap_or_default()
-}
-
 /// 从持久化恢复进程内缓存（AppState 初始化时调用）
 pub fn restore(json: &str) {
     if let Ok(cfg) = serde_json::from_str::<TtsConfig>(json) {

@@ -7,7 +7,9 @@
 //! 可换 async + 独立读写任务。权限启发式：读类工具只读，其余写（需审批）。
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+#[cfg(not(windows))]
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};

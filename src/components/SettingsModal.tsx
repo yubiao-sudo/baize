@@ -4,8 +4,11 @@ import {
   feishuSaveCredentials,
   feishuStart,
   feishuStop,
+  gatewayStart,
+  gatewayStop,
   getDbConnections,
   getFeishuStatus,
+  getGatewayStatus,
   getImChannels,
   getMcpConfig,
   getModelConfig,
@@ -23,6 +26,7 @@ import {
   onWechatStatus,
   saveDbConnections,
   searchRag,
+  setGatewayConfig,
   setMcpConfig,
   setModelConfig,
   setNotifyConfig,
@@ -56,6 +60,7 @@ import {
 const SETTING_PAGES = [
   { id: "model", label: "模型与推理", desc: "模型 · 运行时 · Token" },
   { id: "tools", label: "工具扩展", desc: "MCP 服务器" },
+  { id: "gateway", label: "本地 AI 网关", desc: "HTTP 服务" },
   { id: "knowledge", label: "知识与数据", desc: "RAG · 数据库" },
   { id: "voice", label: "语音朗读", desc: "TTS 音色" },
   { id: "notify", label: "通知与音效", desc: "升级 · 提示音" },
@@ -80,6 +85,8 @@ import type {
   WebhookConfig,
   WeChatStatus,
   FeishuStatus,
+  GatewayConfig,
+  GatewayStatus,
   ImChannelInfo,
 } from "../types";
 
@@ -212,6 +219,52 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [fsMsg, setFsMsg] = useState("");
   // IM 消息总线（通道列表）
   const [imChannels, setImChannels] = useState<ImChannelInfo[]>([]);
+
+  // 本地 AI 网关（OpenAI 兼容 HTTP 服务，开放模型路由 / 记忆 / 只读工具）
+  const [gwStatus, setGwStatus] = useState<GatewayStatus | null>(null);
+  const [gwConfig, setGwConfig] = useState<GatewayConfig>({
+    enabled: false,
+    port: 11436,
+    token: "",
+  });
+  const [gwMsg, setGwMsg] = useState("");
+  const [gwBusy, setGwBusy] = useState(false);
+  useEffect(() => {
+    getGatewayStatus()
+      .then((s) => {
+        setGwStatus(s);
+        setGwConfig((prev) => ({ ...prev, enabled: s.enabled, port: s.port }));
+      })
+      .catch(() => {});
+  }, []);
+  const toggleGateway = async () => {
+    setGwBusy(true);
+    setGwMsg("");
+    try {
+      const s = gwStatus?.enabled ? await gatewayStop() : await gatewayStart();
+      setGwStatus(s);
+      setGwConfig((prev) => ({ ...prev, enabled: s.enabled, port: s.port }));
+      setGwMsg(s.enabled ? "网关已启动" : "网关已停止");
+    } catch (e) {
+      setGwMsg(String(e));
+    } finally {
+      setGwBusy(false);
+    }
+  };
+  const saveGateway = async () => {
+    setGwBusy(true);
+    setGwMsg("");
+    try {
+      const s = await setGatewayConfig(gwConfig);
+      setGwStatus(s);
+      setGwConfig((prev) => ({ ...prev, enabled: s.enabled, port: s.port }));
+      setGwMsg("配置已保存" + (s.enabled ? "，网关运行中" : ""));
+    } catch (e) {
+      setGwMsg(String(e));
+    } finally {
+      setGwBusy(false);
+    }
+  };
 
   // 知识库（RAG）状态
   const [ragDocs, setRagDocs] = useState<RagDoc[]>([]);
@@ -1140,6 +1193,81 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               <div style={{ fontSize: 11, color: "var(--text-faint)" }}>
                 {browserPathStatus ||
                   "browser_act 桌面浏览器控制将使用此路径驱动真实 Chrome/Edge（保留登录态）。留空时按「注册表 → 默认安装目录」自动探测。"}
+              </div>
+            </section>
+            </div>
+
+            {/* 本地 AI 网关页 */}
+            <div className="settings-page" style={{ display: page === "gateway" ? undefined : "none" }}>
+            <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+              <h4 style={{ margin: "4px 0 8px", color: "#22d3ee" }}>本地 AI 网关</h4>
+              <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 12, lineHeight: 1.6 }}>
+                在 <code>127.0.0.1</code> 起一个 OpenAI 兼容 HTTP 服务，让 VS Code 插件、Obsidian 等任何
+                OpenAI 兼容客户端都能复用白泽的模型路由、长期记忆与本机只读工具。仅监听回环地址，不暴露公网。
+              </div>
+
+              {gwStatus && (
+                <div
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                    padding: 10, borderRadius: 8, marginBottom: 12,
+                    background: "transparent", border: "1px solid var(--border)",
+                  }}
+                >
+                  <span style={{ fontSize: 12, color: gwStatus.enabled ? "var(--success)" : "var(--text-dim)" }}>
+                    {gwStatus.enabled ? "● 运行中" : "○ 已停止"}
+                  </span>
+                  <span style={{ fontSize: 12, color: "var(--text)" }}>{gwStatus.base_url}</span>
+                  {gwStatus.enabled && (
+                    <button
+                      className="acui-btn"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(gwStatus.base_url);
+                        setGwMsg("已复制 base_url");
+                      }}
+                    >
+                      复制
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <button className="acui-btn primary" onClick={() => void toggleGateway()} disabled={gwBusy}>
+                  {gwStatus?.enabled ? "停止网关" : "启动网关"}
+                </button>
+              </div>
+
+              <div style={field}>
+                <span style={label}>监听端口（默认 11436，避开 Ollama 的 11434）</span>
+                <input
+                  style={{ ...input, maxWidth: 180 }}
+                  type="number"
+                  value={gwConfig.port}
+                  onChange={(e) => setGwConfig({ ...gwConfig, port: Number(e.target.value) || 11436 })}
+                />
+              </div>
+
+              <div style={field}>
+                <span style={label}>访问令牌（Bearer；留空则不校验，保存会覆盖为当前输入值）</span>
+                <input
+                  style={input}
+                  type="password"
+                  value={gwConfig.token}
+                  onChange={(e) => setGwConfig({ ...gwConfig, token: e.target.value })}
+                  placeholder={gwStatus?.has_token ? "已设置令牌（留空并保存将清除）" : "留空 = 无需令牌"}
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                <button className="acui-btn" onClick={() => void saveGateway()} disabled={gwBusy}>
+                  保存配置
+                </button>
+                {gwMsg && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{gwMsg}</span>}
+              </div>
+
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 12, lineHeight: 1.6 }}>
+                端点：/v1/chat/completions（对话）· /v1/models（模型列表）· /api/memory/remember · /api/memory/search · /api/tools · /api/tools/execute（仅只读）
               </div>
             </section>
             </div>

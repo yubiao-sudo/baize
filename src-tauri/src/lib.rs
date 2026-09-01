@@ -12,6 +12,7 @@ mod document;
 mod email;
 mod embedding;
 mod feishu;
+mod gateway;
 mod grep;
 mod im;
 mod updater;
@@ -107,6 +108,8 @@ pub struct AppState {
     pub feishu: Arc<feishu::FeishuState>,
     /// 跨 IM 消息总线（统一调度审批回传 / 结果回传）
     pub im_bus: Arc<im::ImBus>,
+    /// 本地 AI 网关（OpenAI 兼容 HTTP 服务，开放模型路由 / 记忆 / 只读工具）
+    pub gateway: Arc<gateway::GatewayState>,
 }
 
 impl AppState {
@@ -348,6 +351,9 @@ impl AppState {
         // 模型配置：环境变量默认 → 持久化配置覆盖
         let model_config = load_model_config(&store);
         let model = Arc::new(ModelRouter::new(model_config.build_providers()));
+
+        // 本地 AI 网关：随启动恢复配置（已启用则立即监听 127.0.0.1:<port>）
+        let gateway = gateway::GatewayState::new(model.clone(), store.clone(), tools.clone());
         // 视觉/嵌入运行时同步：精确匹配激活项，缺省时回退到第一个可用云端
         if let Some((base_url, api_key, vision_model)) = model_config.vision_conn() {
             visual_grounding::set_vision_cloud(&base_url, &api_key);
@@ -399,6 +405,7 @@ impl AppState {
             workflows,
             plaza,
             watchdog: watchdog_state,
+            gateway,
         };
 
         // MCP 集成（持久化配置，可运行时重建）
@@ -1136,6 +1143,10 @@ pub fn run() {
             feishu::feishu_stop,
             im::im_list,
             im::im_log,
+            gateway::gateway_get_status,
+            gateway::gateway_start,
+            gateway::gateway_stop,
+            gateway::gateway_set_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BaiZe");

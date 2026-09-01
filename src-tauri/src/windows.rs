@@ -455,15 +455,6 @@ fn position_halo_on(app: &AppHandle, x: i32, y: i32) {
     });
 }
 
-pub fn halo_hide(app: &AppHandle) {
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(win) = handle.get_webview_window("halo") {
-            let _ = win.hide();
-        }
-    });
-}
-
 /// 最近一次「目标窗口」光圈事件（供覆盖层页面加载后补拉，消除首事件竞态：
 /// 覆盖窗创建后页面 JS 订阅完成前 emit 的事件会丢失，导致整轮任务看不到呼吸圈）
 static LAST_HALO: OnceLock<Mutex<Option<Value>>> = OnceLock::new();

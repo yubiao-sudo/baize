@@ -999,30 +999,6 @@ fn wheel_scroll(clicks: i32, horizontal: bool) {
     std::thread::sleep(std::time::Duration::from_millis(120));
 }
 
-// ───────────────────── 实时镜像小窗 · 人工操作注入入口 ─────────────────────
-
-/// 镜像画面人工左键点击（double=true 为双击；与 Agent 点击共用拟人化前置）
-pub fn mirror_click(x: i32, y: i32, double: bool) {
-    if double {
-        double_click_left(x, y);
-    } else {
-        click_left(x, y);
-    }
-}
-
-/// 镜像画面人工右键点击
-pub fn mirror_right(x: i32, y: i32) {
-    click_right(x, y);
-}
-
-/// 镜像画面人工滚轮：先把光标移到目标位置（滚轮作用于光标下窗口）再滚动。
-/// delta 为齿感格数，正=向上
-pub fn mirror_wheel(x: i32, y: i32, delta: i32) {
-    mouse_move_abs(x, y);
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    wheel_scroll(delta, false);
-}
-
 /// 把人类可读的组合键转成 uiautomation 的 `{Ctrl}` 格式，如 "ctrl+s" → "{Ctrl}s"
 fn normalize_keys(keys: &str) -> String {
     let mut out = String::new();

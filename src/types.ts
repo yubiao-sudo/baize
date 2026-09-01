@@ -114,6 +114,23 @@ export interface McpConfig {
   args: string[];
 }
 
+// 本地 AI 网关配置（与后端 gateway::GatewayConfig 对齐）
+export interface GatewayConfig {
+  enabled: boolean;
+  port: number;
+  /** 访问令牌；为空则不校验 */
+  token: string;
+}
+
+// 本地 AI 网关运行状态（后端 gateway_get_status 返回）
+export interface GatewayStatus {
+  enabled: boolean;
+  port: number;
+  has_token: boolean;
+  base_url: string;
+  endpoints: Record<string, string>;
+}
+
 // 单个已保存的模型配置（与后端 model::ModelProfile 对齐）
 export type ModelTier = "local" | "cloud";
 export type ProviderKind = "ollama" | "openai" | "anthropic" | "gemini";

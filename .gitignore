@@ -31,6 +31,3 @@ __pycache__/
 
 # Tauri 生成物
 src-tauri/gen/
-
-# 工具杂物
-frontend/.workbuddy/

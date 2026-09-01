@@ -314,8 +314,7 @@ export default function Sidebar() {
       )}
 
       <div className="sidebar-chips">
-        <span className="chip">本地优先 · 云端回退</span>
-        <span className="chip">安全 · 只读默认</span>
+        <span className="chip">本地优先 · 云端回退 · 安全 · 只读默认</span>
       </div>
 
       <div className="agent-status">

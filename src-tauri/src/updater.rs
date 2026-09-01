@@ -7,7 +7,7 @@
 //!    白泽展示 1.2s「安装中」状态后退出，之后无需人工干预
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 const RELEASES_API: &str = "https://api.github.com/repos/yubiao-sudo/baize/releases/latest";
 

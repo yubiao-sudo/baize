@@ -14,27 +14,6 @@ pub struct Todo {
     pub status: String,
 }
 
-/// 解析模型输出的 JSON 步骤数组（容忍模型加的前后缀文字）
-pub fn parse_todos(text: &str) -> Result<Vec<Todo>, String> {
-    let start = text.find('[').ok_or("无 JSON 数组")?;
-    let end = text.rfind(']').ok_or("无 JSON 数组")?;
-    let json = &text[start..=end];
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let arr = v.as_array().ok_or("非数组")?;
-    let mut out = Vec::new();
-    for (i, item) in arr.iter().enumerate() {
-        let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
-        if !title.is_empty() {
-            out.push(Todo {
-                id: i,
-                title,
-                status: "pending".to_string(),
-            });
-        }
-    }
-    Ok(out)
-}
-
 /// 推送完整 todo 列表到前端（任务拆解完成时）
 pub fn emit_todo_list(app: &AppHandle, todos: &[Todo]) {
     let _ = app.emit("todo-list", json!({ "todos": todos }));
@@ -144,34 +123,5 @@ impl Tool for TodoUpdateTool {
         save_task_checkpoint(&self.store, &new_todos);
         emit_todo_update(&self.app, &new_todos);
         Ok(json!({ "ok": true, "count": new_todos.len() }))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_todos_extracts_steps() {
-        let text = "[\n  {\"title\": \"步骤一\"},\n  {\"title\": \"步骤二\"}\n]";
-        let todos = parse_todos(text).unwrap();
-        assert_eq!(todos.len(), 2);
-        assert_eq!(todos[0].title, "步骤一");
-        assert_eq!(todos[1].title, "步骤二");
-        assert_eq!(todos[0].status, "pending");
-    }
-
-    #[test]
-    fn parse_todos_handles_prefix_text() {
-        let text = "好的，以下是步骤：[\n{\"title\":\"a\"},{\"title\":\"b\"}]";
-        let todos = parse_todos(text).unwrap();
-        assert_eq!(todos.len(), 2);
-        assert_eq!(todos[0].title, "a");
-    }
-
-    #[test]
-    fn parse_todos_empty_array() {
-        let todos = parse_todos("[]").unwrap();
-        assert!(todos.is_empty());
     }
 }
