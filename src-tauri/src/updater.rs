@@ -1,9 +1,10 @@
-//! 应用内自更新：检查 GitHub Releases 最新版 → 下载安装包（进度事件推送）→ 静默安装并重启。
+//! 应用内自更新：检查 GitHub Releases 最新版 → 下载安装包（进度事件推送）→ 静默安装并自动重启。
 //!
 //! 流程：
 //! 1. `update_check`：请求 GitHub Releases latest，比对版本号与当前 `CARGO_PKG_VERSION`
 //! 2. `update_install`：下载 x64-setup.exe 到临时目录（每 256KB emit 一次 update-progress），
-//!    下载完成后以 NSIS 静默参数 `/S` 拉起安装器并退出白泽——安装器覆盖完成后用户重新启动即是新版
+//!    下载完成后拉起「更新链」bat（等白泽退出 → NSIS 静默安装 /S → 自动启动新版），
+//!    白泽展示 1.2s「安装中」状态后退出，之后无需人工干预
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -177,12 +178,26 @@ pub async fn update_install(app: AppHandle) -> Result<Value, String> {
         json!({ "phase": "install", "pct": 100, "downloaded": downloaded, "total": total }),
     );
 
-    // 静默安装（NSIS /S）：拉起安装器后退出白泽，安装器自行覆盖文件
-    let mut installer = crate::tools::silent_command(dest.to_string_lossy().as_ref());
-    installer.arg("/S");
-    installer
+    // 更新链（脱离白泽进程存活）：等白泽退出 → NSIS 静默安装 → 自动重启新版。
+    // 装机目录不变（覆盖安装），直接复用当前 exe 路径拉起新版。
+    // 用 bat 承载链条规避 cmd /C 复杂引号转义；cmd 以裸文件名运行（current_dir 已设到该目录）。
+    let cur_exe = std::env::current_exe().map_err(|e| format!("定位当前程序失败: {e}"))?;
+    let bat = dir.join("baize-update-chain.bat");
+    // cmd 按 ANSI(GBK) 解析 bat，路径含中文时 UTF-8 直写会乱码——用 GBK 编码写入
+    let bat_content = format!(
+        "@echo off\r\ntimeout /t 2 /nobreak >nul\r\n\"{}\" /S\r\ntimeout /t 1 /nobreak >nul\r\nstart \"\" \"{}\"\r\n",
+        dest.to_string_lossy(),
+        cur_exe.to_string_lossy()
+    );
+    let (gbk, _, _) = encoding_rs::GBK.encode(&bat_content);
+    std::fs::write(&bat, &*gbk).map_err(|e| format!("写入更新脚本失败: {e}"))?;
+    let mut chain = crate::tools::silent_command("cmd");
+    chain.args(["/C", "baize-update-chain.bat"]).current_dir(&dir);
+    chain
         .spawn()
-        .map_err(|e| format!("拉起安装器失败: {e}"))?;
+        .map_err(|e| format!("拉起更新链失败: {e}"))?;
+    // 给前端 1.2s 展示「安装中」状态，随后退出交给更新链
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     app.exit(0);
     Ok(json!({ "ok": true, "path": dest.to_string_lossy() }))
 }
