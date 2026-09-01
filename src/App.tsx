@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import ConsciousnessNetwork from "./components/ConsciousnessNetwork";
-import { reactiveSpeak, stopSpeaking } from "./voiceReactive";
+import { reactiveSpeak, speakWithCloud, stopSpeaking } from "./voiceReactive";
 import ThoughtStream from "./components/ThoughtStream";
 
 // 按需弹出的面板/卡片使用懒加载，减小主界面首屏 JS 解析量
@@ -411,9 +411,14 @@ export default function App() {
                 audio.play().catch(() => {});
                 audioRef.current = audio;
               }
-              // TTS 语音播报（reactiveSpeak 广播说话状态与逐词脉冲 → 水球律动）
-              if (e.tts_text) {
-                reactiveSpeak(e.tts_text, { lang: "zh-CN", rate: 1.0, volume: 1.0 });
+              // TTS 语音播报：跟随设置页的语音模型配置（本地/云端/豆包均走 speakWithCloud），
+              // 全部合成失败时回退浏览器 Web Speech，保证审批提醒一定能出声
+              const ttsText = e.tts_text;
+              if (ttsText) {
+                void speakWithCloud(ttsText).catch(() => {
+                  if (!voiceActiveRef.current) return;
+                  reactiveSpeak(ttsText, { lang: "zh-CN", rate: 1.0, volume: 1.0 });
+                });
               }
             };
 

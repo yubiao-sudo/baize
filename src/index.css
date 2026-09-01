@@ -61,6 +61,7 @@ body {
   grid-template-rows: 42px minmax(0, 1fr);
   grid-template-columns: 280px 1fr 340px;
   height: 100vh;
+  position: relative; /* 根层银河背景（.app-bg）的定位参照 */
   /* 列宽瞬时切换，避免 grid 轨道动画带动整页（聊天框/意识网络等大量 DOM）持续 reflow 掉帧；
      打开/关闭/切换面板的过渡感改由右侧面板内容自身的 opacity 淡入承担 */
 }
@@ -79,11 +80,16 @@ body {
   grid-template-columns: 280px 1fr 880px;
 }
 
-/* ============ 侧边栏（圆角卡片式：与主区脱开，四周留缝露出底色） ============ */
+/* ============ 侧边栏（毛玻璃圆角卡片：透出根层银河，跟随主题自动适配明暗） ============ */
 .sidebar {
+  position: relative;
+  z-index: 1;
   margin: 10px 0 10px 10px;
-  /* 底色与主区同源（--bg），只叠极淡白渐变做浮起感，避免与背景色差 */
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)), var(--bg);
+  /* 毛玻璃：半透明底 + backdrop-filter 模糊透出的银河星光；color-mix 跟随主题 --bg 自动变明暗 */
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    color-mix(in srgb, var(--bg) 68%, transparent);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
   border: 1px solid var(--border-soft);
   border-radius: 14px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
@@ -92,6 +98,14 @@ body {
   padding: 14px 10px;
   gap: 4px;
   overflow: hidden;
+}
+
+/* 根层银河背景：铺满整个窗口，侧边栏/右侧面板的毛玻璃透出星光 */
+.app-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
 }
 
 .brand-mark {
@@ -640,8 +654,10 @@ select option:checked {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--bg);
+  /* 背景透明：银河已提升到根层（.app-bg），主区直接透出星光 */
+  background: transparent;
   position: relative; /* 会话卡片悬浮定位的参照 */
+  z-index: 1;
 }
 
 /* ============ 无边框单条式标题栏（参照 ZCode 顶栏） ============ */
@@ -2260,9 +2276,14 @@ select option:checked {
 
 /* ============ 右侧面板（圆角卡片式，与左侧对称） ============ */
 .right-panel {
+  position: relative;
+  z-index: 1;
   margin: 10px 10px 10px 0;
-  /* 底色与主区同源（--bg），只叠极淡白渐变做浮起感，避免与背景色差 */
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)), var(--bg);
+  /* 毛玻璃：与左侧边栏同款，透出根层银河并模糊；color-mix 跟随主题自动适配明暗 */
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    color-mix(in srgb, var(--bg) 68%, transparent);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
   border: 1px solid var(--border-soft);
   border-radius: 14px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
@@ -2445,6 +2466,9 @@ select option:checked {
   background: radial-gradient(circle, rgba(34, 211, 238, 0.45) 0%, rgba(59, 130, 246, 0.16) 45%, transparent 70%);
   animation: speak-pulse 1.7s ease-in-out infinite;
   pointer-events: none;
+  /* 静默态辉光收敛：暗呼吸（各工作/说话状态会点亮到 1，见下方辉光分层组） */
+  opacity: 0.42;
+  transition: opacity 0.5s ease-in-out;
 }
 .mind-orb .halo2 {
   inset: -34px;
@@ -2463,11 +2487,13 @@ select option:checked {
     radial-gradient(circle at 55% 52%, rgba(52, 211, 153, 0.35) 0%, transparent 36%),
     radial-gradient(circle at 52% 42%, #60a5fa 0%, #3b82f6 38%, #1d4ed8 68%, #1e3a8a 100%);
   box-shadow:
-    0 0 50px rgba(59, 130, 246, 0.7),
-    0 0 100px rgba(34, 211, 238, 0.42),
-    0 0 64px rgba(236, 72, 153, 0.2),
-    inset 0 0 36px rgba(191, 219, 254, 0.5),
+    /* 静默态：辉光收敛到暗呼吸（思考/工作/说话/聆听/召回等工作状态点亮为满强度，见下方分层组） */
+    0 0 26px rgba(59, 130, 246, 0.32),
+    0 0 56px rgba(34, 211, 238, 0.18),
+    0 0 36px rgba(236, 72, 153, 0.1),
+    inset 0 0 30px rgba(191, 219, 254, 0.4),
     inset -12px -16px 34px rgba(2, 8, 30, 0.55);
+  transition: box-shadow 0.5s ease-in-out;
   /* 形变参数全部由变量驱动：任务状态只改变量、不换动画名 → 关键帧永不重播，切换零闪烁 */
   --b0: 42% 58% 55% 45% / 48% 44% 56% 52%;
   --b1: 56% 44% 42% 58% / 44% 58% 42% 56%;
@@ -2645,6 +2671,39 @@ select option:checked {
 }
 .mind-orb.voice-listening .orb {
   animation: blob-state 6.5s ease-in-out infinite, orb-listen-breathe 0.9s ease-in-out infinite;
+}
+
+/* ── 辉光强度分层：静默收敛 / 被唤醒点亮 ──
+   水球默认暗呼吸；思考/工作/生成/说话/召回/聆听任一状态 → 晕圈与球体辉光点亮到满强度，
+   与静默形成肉眼可辨的「被唤醒」对比（box-shadow/opacity 均带 0.5s 过渡，不突变） */
+.mind-orb.thinking .halo,
+.mind-orb.working .halo,
+.mind-orb.generating .halo,
+.mind-orb.speaking .halo,
+.mind-orb.recalling .halo,
+.mind-orb.voice-listening .halo {
+  opacity: 1;
+}
+.mind-orb.thinking .halo2,
+.mind-orb.working .halo2,
+.mind-orb.generating .halo2,
+.mind-orb.speaking .halo2,
+.mind-orb.recalling .halo2,
+.mind-orb.voice-listening .halo2 {
+  opacity: 0.85;
+}
+.mind-orb.thinking .orb,
+.mind-orb.working .orb,
+.mind-orb.generating .orb,
+.mind-orb.speaking .orb,
+.mind-orb.recalling .orb,
+.mind-orb.voice-listening .orb {
+  box-shadow:
+    0 0 50px rgba(59, 130, 246, 0.7),
+    0 0 100px rgba(34, 211, 238, 0.42),
+    0 0 64px rgba(236, 72, 153, 0.2),
+    inset 0 0 36px rgba(191, 219, 254, 0.5),
+    inset -12px -16px 34px rgba(2, 8, 30, 0.55);
 }
 @keyframes orb-listen-breathe {
   0%, 100% { transform: scale(1); }

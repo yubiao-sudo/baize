@@ -514,9 +514,17 @@ export default function ChatView() {
 
   // 悬浮卡片模式：会话区平时收起为输入框一条，悬浮/聚焦展开；
   // 正在生成或麦克风聆听时强制展开（连续语音待机不强制，保持背景可见）；
+  // 白泽朗读回复期间也强制展开——正在读的内容必须可见，朗读结束（tts-state=false）后再收起；
   // 任务结束后不立刻收起——保留阅读期供查看结果，鼠标移出会话区即自动轻声收起
   const [chatOpen, setChatOpen] = useState(false);
-  const forceOpen = busy || comparing || !!streaming || listening;
+  const [ttsSpeaking, setTtsSpeaking] = useState(false);
+  useEffect(() => {
+    const onTts = (e: Event) =>
+      setTtsSpeaking(!!(e as CustomEvent<{ speaking: boolean }>).detail?.speaking);
+    window.addEventListener("baize:tts-state", onTts);
+    return () => window.removeEventListener("baize:tts-state", onTts);
+  }, []);
+  const forceOpen = busy || comparing || !!streaming || listening || ttsSpeaking;
   const [holdOpen, setHoldOpen] = useState(false); // 阅读保持期
   const chatExpanded = chatOpen || forceOpen || holdOpen;
   const hoverRef = useRef(false);
