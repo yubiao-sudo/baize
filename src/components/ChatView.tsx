@@ -1,13 +1,15 @@
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent as ReactClipboardEvent } from "react";
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useChat } from "../stores/chat";
 import { useVoice } from "../hooks/useVoice";
 import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import VoiceOrb from "./VoiceOrb";
 import ExecutionFlow from "./ExecutionFlow";
 import ReplayView from "./ReplayView";
-import { pickFiles, pickFolder, openPath, setWorkspace as setWorkspaceApi, detectImageModel, generateImage, getModelConfig, setActiveModel, onDocReady } from "../api";
+import { pickFiles, pickFolder, openPath, setWorkspace as setWorkspaceApi, detectImageModel, generateImage, getModelConfig, setActiveModel, onDocReady, saveUploadedImage } from "../api";
 import { KOKORO_VOICES } from "../api";
 import { renderMarkdown } from "../utils/markdown";
 import type { ChatMsg, ThoughtEvent, Todo, ImageCapability, ModelConfig } from "../types";
@@ -605,6 +607,49 @@ export default function ChatView() {
     }
   };
 
+  // 粘贴图片进附件：把剪贴板里的图片转 data URL → 后端落盘 → 拿到绝对路径加入附件
+  const onPasteImages = async (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const dataUrls: string[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          const dataUrl = await new Promise<string | null>((resolve) => {
+            const r = new FileReader();
+            r.onload = () => resolve(typeof r.result === "string" ? r.result : null);
+            r.onerror = () => resolve(null);
+            r.readAsDataURL(file);
+          });
+          if (dataUrl) dataUrls.push(dataUrl);
+        }
+      }
+    }
+    if (dataUrls.length === 0) return;
+    e.preventDefault();
+    for (const d of dataUrls) {
+      const path = await saveUploadedImage(d).catch(() => null);
+      if (path) setAttachments((prev) => [...prev, path]);
+    }
+  };
+
+  // 拖拽文件到窗口 → 直接把绝对路径加入附件
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "drop" && p.paths.length > 0) {
+          setAttachments((prev) => [...prev, ...p.paths]);
+        }
+      })
+      .then((f) => (unlisten = f))
+      .catch(() => {});
+    return () => unlisten?.();
+  }, []);
+
   const onSubmit = () => {
     const m = input.trim();
     if (!m && attachments.length === 0) return;
@@ -839,6 +884,7 @@ export default function ChatView() {
               if (!forceOpenRef.current && holdRef.current && !hoverRef.current) exitHold();
             }}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={onPasteImages}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();

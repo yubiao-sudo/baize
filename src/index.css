@@ -5237,6 +5237,95 @@ select option:checked {
 .galaxy-row-btn:hover { color: var(--cyan); border-color: rgba(34, 211, 238, 0.5); }
 .galaxy-row-btn.del:hover { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); }
 
+/* 记忆新增 / 遗忘 / 行内编辑 */
+.galaxy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.galaxy-add-btn,
+.galaxy-forget-btn {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.08);
+  color: var(--cyan);
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.galaxy-forget-btn { color: var(--text-faint); border-color: rgba(148, 197, 253, 0.25); background: transparent; }
+.galaxy-forget-btn:disabled { opacity: 0.4; cursor: default; }
+.galaxy-forget-btn:not(:disabled):hover { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); }
+.galaxy-forget-input {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(148, 197, 253, 0.18);
+  background: rgba(13, 18, 28, 0.6);
+  color: var(--text);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.galaxy-forget-input:focus { border-color: rgba(34, 211, 238, 0.5); }
+.galaxy-add-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(13, 18, 28, 0.72);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  border-radius: 10px;
+  padding: 10px;
+}
+.galaxy-add-input {
+  width: 100%;
+  resize: none;
+  border: 1px solid rgba(148, 197, 253, 0.18);
+  background: rgba(13, 18, 28, 0.6);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.galaxy-add-input:focus { border-color: rgba(34, 211, 238, 0.5); }
+.galaxy-add-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.galaxy-add-kind {
+  height: 28px;
+  border: 1px solid rgba(148, 197, 253, 0.18);
+  background: rgba(13, 18, 28, 0.6);
+  color: var(--text);
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+.galaxy-add-ok {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid rgba(34, 211, 238, 0.4);
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--cyan);
+  border-radius: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.galaxy-add-ok:disabled { opacity: 0.4; cursor: default; }
+.galaxy-row-edit {
+  flex: 1;
+  border: 1px solid rgba(34, 211, 238, 0.5);
+  background: rgba(13, 18, 28, 0.6);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 13px;
+}
+
 /* ============ 桌面悬浮球（#/orb 独立透明窗口） ============ */
 .orb-float-root {
   width: 100vw;

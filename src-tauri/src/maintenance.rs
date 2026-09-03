@@ -2,8 +2,8 @@
 //!
 //! 清理项：
 //!   1. 审计日志（audit_log 只写不读，裁剪到最近 5000 条 + WAL 压缩）
-//!   2. GUI 任务截屏残留（baize-screenshot-*.png 写在工作目录且此前永不删除，
-//!      单张 1~2MB，重度使用会积累上千张）
+//!   2. GUI 任务截屏残留（baize-screenshot-*.png 现写临时目录 baize-screens，
+//!      并兼容清理历史版本写在工作目录的那批；单张 1~2MB，重度使用会积累上千张）
 //!
 //! 挂载：随每小时记忆治理线程运行，每 6 小时执行一次（lib.rs）。
 //! 结果打印到控制台日志，并记录 maintenance_last 时间戳。
@@ -41,37 +41,50 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 清理指定目录下超龄的 baize-screenshot-{ts}.png，返回（删除张数, 释放字节数）
+fn prune_screenshots(dir: &std::path::Path, now: i64) -> (usize, u64) {
+    let (mut count, mut freed) = (0usize, 0u64);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (count, freed);
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(ts) = name
+            .strip_prefix("baize-screenshot-")
+            .and_then(|s| s.strip_suffix(".png"))
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        if now - ts > SCREENSHOT_MAX_AGE_MS {
+            let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
+            if std::fs::remove_file(&p).is_ok() {
+                count += 1;
+                freed += sz;
+            }
+        }
+    }
+    (count, freed)
+}
+
 /// 执行一次完整维护；任何单项失败都不阻塞其余项
 pub fn run_maintenance(store: &MemoryStore) -> MaintenanceReport {
     // 1) 审计日志裁剪 + WAL 压缩
     let audit_pruned = store.prune_audit(AUDIT_KEEP).unwrap_or(0);
 
-    // 2) 工作目录里的任务截屏残留（baize-screenshot-{ts}.png）
+    // 2) 任务截屏残留（新写临时目录 baize-screens + 兼容历史工作目录残留）
+    let now = now_ms();
     let (mut screenshots_pruned, mut screenshot_freed_bytes) = (0usize, 0u64);
+    let (c1, b1) = prune_screenshots(&std::env::temp_dir().join("baize-screens"), now);
+    screenshots_pruned += c1;
+    screenshot_freed_bytes += b1;
     if let Ok(cwd) = std::env::current_dir() {
-        let now = now_ms();
-        if let Ok(entries) = std::fs::read_dir(&cwd) {
-            for e in entries.flatten() {
-                let p = e.path();
-                let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                let Some(ts) = name
-                    .strip_prefix("baize-screenshot-")
-                    .and_then(|s| s.strip_suffix(".png"))
-                    .and_then(|s| s.parse::<i64>().ok())
-                else {
-                    continue;
-                };
-                if now - ts > SCREENSHOT_MAX_AGE_MS {
-                    let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
-                    if std::fs::remove_file(&p).is_ok() {
-                        screenshots_pruned += 1;
-                        screenshot_freed_bytes += sz;
-                    }
-                }
-            }
-        }
+        let (c2, b2) = prune_screenshots(&cwd, now);
+        screenshots_pruned += c2;
+        screenshot_freed_bytes += b2;
     }
 
     MaintenanceReport {

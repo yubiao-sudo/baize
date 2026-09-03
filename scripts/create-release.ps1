@@ -1,10 +1,10 @@
-﻿# 创建/更新 GitHub Release 并上传 NSIS 安装包
+# 创建/更新 GitHub Release 并上传 NSIS 安装包
 # Token 从 git 凭据存储读取（git push 时已保存），不回显
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
 
-$tag  = "v0.3.0"
-$name = "v0.3.0 · 本地AI网关 + 银河根层背景修复 + 清理旧前端"
+$tag  = "v0.4.0"
+$name = "v0.4.0 · 记忆管理增强 + 多模态输入 + 稳定性修复"
 $body = "## 新增`n- 本地 AI 网关：127.0.0.1 起 OpenAI 兼容 HTTP 服务，让 VS Code 插件 / Obsidian 等任意 OpenAI 兼容客户端复用白泽的模型路由、长期记忆与只读工具；含 /v1/chat/completions、/v1/models、/api/memory/remember、/api/memory/search、/api/tools、/api/tools/execute，支持流式 SSE 与 Bearer 令牌，仅监听回环地址`n- 网关异常请求返回明确 400 JSON 错误（不再空连接）`n`n## 修复`n- 银河背景提升到整窗根层：侧边栏 / 右侧面板卡片缝隙与收起后不再出现黑色断层（毛玻璃真正透出星光）`n`n## 优化`n- 删除废弃的 frontend / nexus-frontend 旧前端目录`n- 后端 dead code 与编译警告清理、调试编译提速、前端依赖瘦身（移除 d3 / three）"
 
 $credFile = Join-Path $env:USERPROFILE ".git-credentials"

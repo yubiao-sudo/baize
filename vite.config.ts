@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
+    // 显式绑 IPv4：Node 17+ 默认把 localhost 解析成 ::1(IPv6)，WebView2 走 127.0.0.1 会连不上导致白屏
+    host: "127.0.0.1",
     port: 1421,
     strictPort: true,
   },

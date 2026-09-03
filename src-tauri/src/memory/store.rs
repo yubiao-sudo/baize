@@ -1469,6 +1469,35 @@ impl MemoryStore {
         Ok(affected > 0)
     }
 
+    /// 编辑一条记忆的内容（用户手动改写），同步刷新访问时间并重算 embedding
+    pub fn update_memory(&self, mem_id: &str, content: &str) -> Result<bool, String> {
+        let t = content.trim();
+        if t.is_empty() {
+            return Err("记忆内容不能为空".to_string());
+        }
+        let embedding = crate::embedding::embed(t)
+            .ok()
+            .and_then(|v| serde_json::to_string(&v).ok());
+        let conn = self.conn.lock().unwrap();
+        let affected = conn
+            .execute(
+                "UPDATE memories SET content = ?2, embedding = ?3, last_access = ?4 WHERE mem_id = ?1",
+                params![mem_id, t, embedding, Self::now()],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(affected > 0)
+    }
+
+    /// 手动新增一条记忆（用户显式要求「记住 X」），给较高初始显著度以显式优先
+    pub fn add_memory(&self, content: &str, kind: &str) -> Result<(), String> {
+        let t = content.trim();
+        if t.is_empty() {
+            return Err("记忆内容不能为空".to_string());
+        }
+        let k = if kind.trim().is_empty() { "fact" } else { kind.trim() };
+        self.insert_with_salience(t, k, 50)
+    }
+
     /// 清空全部记忆，返回删除条数
     pub fn clear_memories(&self) -> Result<usize, String> {
         let conn = self.conn.lock().unwrap();

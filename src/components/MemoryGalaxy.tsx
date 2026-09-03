@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { deleteMemoryById, getMemoryGraph, listMemoriesPanel, onMemoryRecall, pinMemoryById } from "../api";
+import { addMemory, deleteMemoryById, forgetMemory, getMemoryGraph, listMemoriesPanel, onMemoryRecall, pinMemoryById, updateMemoryById } from "../api";
 import type { MemoryGraph, MemoryRow } from "../types";
 
 /**
@@ -75,6 +75,15 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
   const [view, setView] = useState<"map" | "list">("map");
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [kindTab, setKindTab] = useState("");
+  // 新增记忆
+  const [newOpen, setNewOpen] = useState(false);
+  const [newText, setNewText] = useState("");
+  const [newKind, setNewKind] = useState("fact");
+  // 按关键词遗忘
+  const [forgetText, setForgetText] = useState("");
+  // 行内编辑
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
   const queryRef = useRef("");
   queryRef.current = query;
   const pickedRef = useRef<MemoryRow | null>(null);
@@ -101,6 +110,39 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
     await deleteMemoryById(id).catch(() => {});
     setRows((r) => r.filter((x) => x.mem_id !== id));
     setPicked(null);
+    void getMemoryGraph().then(setGraph).catch(() => {});
+  };
+
+  const handleAdd = async () => {
+    const t = newText.trim();
+    if (!t) return;
+    await addMemory(t, newKind).catch(() => {});
+    setNewText("");
+    setNewOpen(false);
+    loadRows(kindTab);
+    void getMemoryGraph().then(setGraph).catch(() => {});
+  };
+
+  const handleForget = async () => {
+    const k = forgetText.trim();
+    if (!k) return;
+    await forgetMemory(k).catch(() => {});
+    setForgetText("");
+    loadRows(kindTab);
+    void getMemoryGraph().then(setGraph).catch(() => {});
+  };
+
+  const startEdit = (m: MemoryRow) => {
+    setEditId(m.mem_id);
+    setEditText(m.content);
+  };
+
+  const saveEdit = async () => {
+    if (!editId) return;
+    const t = editText.trim();
+    if (t) await updateMemoryById(editId, t).catch(() => {});
+    setEditId(null);
+    loadRows(kindTab);
     void getMemoryGraph().then(setGraph).catch(() => {});
   };
 
@@ -305,6 +347,53 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
       )}
       {view === "list" && (
         <div className="galaxy-list">
+          <div className="galaxy-toolbar">
+            <button
+              className="galaxy-add-btn"
+              onClick={() => {
+                setNewOpen((v) => !v);
+                setNewText("");
+              }}
+            >
+              {newOpen ? "取消" : "＋ 记一条"}
+            </button>
+            <input
+              className="galaxy-forget-input"
+              placeholder="按关键词遗忘…"
+              value={forgetText}
+              onChange={(e) => setForgetText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleForget();
+              }}
+            />
+            <button className="galaxy-forget-btn" onClick={() => void handleForget()} disabled={!forgetText.trim()}>
+              遗忘
+            </button>
+          </div>
+          {newOpen && (
+            <div className="galaxy-add-panel">
+              <textarea
+                className="galaxy-add-input"
+                placeholder="输入要记住的内容…"
+                value={newText}
+                onChange={(e) => setNewText(e.target.value)}
+                rows={2}
+                autoFocus
+              />
+              <div className="galaxy-add-actions">
+                <select className="galaxy-add-kind" value={newKind} onChange={(e) => setNewKind(e.target.value)}>
+                  {Object.entries(KIND_LABEL).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+                <button className="galaxy-add-ok" onClick={() => void handleAdd()} disabled={!newText.trim()}>
+                  保存
+                </button>
+              </div>
+            </div>
+          )}
           {rows.length === 0 && <div className="galaxy-empty">该类型下暂无记忆。</div>}
           {rows.map((m) => (
             <div key={m.mem_id} className="galaxy-row" onClick={() => setPicked(m)}>
@@ -317,10 +406,47 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
               >
                 {KIND_LABEL[m.kind] || m.kind}
               </span>
-              <span className="galaxy-row-content">{m.content}</span>
+              {editId === m.mem_id ? (
+                <input
+                  className="galaxy-row-edit"
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveEdit();
+                    if (e.key === "Escape") setEditId(null);
+                  }}
+                  autoFocus
+                />
+              ) : (
+                <span className="galaxy-row-content">{m.content}</span>
+              )}
               <span className="galaxy-row-sal" title="显著度（置顶或常用心会提升）">
                 {m.salience}
               </span>
+              {editId === m.mem_id ? (
+                <button
+                  className="galaxy-row-btn"
+                  title="保存修改"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void saveEdit();
+                  }}
+                >
+                  ✓
+                </button>
+              ) : (
+                <button
+                  className="galaxy-row-btn"
+                  title="编辑这条记忆"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEdit(m);
+                  }}
+                >
+                  ✎
+                </button>
+              )}
               <button
                 className="galaxy-row-btn"
                 title="置顶：提升召回权重"
@@ -355,7 +481,7 @@ export default function MemoryGalaxy({ onClose }: { onClose: () => void }) {
       <div className="galaxy-foot">
         {view === "map"
           ? "点击星星查看记忆 · Esc 关闭 · 白泽检索记忆时光线会射向水球"
-          : "置顶提升召回优先级 · ✕ 删除 · Esc 关闭"}
+          : "＋ 记一条 · ✎ 编辑 · ↑ 置顶 · ✕ 删除 · 遗忘按关键词 · Esc 关闭"}
       </div>
     </div>
   );

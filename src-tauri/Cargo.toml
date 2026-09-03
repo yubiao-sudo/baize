@@ -1,6 +1,6 @@
 [package]
 name = "baize"
-version = "0.3.0"
+version = "0.4.0"
 description = "BaiZe 桌面 Agent 框架 · M0 骨架（本地 Ollama 对话 + 只读文件工具 + 权限审批）"
 edition = "2021"
 

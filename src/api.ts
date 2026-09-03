@@ -530,6 +530,26 @@ export async function pinMemoryById(memId: string): Promise<boolean> {
   return invoke<boolean>("pin_memory", { memId });
 }
 
+/** 编辑一条记忆的内容（用户手动改写） */
+export async function updateMemoryById(memId: string, content: string): Promise<boolean> {
+  return invoke<boolean>("update_memory", { memId, content });
+}
+
+/** 手动新增一条记忆（用户显式要求「记住 X」），kind 缺省 fact */
+export async function addMemory(content: string, kind?: string): Promise<void> {
+  return invoke<void>("add_memory", { content, kind: kind || null });
+}
+
+/** 按关键词遗忘相关记忆，返回删除条数 */
+export async function forgetMemory(keyword: string): Promise<number> {
+  return invoke<number>("forget_memory", { keyword });
+}
+
+/** 保存前端粘贴/拖入的图片（base64 或 data URL）到本地，返回落盘绝对路径 */
+export async function saveUploadedImage(data: string): Promise<string> {
+  return invoke<string>("save_uploaded_image", { data });
+}
+
 // ---------------- 知识库管理 ----------------
 
 export async function getRagState(): Promise<RagDoc[]> {

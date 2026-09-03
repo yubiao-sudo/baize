@@ -1541,6 +1541,73 @@ pub async fn pin_memory(state: State<'_, AppState>, mem_id: String) -> Result<bo
         .map_err(|e| format!("任务失败: {e}"))?
 }
 
+/// 编辑一条记忆的内容（用户手动改写），返回是否存在并更新
+#[tauri::command]
+pub async fn update_memory(
+    state: State<'_, AppState>,
+    mem_id: String,
+    content: String,
+) -> Result<bool, String> {
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || store.update_memory(&mem_id, &content))
+        .await
+        .map_err(|e| format!("任务失败: {e}"))?
+}
+
+/// 手动新增一条记忆（用户显式要求「记住 X」），kind 缺省 fact
+#[tauri::command]
+pub async fn add_memory(
+    state: State<'_, AppState>,
+    content: String,
+    kind: Option<String>,
+) -> Result<(), String> {
+    let store = state.store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.add_memory(&content, kind.as_deref().unwrap_or("fact"))
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
+/// 保存前端粘贴/拖入的图片（base64 或 data URL）到本地临时目录，返回落盘路径供附件使用
+#[tauri::command]
+pub async fn save_uploaded_image(data: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine as _;
+        // 兼容 data:image/png;base64,xxxx 与纯 base64 两种形式
+        let (mime, b64) = match data.strip_prefix("data:") {
+            Some(rest) => {
+                let (mime_part, b64_part) = rest
+                    .split_once(',')
+                    .ok_or_else(|| "无效的 data URL".to_string())?;
+                let mime = mime_part.split(';').next().unwrap_or("image/png").to_string();
+                (mime, b64_part.to_string())
+            }
+            None => ("image/png".to_string(), data),
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("base64 解码失败: {e}"))?;
+        if bytes.is_empty() {
+            return Err("图片数据为空".to_string());
+        }
+        let ext = match mime.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            "image/bmp" => "bmp",
+            _ => "png",
+        };
+        let dir = std::env::temp_dir().join("baize-uploads");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {e}"))?;
+        let path = dir.join(format!("paste_{}.{ext}", uuid::Uuid::new_v4()));
+        std::fs::write(&path, &bytes).map_err(|e| format!("写入图片失败: {e}"))?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("任务失败: {e}"))?
+}
+
 // ---------------- 知识库管理（RAG） ----------------
 
 #[tauri::command]
