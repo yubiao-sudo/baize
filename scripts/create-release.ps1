@@ -1,4 +1,4 @@
-﻿﻿# 创建/更新 GitHub Release 并上传 NSIS 安装包
+# 创建/更新 GitHub Release 并上传 NSIS 安装包
 # Token 从 git 凭据存储读取（git push 时已保存），不回显
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
