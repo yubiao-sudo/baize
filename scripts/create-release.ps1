@@ -1,11 +1,11 @@
-# 创建/更新 GitHub Release 并上传 NSIS 安装包
+﻿﻿# 创建/更新 GitHub Release 并上传 NSIS 安装包
 # Token 从 git 凭据存储读取（git push 时已保存），不回显
 # 用法：改 $tag 后运行；同名旧资产会先删除再上传
 $ErrorActionPreference = "Stop"
 
-$tag  = "v0.4.0"
-$name = "v0.4.0 · 记忆管理增强 + 多模态输入 + 稳定性修复"
-$body = "## 新增`n- 本地 AI 网关：127.0.0.1 起 OpenAI 兼容 HTTP 服务，让 VS Code 插件 / Obsidian 等任意 OpenAI 兼容客户端复用白泽的模型路由、长期记忆与只读工具；含 /v1/chat/completions、/v1/models、/api/memory/remember、/api/memory/search、/api/tools、/api/tools/execute，支持流式 SSE 与 Bearer 令牌，仅监听回环地址`n- 网关异常请求返回明确 400 JSON 错误（不再空连接）`n`n## 修复`n- 银河背景提升到整窗根层：侧边栏 / 右侧面板卡片缝隙与收起后不再出现黑色断层（毛玻璃真正透出星光）`n`n## 优化`n- 删除废弃的 frontend / nexus-frontend 旧前端目录`n- 后端 dead code 与编译警告清理、调试编译提速、前端依赖瘦身（移除 d3 / three）"
+$tag  = "v0.5.0"
+$name = "v0.5.0 · 首次启动环境自检 + 运行时自动索引"
+$body = "## 新增`n- 首次安装启动环境自检：全屏引导层逐项检测运行环境（PowerShell / 网络连通 / Windows OCR 中文语言包 / 磁盘空间 / 管理员权限 / Python / Kokoro 本地语音 / Tesseract / 音频设备 / Node.js / Git），每项独立超时，单卡片实时出结论`n- 必需项缺失软拦截：给出影响说明与修复命令（一键复制），可「仍然进入」；增强项缺失不影响核心功能，Esc 可跳过引导`n- 运行时自动索引：检测到的 Python / Kokoro / Tesseract / Node / Git 路径写入本地配置，相关功能直接使用无需重复探测；本地 Kokoro 服务目录不再硬编码，任意安装位置均可识别`n- 非首次启动零打扰：只读缓存报告秒判断；若必需环境仍未就绪（上次跳过/带病进入），主界面顶部非阻塞提示卡可一键复检，通过后自动消失`n- 设置新增「环境检测」页签：查看上次报告、手动重新检测`n`n## 优化`n- 探测子进程统一静默启动（无黑窗闪烁），逐项 4-10s 独立超时不互相拖垮；并发触发自动防重"
 
 $credFile = Join-Path $env:USERPROFILE ".git-credentials"
 $token = $null

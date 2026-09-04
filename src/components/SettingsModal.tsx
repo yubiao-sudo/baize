@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  clipboardSetText,
   clearRag,
+  envDetectAll,
+  envGetState,
   feishuSaveCredentials,
   feishuStart,
   feishuStop,
@@ -65,12 +68,14 @@ const SETTING_PAGES = [
   { id: "voice", label: "语音朗读", desc: "TTS 音色" },
   { id: "notify", label: "通知与音效", desc: "升级 · 提示音" },
   { id: "bots", label: "消息与机器人", desc: "IM · 微信 · 飞书" },
+  { id: "environment", label: "环境检测", desc: "运行环境 · 修复指引" },
   { id: "about", label: "关于与更新", desc: "版本 · 自更新" },
 ] as const;
 type SettingsPageId = (typeof SETTING_PAGES)[number]["id"];
 import type {
   DbConnection,
   EmailConfig,
+  EnvItem,
   McpConfig,
   ModelConfig,
   ModelProfile,
@@ -1272,6 +1277,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             </section>
             </div>
 
+            {/* 环境检测页 */}
+            <div className="settings-page" style={{ display: page === "environment" ? undefined : "none" }}>
+              <EnvCheckPage />
+            </div>
+
             {/* 关于与更新页 */}
             <div className="settings-page" style={{ display: page === "about" ? undefined : "none" }}>
             {/* ============ 关于与更新 ============ */}
@@ -2323,5 +2333,108 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ───────────── 环境检测页（与首次启动全屏引导共用同一套后端命令） ─────────────
+
+const ENV_STATUS_ICON: Record<string, string> = { ok: "✓", warn: "!", missing: "✕" };
+const ENV_STATUS_LABEL: Record<string, string> = { ok: "通过", warn: "注意", missing: "缺失" };
+
+function EnvCheckPage() {
+  const [items, setItems] = useState<EnvItem[]>([]);
+  const [running, setRunning] = useState(false);
+  const [lastTime, setLastTime] = useState<number | null>(null);
+  const [copied, setCopied] = useState("");
+
+  useEffect(() => {
+    envGetState()
+      .then((st) => {
+        setItems(st.report?.items ?? []);
+        setLastTime(st.report?.time ?? null);
+      })
+      .catch(() => {});
+  }, []);
+
+  const recheck = async () => {
+    setRunning(true);
+    setItems([]);
+    try {
+      const list = await envDetectAll();
+      setItems(list);
+      setLastTime(Date.now());
+    } catch {
+      /* 失败保留空态 */
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const copyFix = async (it: EnvItem) => {
+    if (!it.fix_cmd) return;
+    try {
+      await clipboardSetText(it.fix_cmd);
+      setCopied(it.id);
+      setTimeout(() => setCopied(""), 1500);
+    } catch {
+      /* 剪贴板不可用时忽略 */
+    }
+  };
+
+  const requiredMissing = items.filter((i) => i.level === "required" && i.status === "missing");
+
+  return (
+    <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+      <h4 style={{ margin: "4px 0 8px", color: "var(--text)" }}>环境检测</h4>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          {lastTime ? `上次检测：${new Date(lastTime).toLocaleString()}` : "尚未检测"}
+        </span>
+        <span className="side-spacer" style={{ flex: 1 }} />
+        <button className="acui-btn" disabled={running} onClick={() => void recheck()}>
+          {running ? "检测中…" : "重新检测"}
+        </button>
+      </div>
+      {items.length === 0 && !running && (
+        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          点击「重新检测」对运行环境做一次体检（PowerShell / 网络 / OCR / 磁盘 / 本地语音等）
+        </div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((it) => (
+          <div className={`onb-row st-${it.status}`} key={it.id}>
+            <span className="onb-ico">{ENV_STATUS_ICON[it.status]}</span>
+            <div className="onb-mid">
+              <div className="onb-name">
+                {it.name}
+                {it.version && <span className="onb-ver">{it.version}</span>}
+              </div>
+              <div className="onb-sub">{it.detail || it.vendor || ENV_STATUS_LABEL[it.status]}</div>
+            </div>
+            <span className="onb-tag">{ENV_STATUS_LABEL[it.status]}</span>
+          </div>
+        ))}
+      </div>
+      {requiredMissing.length > 0 && (
+        <div className="onb-fix">
+          <div className="onb-fix-title">必需环境缺失（{requiredMissing.length} 项）</div>
+          {requiredMissing.map((it) => (
+            <div className="onb-fix-item" key={it.id}>
+              <div className="onb-fix-text">
+                <b>{it.name}</b>：{it.hint || it.detail}
+              </div>
+              {it.fix_cmd && (
+                <button className="onb-btn" onClick={() => void copyFix(it)}>
+                  {copied === it.id ? "已复制" : "复制命令"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 10, lineHeight: 1.6 }}>
+        检测到的运行时路径会自动索引进本地配置，相关功能（如本地 Kokoro 语音）直接使用，无需重复探测
+      </div>
+    </section>
   );
 }

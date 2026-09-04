@@ -874,3 +874,35 @@ export interface ProjectProfile {
 
 // 自动识别被测项目的返回：单个项目档案（test_auto_detect_project）
 export type ProjectDetectResult = ProjectProfile;
+
+// ───────────── 首次启动环境自检（environment.rs） ─────────────
+
+/** 单项检测结果：level 必需/增强/信息；status 通过/告警/缺失 */
+export interface EnvItem {
+  id: string;
+  name: string;
+  level: "required" | "optional" | "info";
+  status: "ok" | "warn" | "missing";
+  version: string;
+  /** 厂商 / 来源 */
+  vendor: string;
+  /** 检测到的安装路径（自动索引进 settings） */
+  path: string;
+  detail: string;
+  /** 缺失时的影响说明 / 修复指引 */
+  hint: string;
+  /** 可一键复制的修复命令（winget …） */
+  fix_cmd: string;
+}
+
+/** 完整检测报告（settings env_report 落盘结构） */
+export interface EnvReport {
+  time: number;
+  items: EnvItem[];
+}
+
+/** 启动时秒判断用的状态：缓存报告 + 首次引导标记（"" = 未引导） */
+export interface EnvState {
+  report: EnvReport | null;
+  onboarding_done: string;
+}

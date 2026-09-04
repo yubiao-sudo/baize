@@ -57,6 +57,8 @@ import type {
   ProjectProfile,
   OpenApiImportResult,
   ExecutionRecord,
+  EnvItem,
+  EnvState,
 } from "./types";
 
 export async function chat(
@@ -1301,4 +1303,32 @@ export async function getImChannels(): Promise<ImChannelInfo[]> {
 /** 获取 IM 消息收发日志（手机发来的指令 + 白泽回传的审批/结果） */
 export async function getImLog(): Promise<ImLogEntry[]> {
   return invoke<ImLogEntry[]>("im_log");
+}
+
+// ---------------- 首次启动环境自检（environment.rs） ----------------
+
+/** 启动时秒判断：读缓存报告 + 首次引导标记（不触发探测） */
+export async function envGetState(): Promise<EnvState> {
+  return invoke<EnvState>("env_get_state");
+}
+
+/** 全量环境检测：逐项完成经 onEnvCheckItem 实时推送，结束后落盘并返回全量 */
+export async function envDetectAll(): Promise<EnvItem[]> {
+  return invoke<EnvItem[]>("env_detect_all");
+}
+
+/** 写入首次引导标记（"done" = 完成；"skipped" = 跳过） */
+export async function envSetOnboarding(done: "done" | "skipped"): Promise<void> {
+  return invoke<void>("env_set_onboarding", { done });
+}
+
+/** 订阅逐项检测结果（baize:env-check） */
+export async function onEnvCheckItem(cb: (item: EnvItem) => void): Promise<() => void> {
+  const unlisten = await listen<EnvItem>("baize:env-check", (e) => cb(e.payload));
+  return unlisten;
+}
+
+/** 写文本进剪贴板（修复命令一键复制用） */
+export async function clipboardSetText(text: string): Promise<void> {
+  return invoke<void>("clipboard_set_text", { text });
 }

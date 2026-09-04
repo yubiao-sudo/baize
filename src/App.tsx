@@ -20,7 +20,11 @@ const MeetingRoomPanel = lazy(() => import("./components/MeetingRoomPanel"));
 const ChromePanel = lazy(() => import("./components/ChromePanel"));
 const UiTestPanel = lazy(() => import("./components/UiTestPanel"));
 const Galaxy = lazy(() => import("./components/Galaxy"));
+// 首次启动环境自检（全屏引导层）+ 非首次启动提示卡
+const Onboarding = lazy(() => import("./components/Onboarding"));
+import { EnvNotice } from "./components/Onboarding";
 import {
+  envGetState,
   getPendingPermissions,
   getWorkMode,
   onChatRoundReset,
@@ -197,6 +201,13 @@ export default function App() {
   const [maximized, setMaximized] = useState(false);
   // 标题栏「⋯」功能菜单
   const [menuOpen, setMenuOpen] = useState(false);
+  // 首次启动环境自检：null = 未判定；true = 显示全屏引导；false = 正常进入（EnvNotice 自查提示）
+  const [onboarding, setOnboarding] = useState<boolean | null>(null);
+  useEffect(() => {
+    envGetState()
+      .then((st) => setOnboarding(!st.onboarding_done))
+      .catch(() => setOnboarding(false));
+  }, []);
   useEffect(() => {
     const win = getCurrentWindow();
     let disposed = false;
@@ -656,6 +667,16 @@ export default function App() {
       <main className="main">
         <ChatView />
       </main>
+
+      {/* 非首次启动：必需环境仍缺失时的非阻塞提示卡（自查缓存报告，通过则不渲染） */}
+      {onboarding === false && <EnvNotice />}
+
+      {/* 首次安装启动：全屏环境自检引导层 */}
+      {onboarding === true && (
+        <Suspense fallback={null}>
+          <Onboarding onFinish={() => setOnboarding(false)} />
+        </Suspense>
+      )}
 
       <aside className={`right-panel ${showRight ? "" : "collapsed"}`}>
         <Suspense fallback={null}>

@@ -4,7 +4,7 @@
 //!  - local：浏览器 speechSynthesis（前端直调，零配置）
 //!  - cloud：OpenAI 兼容 /audio/speech 接口（豆包同源音色 / CosyVoice 等，
 //!    如硅基流动 https://api.siliconflow.cn/v1 + FunAudioLLM/CosyVoice2-0.5B）
-//!  - kokoro：本地 Kokoro-82M（F:\kokoro-tts，OpenAI 兼容本地服务，免费离线 52 音色）
+//!  - kokoro：本地 Kokoro-82M（目录可由环境检测自动索引，OpenAI 兼容本地服务，免费离线音色）
 //!
 //! 云端合成由后端请求 → 音频落盘临时目录 → 前端 <audio> 播放（可做真实频谱律动）。
 
@@ -111,8 +111,23 @@ pub async fn tts_synthesize(
     }
 }
 
-/// 本地 Kokoro TTS 安装目录（server.py + venv，由安装脚本落盘）
-const KOKORO_DIR: &str = "F:\\kokoro-tts";
+/// 本地 Kokoro TTS 安装目录：默认 F:\kokoro-tts（安装脚本落盘位置），
+/// 环境检测（environment.rs）自动索引到实际目录后写 settings("runtime_kokoro_dir") 并同步到此处
+static KOKORO_DIR_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
+
+/// 环境检测/设置页更新本地 Kokoro 安装目录（进程内热生效）
+pub fn set_kokoro_dir(dir: String) {
+    *KOKORO_DIR_OVERRIDE.write().unwrap() = Some(dir);
+}
+
+fn kokoro_dir() -> String {
+    KOKORO_DIR_OVERRIDE
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "F:\\kokoro-tts".into())
+}
+
 /// 本地 Kokoro 默认服务地址（start_server.bat / 自动拉起均用 9800 端口）
 const KOKORO_DEFAULT_BASE: &str = "http://127.0.0.1:9800/v1";
 
@@ -134,11 +149,12 @@ async fn kokoro_ensure_running(origin: String) -> Result<(), String> {
             return Ok(());
         }
         // 未运行：从安装目录拉起本地服务（无窗口后台进程）
-        let dir = std::path::Path::new(KOKORO_DIR);
+        let dir_s = kokoro_dir();
+        let dir = std::path::Path::new(&dir_s);
         let py = dir.join("venv").join("Scripts").join("python.exe");
         if !py.exists() {
             return Err(format!(
-                "本地 Kokoro 未安装（缺少 {KOKORO_DIR}\\venv）。请先完成安装，或临时切换其他语音后端"
+                "本地 Kokoro 未安装（缺少 {dir_s}\\venv）。请先完成安装，或临时切换其他语音后端"
             ));
         }
         let script = dir.join("server.py");
@@ -167,7 +183,7 @@ async fn kokoro_ensure_running(origin: String) -> Result<(), String> {
             }
         }
         Err(format!(
-            "本地 Kokoro 服务启动超时（首次启动需下载模型约 800MB）。可先手动运行 {KOKORO_DIR}\\start_server.bat 完成预热"
+            "本地 Kokoro 服务启动超时（首次启动需下载模型约 800MB）。可先手动运行 {dir_s}\\start_server.bat 完成预热"
         ))
     })
     .await

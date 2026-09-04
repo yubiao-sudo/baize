@@ -11,6 +11,7 @@ mod heartbeat;
 mod document;
 mod email;
 mod embedding;
+mod environment;
 mod feishu;
 mod gateway;
 mod grep;
@@ -142,6 +143,10 @@ impl AppState {
         // TTS 语音模型配置：从持久化恢复
         if let Ok(Some(json)) = store.get_setting("tts_config") {
             tts::restore(&json);
+        }
+        // Kokoro 本地服务目录：环境检测自动索引（缺省回退 F:\kokoro-tts）
+        if let Ok(Some(dir)) = store.get_setting("runtime_kokoro_dir") {
+            tts::set_kokoro_dir(dir);
         }
 
         // 数据库连接配置：从持久化恢复
@@ -1091,6 +1096,9 @@ pub fn run() {
             commands::toggle_float_orb,
             commands::set_workspace,
             commands::env_check,
+            environment::env_detect_all,
+            environment::env_get_state,
+            environment::env_set_onboarding,
             commands::software_search,
             commands::software_list,
             commands::system_get,
