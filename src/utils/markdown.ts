@@ -17,6 +17,15 @@ function copyCodeBlock(btn: HTMLElement) {
     window.setTimeout(() => {
       btn.textContent = "复制";
     }, 1500);
+    // 复制成功：小星星从按钮飞向银河（fx.ts 全局监听渲染）
+    if (msg === "已复制") {
+      const r = btn.getBoundingClientRect();
+      window.dispatchEvent(
+        new CustomEvent("baize:sparkle", {
+          detail: { x: r.left + r.width / 2, y: r.top + r.height / 2 },
+        })
+      );
+    }
   };
   // WebView 里 navigator.clipboard 可能因权限失败，降级到 execCommand
   const fallback = () => {

@@ -953,8 +953,8 @@ select option:checked {
   width: min(680px, calc(100% - 48px));
   max-height: min(86vh, 960px);
   overflow: hidden;
-  padding: 14px 18px 12px;
-  gap: 10px;
+  padding: 10px 18px 8px;
+  gap: 8px;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: var(--surface-glass, rgba(15, 23, 42, 0.72));
@@ -1026,12 +1026,16 @@ select option:checked {
 }
 
 /* ============ 对话区科幻背景：星尘 + 极光 + 扫描线（纯装饰，不挡交互） ============ */
+/* 漂移动画走 transform（可合成零重绘）：background-position 动画会每帧重绘整块
+   聊天区域并与毛玻璃 backdrop 重新混合，是上边界颤抖与鼠标滑动掉帧的根因。
+   inset 负值做出血，位移时不露边。 */
 .chat::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: -8%;
   z-index: -1;
   pointer-events: none;
+  will-change: transform;
   background:
     /* 极光晕：两团缓慢漂移的深色光斑 */
     radial-gradient(42% 34% at 18% 8%, rgba(37, 99, 235, 0.14) 0%, transparent 70%),
@@ -1047,7 +1051,7 @@ select option:checked {
   background-size:
     100% 100%, 100% 100%, 100% 100%,
     340px 300px, 420px 380px, 380px 340px, 460px 400px, 400px 360px, 360px 320px;
-  animation: chat-bg-drift 60s linear infinite;
+  animation: chat-bg-drift 60s ease-in-out infinite;
 }
 /* 扫描线 + 缓慢下移的高亮扫描带（极低透明度，不干扰阅读） */
 .chat::after {
@@ -1061,12 +1065,8 @@ select option:checked {
     linear-gradient(180deg, transparent 0%, rgba(34, 211, 238, 0.03) 48%, transparent 52%);
 }
 @keyframes chat-bg-drift {
-  0% { background-position:
-    0% 0%, 100% 100%, 70% 10%,
-    0 0, 0 0, 0 0, 0 0, 0 0, 0 0; }
-  100% { background-position:
-    6% 4%, 94% 94%, 66% 16%,
-    -340px 300px, 420px -380px, -380px 340px, 460px 400px, -400px -360px, 380px 320px; }
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(16px, 10px, 0); }
 }
 
 .chat-scroll {
@@ -1112,7 +1112,7 @@ select option:checked {
 .chat-jump {
   position: absolute;
   right: 34px;
-  bottom: 132px;
+  bottom: 104px;
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -2010,9 +2010,9 @@ select option:checked {
 .chat-input-area {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 .chat-input textarea {
@@ -2057,14 +2057,7 @@ select option:checked {
   background: var(--accent-soft);
 }
 
-.chat-input-hint {
-  font-size: 11px;
-  color: var(--text-faint);
-  text-align: center;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  line-height: 1.5;
-}
+/* 快捷键提示已移入输入框 placeholder（省一行高度） */
 
 /* ============ 附件 / 工作空间 ============ */
 .attach-bar {
@@ -5853,4 +5846,355 @@ select option:checked {
 .env-notice-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: #fbbf24; box-shadow: 0 0 8px #fbbf24; flex: none;
+}
+
+/* ============ 视觉优化层（2026-09-04） ============ */
+
+/* ─── 一档：排版细节打磨 ─── */
+
+/* 代码块玻璃拟态：mac 三色窗点 + 玻璃底 + 悬停辉光 */
+.codeblock {
+  position: relative;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+  transition: border-color var(--dur-base) var(--ease-in-out),
+    box-shadow var(--dur-base) var(--ease-in-out);
+}
+.codeblock:hover {
+  border-color: var(--accent-border-strong);
+  box-shadow: 0 2px 16px rgba(34, 211, 238, 0.14);
+}
+.codeblock-head {
+  padding-left: 28px;
+}
+.codeblock-head::before {
+  content: "";
+  position: absolute;
+  left: 12px; top: 50%;
+  transform: translateY(-50%);
+  width: 52px; height: 8px;
+  background:
+    radial-gradient(circle at 6px 4px, #ff5f56 4.5px, transparent 5px),
+    radial-gradient(circle at 22px 4px, #ffbd2e 4.5px, transparent 5px),
+    radial-gradient(circle at 38px 4px, #27c93f 4.5px, transparent 5px);
+  pointer-events: none;
+  opacity: 0.85;
+}
+.codeblock-lang {
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cyan);
+  opacity: 0.7;
+}
+.codeblock > pre {
+  background: linear-gradient(180deg, #0d1117 0%, #0b0d12 100%);
+}
+.codeblock > pre code {
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.codeblock-btn {
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+.codeblock-btn:hover {
+  border-color: var(--cyan);
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--cyan);
+}
+
+/* 引用块全息面板：左侧发光竖条 + 极淡扫描线纹理 */
+.msg-md blockquote {
+  position: relative;
+  margin: 0.6em 0;
+  padding: 8px 14px 8px 18px;
+  border: none;
+  border-left: 3px solid var(--cyan);
+  background: linear-gradient(90deg,
+    rgba(34, 211, 238, 0.06) 0%,
+    rgba(34, 211, 238, 0.01) 100%);
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.6;
+  border-radius: 0 6px 6px 0;
+  overflow: hidden;
+}
+.msg-md blockquote::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0,
+    transparent 2px,
+    rgba(34, 211, 238, 0.025) 2px,
+    rgba(34, 211, 238, 0.025) 3px
+  );
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+/* 表格玻璃化 */
+.msg-md table {
+  border: none;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.2);
+}
+.msg-md th {
+  background: linear-gradient(180deg, rgba(34, 211, 238, 0.1), rgba(34, 211, 238, 0.04));
+  border: none;
+  border-bottom: 1px solid var(--accent-border);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cyan);
+}
+.msg-md td {
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.015);
+  transition: background var(--dur-fast) var(--ease-in-out);
+}
+.msg-md tr:hover td {
+  background: rgba(34, 211, 238, 0.06);
+}
+.msg-md tr:last-child td {
+  border-bottom: none;
+}
+
+/* 聊天区排版 */
+.msg-md {
+  max-width: 72ch;
+  line-height: 1.7;
+  font-size: 13px;
+}
+.msg-md h1, .msg-md h2, .msg-md h3 {
+  font-weight: 300;
+  position: relative;
+  padding-bottom: 4px;
+}
+.msg-md h1::after, .msg-md h2::after {
+  content: "";
+  position: absolute;
+  left: 0; bottom: 0;
+  width: 32px; height: 2px;
+  background: linear-gradient(90deg, var(--cyan), transparent);
+  border-radius: 1px;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(34, 211, 238, 0.2);
+  border-radius: 3px;
+  transition: background var(--dur-fast) var(--ease-in-out);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.4);
+}
+
+/* 文字选区 */
+::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: #fff;
+}
+[data-theme="light-glass"] ::selection {
+  background: rgba(37, 99, 235, 0.18);
+}
+
+/* 输入框聚焦时底部一条光线流入 */
+.chat-input:focus-within {
+  position: relative;
+}
+.chat-input:focus-within::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: -1px;
+  width: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  transform: translateX(-50%);
+  animation: line-in 0.4s var(--ease-out) forwards;
+}
+@keyframes line-in {
+  to { width: 80%; }
+}
+
+/* ─── 三档：水球任务轨道卫星（每颗代表一个后台子系统，活跃时点亮） ─── */
+.orb-satellites {
+  position: absolute;
+  inset: -30px;
+  pointer-events: none;
+}
+.orb-sat {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 0; height: 0;
+  animation: sat-orbit var(--sat-dur, 9s) linear infinite;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+.orb-sat i {
+  position: absolute;
+  top: 0; left: 0;
+  width: 6px; height: 6px;
+  margin: -3px;
+  border-radius: 50%;
+  background: var(--sat-col, var(--cyan));
+  box-shadow: 0 0 8px var(--sat-col, var(--cyan));
+  transform: translateX(var(--orb-r, 58px));
+}
+.orb-sat.on {
+  opacity: 0.95;
+}
+.orb-sat:not(.on) i {
+  background: rgba(148, 163, 184, 0.35);
+  box-shadow: none;
+}
+@keyframes sat-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── 二档：引力波涟漪（全局按钮点击，双同心环） ─── */
+.grav-wave {
+  position: fixed;
+  width: 14px; height: 14px;
+  margin: -7px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(34, 211, 238, 0.65);
+  pointer-events: none;
+  z-index: 9999;
+  animation: grav-wave 0.65s var(--ease-out) forwards;
+}
+.grav-wave.w2 { animation-delay: 0.09s; border-color: rgba(34, 211, 238, 0.35); }
+@keyframes grav-wave {
+  0% { opacity: 0.9; transform: scale(0.4); }
+  100% { opacity: 0; transform: scale(5.5); }
+}
+
+/* 复制成功：小星星飞向银河 */
+.copy-star {
+  position: fixed;
+  width: 10px; height: 10px;
+  margin: -5px;
+  pointer-events: none;
+  z-index: 9999;
+  background: radial-gradient(circle, #fff 0%, var(--cyan) 40%, transparent 70%);
+  clip-path: polygon(50% 0%, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0% 50%, 39% 39%);
+  animation: star-fly 0.9s var(--ease-out) forwards;
+}
+@keyframes star-fly {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.4) rotate(0deg); }
+  18% { opacity: 1; transform: translate(calc(var(--sx, 0) * 0.1), calc(var(--sy, 0) * 0.1)) scale(1.15) rotate(72deg); }
+  100% { opacity: 0; transform: translate(var(--sx, 0), var(--sy, 0)) scale(0.3) rotate(360deg); }
+}
+
+/* 引导卡星尘消散（Onboarding 收场） */
+.onb-card.dissolve {
+  animation: onb-dissolve 0.55s var(--ease-out) forwards;
+  pointer-events: none;
+}
+@keyframes onb-dissolve {
+  0% { opacity: 1; filter: blur(0); transform: scale(1); }
+  100% { opacity: 0; filter: blur(8px); transform: scale(0.94); }
+}
+.dust {
+  position: fixed;
+  width: 4px; height: 4px;
+  margin: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 9999;
+  background: var(--dust-col, var(--cyan));
+  box-shadow: 0 0 6px var(--dust-col, var(--cyan));
+  animation: dust-fly 0.9s var(--ease-out) forwards;
+}
+@keyframes dust-fly {
+  0% { opacity: 0.95; transform: translate(0, 0) scale(1); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.2); }
+}
+
+/* ─── 四档：水球液态层（球体内漂浮的光斑液体） ─── */
+.mind-orb .orb-liquid {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+.mind-orb .orb-liquid::before,
+.mind-orb .orb-liquid::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(6px);
+  will-change: transform;
+}
+/* 液斑 A：青色大团，缓慢环流 */
+.mind-orb .orb-liquid::before {
+  width: 68%; height: 68%;
+  left: 8%; top: 20%;
+  background: radial-gradient(circle at 40% 40%, rgba(103, 232, 249, 0.5) 0%, rgba(59, 130, 246, 0.2) 45%, transparent 70%);
+  animation: liquid-a 7s ease-in-out infinite;
+}
+/* 液斑 B：品红小团，反向潜游 */
+.mind-orb .orb-liquid::after {
+  width: 46%; height: 46%;
+  right: 4%; bottom: 8%;
+  background: radial-gradient(circle at 60% 60%, rgba(244, 114, 182, 0.4) 0%, rgba(129, 140, 248, 0.18) 50%, transparent 75%);
+  animation: liquid-b 9s ease-in-out infinite;
+}
+@keyframes liquid-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  30% { transform: translate(14%, -12%) scale(1.12); }
+  60% { transform: translate(-8%, 10%) scale(0.92); }
+}
+@keyframes liquid-b {
+  0%, 100% { transform: translate(0, 0) scale(0.95); }
+  40% { transform: translate(-16%, -14%) scale(1.08); }
+  70% { transform: translate(10%, 8%) scale(1); }
+}
+/* 状态加速：生成中液流湍急，思考中缓慢深涌 */
+.mind-orb.generating .orb-liquid::before { animation-duration: 2.6s; }
+.mind-orb.generating .orb-liquid::after { animation-duration: 3.4s; }
+.mind-orb.thinking .orb-liquid::before { animation-duration: 11s; }
+.mind-orb.thinking .orb-liquid::after { animation-duration: 13s; }
+
+/* 说话中：涟漪环周期扩散（复用 mind-ripple 关键帧） */
+.mind-orb.speaking .ripple-ring {
+  animation: mind-ripple 1.8s ease-out infinite;
+}
+
+/* ─── 黎明主题（data-theme="dawn"）：深空晨昏暖调，accent 体系不变 ─── */
+[data-theme="dawn"] {
+  color-scheme: dark;
+  --bg: #17120d;
+  --bg-deep: #120d09;
+  --panel: #1d1712;
+  --card: #2a221a;
+  --card-hover: #33291f;
+  --border: #3d3226;
+  --border-soft: #322920;
+  --surface-glass: rgba(24, 17, 11, 0.86);
+  --surface-glass-strong: rgba(24, 17, 11, 0.94);
+  --surface-input: rgba(255, 236, 210, 0.05);
+  --overlay-mask: rgba(16, 10, 6, 0.55);
+  --overlay-mask-strong: rgba(14, 9, 5, 0.72);
+  --accent-soft: rgba(245, 158, 11, 0.14);
+  --accent-border: rgba(251, 191, 36, 0.24);
+  --accent-border-strong: rgba(251, 191, 36, 0.42);
+  --glow-cyan: rgba(251, 191, 36, 0.08);
+  --input-solid: #17120d;
+  --box-solid: #17110b;
+  --flow-bg: rgba(26, 19, 13, 0.6);
+  --acui-bg: linear-gradient(160deg, #241c12, #1d160e);
 }

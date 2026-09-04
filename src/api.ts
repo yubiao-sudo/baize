@@ -886,11 +886,11 @@ export async function onWorkModeChange(
   return unlisten;
 }
 
-/** 订阅 agent 的面板控制事件（panel_control 工具 → open/close 顶栏功能页面） */
+/** 订阅 agent 的面板控制事件（panel_control 工具 → open/close 面板/弹层；tab 直达设置页签） */
 export async function onPanelControl(
-  cb: (p: { action: "open" | "close"; panel?: string }) => void
+  cb: (p: { action: "open" | "close"; panel?: string; tab?: string }) => void
 ): Promise<() => void> {
-  const unlisten = await listen<{ action: "open" | "close"; panel?: string }>(
+  const unlisten = await listen<{ action: "open" | "close"; panel?: string; tab?: string }>(
     "panel-control",
     (e) => cb(e.payload)
   );

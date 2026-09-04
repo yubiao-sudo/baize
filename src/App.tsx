@@ -193,6 +193,10 @@ export default function App() {
     conversations.find((c) => c.id === currentConvId)?.title?.trim() || "新会话";
   // 右侧面板当前显示的内嵌面板（null 表示默认「意识网络 + 思考流」）
   const [activePanel, setActivePanel] = useState<string | null>(null);
+  // agent 打开设置时直达的页签（panel_control 的 tab 参数，undefined = 默认页）
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined);
+  // 每次经 panel_control 打开设置时递增：强制 SettingsModal 重挂载，保证 initialTab 必生效
+  const [settingsNav, setSettingsNav] = useState(0);
   // Ctrl+K 命令面板
   const [cmdOpen, setCmdOpen] = useState(false);
   // 记忆星图（点击水球展开）
@@ -360,14 +364,29 @@ export default function App() {
     };
   }, []);
 
-  // 订阅 agent 面板控制：panel_control 工具打开/关闭顶栏功能页面（模型自主决策）
+  // 订阅 agent 面板控制：panel_control 工具打开/关闭面板、弹层（模型自主决策）
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void onPanelControl((p) => {
       if (disposed) return;
-      if (p.action === "open" && p.panel) openPanel(p.panel);
-      else closePanel();
+      if (p.action === "open" && p.panel) {
+        // 全屏弹层：映射为既有前端事件/状态
+        if (p.panel === "galaxy") {
+          window.dispatchEvent(new CustomEvent("baize:open-galaxy"));
+          return;
+        }
+        if (p.panel === "palette") {
+          setCmdOpen(true);
+          return;
+        }
+        // 设置面板：记录直达页签（无 tab 时重置为默认），并递增导航序号强制重挂载
+        if (p.panel === "settings") {
+          setSettingsTab(p.tab || undefined);
+          setSettingsNav((n) => n + 1);
+        }
+        openPanel(p.panel);
+      } else closePanel();
     }).then((f) => {
       if (!disposed) unlisten = f;
       else f();
@@ -681,7 +700,7 @@ export default function App() {
       <aside className={`right-panel ${showRight ? "" : "collapsed"}`}>
         <Suspense fallback={null}>
           {activePanel === "settings" ? (
-            <SettingsModal onClose={closePanel} />
+            <SettingsModal key={`settings-${settingsNav}`} onClose={closePanel} initialTab={settingsTab} />
           ) : activePanel === "butler" ? (
             <SoftwareButler onClose={closePanel} />
           ) : activePanel === "schedule" ? (

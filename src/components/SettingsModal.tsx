@@ -111,7 +111,14 @@ const input: React.CSSProperties = {
   outline: "none",
 };
 
-export default function SettingsModal({ onClose }: { onClose: () => void }) {
+export default function SettingsModal({
+  onClose,
+  initialTab,
+}: {
+  onClose: () => void;
+  /** agent 打开设置时直达的页签（panel_control tab 参数），非法值回退默认页 */
+  initialTab?: string;
+}) {
   const [model, setModel] = useState<ModelConfig | null>(null);
   const [mcp, setMcp] = useState<McpConfig | null>(null);
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
@@ -299,7 +306,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   };
 
   // 左侧导航当前页
-  const [page, setPage] = useState<SettingsPageId>("model");
+  const [page, setPage] = useState<SettingsPageId>(
+    SETTING_PAGES.some((p) => p.id === initialTab)
+      ? (initialTab as SettingsPageId)
+      : "model"
+  );
   const pageContentRef = useRef<HTMLDivElement>(null);
   // 切换分类：右侧内容回到顶部
   useEffect(() => {

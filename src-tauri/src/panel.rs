@@ -32,8 +32,55 @@ const PANELS: &[(&str, &str)] = &[
         "test",
         "测试面板（自动化测试全流程：项目配置 → 需求生成用例 → 执行用例 → 测试报告；含 UI 测试与接口测试）",
     ),
+    ("messages", "消息中心（待审批处理、IM 消息、定时提醒）"),
     ("settings", "设置（模型配置、API 密钥、工作模式、运行时模型）"),
 ];
+
+/// 独立子窗口清单：(id, 中文名 + 用途说明)。原生窗口由后端直接创建/显示，不经前端面板路由。
+const WINDOWS: &[(&str, &str)] = &[
+    ("browser", "独立浏览器窗口"),
+    ("markdown", "文档窗口"),
+    ("terminal", "终端窗口"),
+];
+
+/// 全屏弹层清单：(id, 中文名 + 用途说明)。emit 到主窗口由前端打开。
+const OVERLAYS: &[(&str, &str)] = &[
+    ("galaxy", "记忆星图"),
+    ("palette", "命令面板"),
+];
+
+/// 设置弹窗左侧导航页签（与前端 SettingsModal SETTING_PAGES 一致）
+const SETTINGS_TABS: &[&str] = &[
+    "model",
+    "tools",
+    "gateway",
+    "knowledge",
+    "voice",
+    "notify",
+    "bots",
+    "environment",
+    "about",
+];
+
+/// 全部可选 panel id（面板 + 子窗口 + 弹层），供 schema enum 使用
+fn all_panel_ids() -> Vec<&'static str> {
+    PANELS
+        .iter()
+        .chain(WINDOWS.iter())
+        .chain(OVERLAYS.iter())
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// 查询子窗口/弹层的中文名（「（」前段），供结果消息使用
+fn label_of(id: &str) -> Option<String> {
+    WINDOWS
+        .iter()
+        .chain(OVERLAYS.iter())
+        .chain(PANELS.iter())
+        .find(|(k, _)| *k == id)
+        .map(|(_, d)| d.split("（").next().unwrap_or(id).to_string())
+}
 
 fn panel_catalog() -> String {
     PANELS
@@ -118,17 +165,34 @@ impl Tool for PanelControlTool {
     }
 
     fn description(&self) -> &str {
-        // 描述里直接携带面板目录，模型看 tools 列表就能「知道」每个页面的存在与用途；
+        // 描述里直接携带目录，模型看 tools 列表就能「知道」每个页面/窗口/弹层的存在与用途；
         // 拼接结果缓存一次（description 会被每轮对话的 schemas() 反复调用，不能重复分配）
         static DESC: OnceLock<String> = OnceLock::new();
         DESC.get_or_init(|| {
-            "打开或关闭白泽主界面的功能面板。可用面板：软件管家(butler)、计划(schedule)、工作流(workflow)、任务广场(plaza)、IM消息总线(imlog)、会议室(meeting)、浏览器(chrome)、测试面板(test)、设置(settings)。\n\
+            let win_catalog = WINDOWS
+                .iter()
+                .map(|(id, desc)| format!("{id}: {desc}"))
+                .collect::<Vec<_>>()
+                .join("；");
+            let overlay_catalog = OVERLAYS
+                .iter()
+                .map(|(id, desc)| format!("{id}: {desc}"))
+                .collect::<Vec<_>>()
+                .join("；");
+            "打开/关闭/切换白泽的全部界面：内嵌功能面板、独立子窗口、全屏弹层。\n\
+             可用面板：软件管家(butler)、计划(schedule)、工作流(workflow)、任务广场(plaza)、IM消息总线(imlog)、会议室(meeting)、浏览器面板(chrome)、测试面板(test)、消息中心(messages)、设置(settings)。\n\
+             独立子窗口（原生窗口，直接弹出）：__WINCAT__。\n\
+             全屏弹层：__OVERCAT__。\n\
+             打开 settings 时可用 tab 参数直达设置页签：__TABS__。\n\
              使用时机举例：\n\
-             1. 用户给出需求/需求文档并要求测试、生成用例、跑接口/UI 测试、看测试报告 → 打开 test 面板，再继续用测试相关工具完成全流程；\n\
-             2. 用户要求安装/管理软件 → 打开 butler；用户要求定时提醒 → 打开 schedule；用户想看/编辑自动化流程 → 打开 workflow；\n\
-             3. 需要用户手动操作某个页面（如填 API Key、选项目）时，先打开对应面板再提示；\n\
-             4. 完成操作后若面板不再需要，可 close 收回界面。\n\
-             全部面板：__CATALOG__"
+             1. 用户给出需求文档并要求测试 → 打开 test 面板再继续测试工具全流程；\n\
+             2. 要写长报告/总结文档 → 打开 markdown 文档窗口再写入；要跑命令给用户看 → 打开 terminal；要展示网页 → 打开 browser；\n\
+             3. 用户问「你都记得什么」→ 打开 galaxy 星图边展示边讲；需要用户手动填 API Key/改配置 → 打开 settings 并用 tab 直达对应页签；有待审批事项 → 打开 messages；\n\
+             4. 完成操作后若界面不再需要，可 close 收回（close 也可省略 panel 收回当前面板）。\n\
+             内嵌面板目录：__CATALOG__"
+                .replace("__WINCAT__", &win_catalog)
+                .replace("__OVERCAT__", &overlay_catalog)
+                .replace("__TABS__", &SETTINGS_TABS.join("/"))
                 .replace("__CATALOG__", &panel_catalog())
         })
     }
@@ -140,12 +204,17 @@ impl Tool for PanelControlTool {
                 "action": {
                     "type": "string",
                     "enum": ["open", "close"],
-                    "description": "open 打开面板 / close 关闭面板（回到对话视图）"
+                    "description": "open 打开 / close 关闭（子窗口 close 为隐藏，面板 close 回到对话视图）"
                 },
                 "panel": {
                     "type": "string",
-                    "enum": PANELS.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                    "description": "面板 id（close 也可省略 panel 关闭当前面板）"
+                    "enum": all_panel_ids(),
+                    "description": "目标 id（close 也可省略 panel 关闭当前面板）"
+                },
+                "tab": {
+                    "type": "string",
+                    "enum": SETTINGS_TABS,
+                    "description": "可选：打开 settings 时直达的设置页签"
                 }
             },
             "required": ["action"]
@@ -162,29 +231,60 @@ impl Tool for PanelControlTool {
             .as_str()
             .ok_or("panel_control 缺少 action（open/close）")?;
         let panel = args["panel"].as_str().unwrap_or("");
-        if action == "open" {
-            if panel.is_empty() || !PANELS.iter().any(|(id, _)| *id == panel) {
-                return Err(format!(
-                    "未知面板「{panel}」，可用：{}",
-                    PANELS.iter().map(|(id, _)| *id).collect::<Vec<_>>().join("/")
-                ));
-            }
-        }
         let app = APP_HANDLE
             .get()
             .ok_or("面板控制不可用（应用尚未初始化完成）")?;
+
+        // 独立子窗口：后端直接创建/显示/隐藏，不进前端面板路由
+        if WINDOWS.iter().any(|(id, _)| *id == panel) {
+            let label = label_of(panel).unwrap_or_else(|| panel.to_string());
+            if action == "open" {
+                match panel {
+                    "browser" => crate::windows::ensure_browser_window(app),
+                    "markdown" => crate::windows::ensure_markdown_window(app),
+                    "terminal" => {
+                        let terminal = app.state::<crate::AppState>().terminal.clone();
+                        crate::windows::ensure_terminal_window(app, terminal);
+                    }
+                    _ => {}
+                }
+                return Ok(json!({ "ok": true, "message": format!("已打开{label}") }));
+            }
+            if let Some(win) = app.get_webview_window(panel) {
+                let _ = win.hide();
+            }
+            return Ok(json!({ "ok": true, "message": format!("已隐藏{label}") }));
+        }
+
+        if action == "open" {
+            let known = PANELS.iter().any(|(id, _)| *id == panel)
+                || OVERLAYS.iter().any(|(id, _)| *id == panel);
+            if panel.is_empty() || !known {
+                return Err(format!(
+                    "未知目标「{panel}」，可用：{}",
+                    all_panel_ids().join("/")
+                ));
+            }
+        }
+        // tab 仅对 settings 有意义；非法值静默忽略（前端回退默认页签）
+        let tab = args["tab"].as_str().unwrap_or("");
+        let tab = if panel == "settings" && SETTINGS_TABS.contains(&tab) {
+            tab
+        } else {
+            ""
+        };
         app.emit(
             "panel-control",
-            json!({ "action": action, "panel": panel }),
+            json!({ "action": action, "panel": panel, "tab": tab }),
         )
         .map_err(|e| format!("发送面板控制事件失败: {e}"))?;
         let verb = if action == "open" { "已打开" } else { "已关闭" };
-        let label = PANELS
-            .iter()
-            .find(|(id, _)| *id == panel)
-            .map(|(_, d)| d.split("（").next().unwrap_or(panel))
-            .unwrap_or("当前面板");
-        Ok(json!({ "ok": true, "message": format!("{verb}{label}") }))
+        let label = label_of(panel).unwrap_or_else(|| "当前面板".to_string());
+        let mut message = format!("{verb}{label}");
+        if !tab.is_empty() {
+            message.push_str(&format!("（{tab} 页签）"));
+        }
+        Ok(json!({ "ok": true, "message": message }))
     }
 }
 
@@ -198,7 +298,7 @@ mod tests {
         let err = t
             .run(json!({ "action": "open", "panel": "nope" }))
             .unwrap_err();
-        assert!(err.contains("未知面板"));
+        assert!(err.contains("未知目标"));
     }
 
     #[test]

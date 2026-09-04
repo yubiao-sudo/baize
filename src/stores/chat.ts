@@ -159,8 +159,9 @@ export const useChat = create<ChatState>((set, get) => ({
         { role: "user", content: msg, ...(attachments.length ? { attachments } : {}) },
       ],
     });
-    // 消息发出：极轻的触感反馈
+    // 消息发出：极轻的触感反馈 + 一颗流星从聊天框划入银河（Galaxy canvas 接收渲染）
     playSfx("message-sent");
+    window.dispatchEvent(new CustomEvent("baize:meteor"));
     try {
       const reply = await chat(convId, msg, history, attachments);
       // 后端已按首条用户消息落库会话标题，回拉会话列表保持侧栏标题与服务端一致
@@ -176,8 +177,9 @@ export const useChat = create<ChatState>((set, get) => ({
           streaming: "",
         }));
       }
-      // 任务完成：温润的木琴上行琶音
+      // 任务完成：温润的木琴上行琶音 + 银河放一次粒子烟花
       playSfx("task-done");
+      window.dispatchEvent(new CustomEvent("baize:firework"));
     } catch (e) {
       playSfx("error");
       set((s) => ({

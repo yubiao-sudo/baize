@@ -80,12 +80,17 @@ export default function CommandPalette({
         keywords: "memory galaxy 记忆",
         action: () => window.dispatchEvent(new CustomEvent("baize:open-galaxy")),
       },
-      ...(["light-glass", "dark"] as const).map((t) => ({
+      ...(["light-glass", "dark", "dawn"] as const).map((t) => ({
         id: `theme-${t}`,
-        label: t === "light-glass" ? "主题 · 白色毛玻璃" : "主题 · 暗夜深邃",
+        label:
+          t === "light-glass"
+            ? "主题 · 白色毛玻璃"
+            : t === "dawn"
+              ? "主题 · 深空黎明"
+              : "主题 · 暗夜深邃",
         hint: "全局背景风格切换，立即生效并记住",
-        icon: t === "light-glass" ? "🧊" : "🌙",
-        keywords: "theme 主题 背景 毛玻璃 light dark",
+        icon: t === "light-glass" ? "🧊" : t === "dawn" ? "🌅" : "🌙",
+        keywords: "theme 主题 背景 毛玻璃 light dark dawn 黎明 晨昏",
         action: () => {
           if (t === "dark") delete document.documentElement.dataset.theme;
           else document.documentElement.dataset.theme = t;

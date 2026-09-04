@@ -2,6 +2,7 @@ import React, { lazy, Suspense, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import App from "./App";
+import { initFx } from "./utils/fx";
 import "./index.css";
 
 // 窗口组件按路由按需加载，避免主界面启动时解析 xterm / three / d3 等重型依赖
@@ -13,6 +14,11 @@ const TerminalWindow = lazy(() => import("./components/TerminalWindow"));
 const OrbFloat = lazy(() => import("./components/OrbFloat"));
 
 function Root() {
+  // 全局微交互特效（引力波涟漪 / 复制小星星），一次性初始化
+  useEffect(() => {
+    initFx();
+  }, []);
+
   // 启动显示时序：窗口以 visible=false 创建，等首帧真正上屏（双 rAF）后显示，
   // 消除「窗口创建 → WebView 首帧渲染」之间的黑屏；启动动画在窗口可见期间淡出
   useEffect(() => {

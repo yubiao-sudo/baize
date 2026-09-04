@@ -1054,12 +1054,6 @@ export default function ChatView() {
             </div>
           </div>
         </div>
-
-        <div className="chat-input-hint">
-          Enter 发送 · Shift+Enter 换行
-          {sttSupported && " · T 语音输入"}
-          {ttsSupported && " · 朗读"}
-        </div>
       </div>
     </div>
   );

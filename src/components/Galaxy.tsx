@@ -96,7 +96,20 @@ interface Meteor {
   vy: number;
   age: number;
   life: number;
+  /** 发射流星（用户消息划入银河）：亮青色长尾；普通流星 false */
+  launched?: boolean;
 }
+
+/** 任务完成烟花：一次性粒子爆散（baize:firework 事件触发） */
+interface Firework {
+  x: number;
+  y: number;
+  age: number;
+  life: number;
+  parts: { ang: number; spd: number; col: string; sz: number }[];
+}
+
+const FW_COLS = ["255,200,120", "150,220,255", "255,150,190", "180,140,255", "90,230,210"];
 
 /** 暗星云：不发光的乌黑尘云，贴河中轴成团分布，遮挡身后星光（Great Rift 效果） */
 interface DarkNebula {
@@ -125,11 +138,14 @@ export default function Galaxy() {
     let w = 0;
     let h = 0;
 
-    // ── 主题感知：浅色毛玻璃（light-glass）下整套配色换暗色系，黑尘云/暖光停用 ──
+    // ── 主题感知：浅色毛玻璃（light-glass）整套换暗色系；黎明（dawn）银河转暖晨昏调 ──
     // html 的 data-theme 由命令面板切换，这里用 MutationObserver 跟随
     let themeLight = document.documentElement.dataset.theme === "light-glass";
+    let themeDawn = document.documentElement.dataset.theme === "dawn";
     const themeMo = new MutationObserver(() => {
-      themeLight = document.documentElement.dataset.theme === "light-glass";
+      const v = document.documentElement.dataset.theme;
+      themeLight = v === "light-glass";
+      themeDawn = v === "dawn";
     });
     themeMo.observe(document.documentElement, {
       attributes: true,
@@ -229,6 +245,40 @@ export default function Galaxy() {
     });
 
     const meteors: Meteor[] = [];
+    const fireworks: Firework[] = [];
+
+    // ── 交互事件：消息发送流星 / 任务完成烟花（stores/chat.ts 派发，全走闭包零 React 开销） ──
+    const onSendMeteor = () => {
+      if (meteors.length >= 4) return;
+      const speed = rand(620, 880);
+      meteors.push({
+        // 从底部聊天区方向划入银河高天
+        x: rand(0.3, 0.7) * w,
+        y: h * 0.98,
+        vx: rand(-0.35, 0.35) * speed,
+        vy: -speed,
+        age: 0,
+        life: rand(0.95, 1.25),
+        launched: true,
+      });
+    };
+    const onFirework = () => {
+      if (fireworks.length >= 2) return;
+      fireworks.push({
+        x: rand(0.25, 0.75) * w,
+        y: rand(0.12, 0.42) * h,
+        age: 0,
+        life: rand(1.2, 1.6),
+        parts: Array.from({ length: 30 }, () => ({
+          ang: Math.random() * Math.PI * 2,
+          spd: rand(60, 200),
+          col: FW_COLS[Math.floor(Math.random() * FW_COLS.length)],
+          sz: rand(1, 2.2),
+        })),
+      });
+    };
+    window.addEventListener("baize:meteor", onSendMeteor);
+    window.addEventListener("baize:firework", onFirework);
 
     // ── 暗星云：乌黑尘云，从银河中段向两侧扩散成棉絮状，遮挡身后的光 ──
     const darkNebulas: DarkNebula[] = Array.from({ length: 9 }, (_, i) => {
@@ -324,12 +374,18 @@ export default function Galaxy() {
       ctx.clearRect(0, 0, w, h);
 
       // ── 银河光晕：沿河的微蓝色雾状辉光（精灵合成，不再每帧建渐变） ──
-      // 1) 银心区域的大范围环境光（每帧仅 1 个渐变，保留）
+      // 1) 银心区域的大范围环境光（每帧仅 1 个渐变，保留；黎明主题转暖色晨昏光）
       const [gx, gy] = bez(0.46);
       const amb = ctx.createRadialGradient(gx, gy, 0, gx, gy, Math.max(w, h) * 0.42);
-      amb.addColorStop(0, "rgba(120,170,255,0.012)");
-      amb.addColorStop(0.5, "rgba(100,150,255,0.005)");
-      amb.addColorStop(1, "rgba(100,150,255,0)");
+      if (themeDawn) {
+        amb.addColorStop(0, "rgba(255,178,102,0.02)");
+        amb.addColorStop(0.5, "rgba(255,150,80,0.008)");
+        amb.addColorStop(1, "rgba(255,150,80,0)");
+      } else {
+        amb.addColorStop(0, "rgba(120,170,255,0.012)");
+        amb.addColorStop(0.5, "rgba(100,150,255,0.005)");
+        amb.addColorStop(1, "rgba(100,150,255,0)");
+      }
       ctx.fillStyle = amb;
       ctx.fillRect(0, 0, w, h);
       // 2) 沿河铺设软边光斑——精灵版（无硬边，中心密两端稀）

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clipboardSetText, envDetectAll, envGetState, envSetOnboarding, onEnvCheckItem } from "../api";
 import type { EnvItem } from "../types";
+import { spawnDust } from "../utils/fx";
 
 /**
  * 首次启动环境自检（全屏引导层）+ 非首次启动的环境提示卡。
@@ -68,14 +69,33 @@ export default function Onboarding({
       .finally(() => onFinishRef.current(s));
   }, []);
 
+  // 星尘消散收场：卡片模糊缩小淡出 + 从卡片爆出一把彩粒，再交给 finish 真正关闭
+  const cardRef = useRef<HTMLDivElement>(null);
+  const finishingRef = useRef(false);
+  const finishFx = useCallback(
+    (s: "done" | "skipped") => {
+      if (finishingRef.current) return;
+      finishingRef.current = true;
+      const card = cardRef.current;
+      if (card) {
+        card.classList.add("dissolve");
+        spawnDust(card, 20);
+        window.setTimeout(() => finish(s), 430);
+      } else {
+        finish(s);
+      }
+    },
+    [finish]
+  );
+
   // Esc 跳过引导
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish("skipped");
+      if (e.key === "Escape") finishFx("skipped");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [finish]);
+  }, [finishFx]);
 
   const list = EXPECTED.map((e) => items[e.id] ?? null);
   const received = Object.keys(items).length;
@@ -103,8 +123,8 @@ export default function Onboarding({
 
   return (
     <div className="onb-root">
-      <div className="onb-card">
-        <button className="onb-skip" onClick={() => finish("skipped")} title="跳过引导 (Esc)">
+      <div className="onb-card" ref={cardRef}>
+        <button className="onb-skip" onClick={() => finishFx("skipped")} title="跳过引导 (Esc)">
           跳过 (Esc)
         </button>
         <div className="onb-head">
@@ -184,7 +204,7 @@ export default function Onboarding({
             ) : requiredMissing.length === 0 ? (
               <>
                 <span className="onb-footer-msg ok">环境就绪，白泽已可以正常工作</span>
-                <button className="onb-btn primary" onClick={() => finish("done")}>
+                <button className="onb-btn primary" onClick={() => finishFx("done")}>
                   进入白泽
                 </button>
               </>
@@ -196,7 +216,7 @@ export default function Onboarding({
                 <button className="onb-btn ghost" onClick={start}>
                   重新检测
                 </button>
-                <button className="onb-btn primary" onClick={() => finish("done")}>
+                <button className="onb-btn primary" onClick={() => finishFx("done")}>
                   仍然进入
                 </button>
               </>

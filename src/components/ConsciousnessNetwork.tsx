@@ -1,7 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { getMemoryGraph, onMemoryRecall } from "../api";
 import { useChat } from "../stores/chat";
 import { derive } from "./AiActivity";
+
+// ── 三档：任务轨道卫星 —— 每颗代表一个后台子系统，活跃时点亮 ──
+// 外圈更慢，近开普勒节奏；半径按水球尺寸（canvas 高 53%）分层
+const SATELLITES = [
+  { key: "agent", col: "var(--cyan)", r: 50, dur: 9 },
+  { key: "tts", col: "#f472b6", r: 64, dur: 14 },
+  { key: "voice", col: "#818cf8", r: 78, dur: 19 },
+  { key: "memory", col: "#fbbf24", r: 92, dur: 26 },
+] as const;
+
+/** 按子系统 key 找到对应卫星 DOM（不存在返回 null） */
+const satEl = (orb: HTMLElement | null, key: string) =>
+  orb?.querySelector<HTMLElement>(`.orb-sat[data-sat="${key}"]`) ?? null;
 
 // ============================================================
 // 「意识网络 —— 蠕动记忆水球」（CSS 液态球渲染，与启动动画同款）
@@ -50,6 +63,7 @@ export default function ConsciousnessNetwork() {
     const onState = (e: Event) => {
       const speaking = (e as CustomEvent<{ speaking: boolean }>).detail.speaking;
       el.classList.toggle("speaking", speaking);
+      satEl(el, "tts")?.classList.toggle("on", speaking);
       if (!speaking) {
         target = 1;
         wake();
@@ -110,6 +124,7 @@ export default function ConsciousnessNetwork() {
       const mode = (e as CustomEvent<{ mode: string }>).detail.mode;
       el.classList.toggle("voice-standby", mode === "standby");
       el.classList.toggle("voice-listening", mode === "listening");
+      satEl(el, "voice")?.classList.toggle("on", mode === "listening");
     };
     window.addEventListener("baize:voice-mode", onMode);
     return () => {
@@ -132,6 +147,7 @@ export default function ConsciousnessNetwork() {
     el.classList.toggle("thinking", busy && !streaming && !isTool);
     el.classList.toggle("working", busy && !streaming && isTool);
     el.classList.toggle("generating", !!streaming);
+    satEl(el, "agent")?.classList.toggle("on", busy);
   }, [busy, streaming, activity.tone]);
 
   // 加载记忆数量用于展示
@@ -161,8 +177,13 @@ export default function ConsciousnessNetwork() {
         el.classList.remove("recalling");
         void el.offsetWidth; // 强制 reflow 以重播动画
         el.classList.add("recalling");
+        const memSat = satEl(el, "memory");
+        memSat?.classList.add("on");
         window.clearTimeout(pulseTimer.current);
-        pulseTimer.current = window.setTimeout(() => el.classList.remove("recalling"), 2600);
+        pulseTimer.current = window.setTimeout(() => {
+          el.classList.remove("recalling");
+          memSat?.classList.remove("on");
+        }, 2600);
       }
       // 刷新计数（命中记忆 last_access 已更新）
       loadData();
@@ -194,6 +215,25 @@ export default function ConsciousnessNetwork() {
           <div className="halo2" />
           <div className="orb-live">
             <div className="orb" />
+          </div>
+          <div className="orb-liquid" />
+          <div className="orb-satellites">
+            {SATELLITES.map((s) => (
+              <div
+                key={s.key}
+                data-sat={s.key}
+                className="orb-sat"
+                style={
+                  {
+                    "--orb-r": `${s.r}px`,
+                    "--sat-dur": `${s.dur}s`,
+                    "--sat-col": s.col,
+                  } as CSSProperties
+                }
+              >
+                <i />
+              </div>
+            ))}
           </div>
           <div className="ripple-ring" />
         </div>
