@@ -231,7 +231,62 @@ CREATE TABLE IF NOT EXISTS skills (
     name TEXT PRIMARY KEY,
     data TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS model_usage (
+    day               TEXT NOT NULL,
+    provider          TEXT NOT NULL,
+    model             TEXT NOT NULL,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    calls             INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, provider, model)
+);
+CREATE TABLE IF NOT EXISTS quick_commands (
+    name        TEXT PRIMARY KEY,
+    template    TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
 "#;
+
+// ---------- 模型用量统计行 ----------
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelUsageRow {
+    pub provider: String,
+    pub model: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub calls: u64,
+}
+
+/// 按天聚合的用量行（成本面板用）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelUsageDayRow {
+    pub day: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub calls: u64,
+}
+
+/// 快捷指令行：`/name args` 展开为 template（{args} 整体、{1} {2} 按位置替换）
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuickCommandRow {
+    pub name: String,
+    pub template: String,
+    pub description: String,
+}
+
+/// 审计回放行（查询结果）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditQueryRow {
+    pub ts: u64,
+    pub subject: String,
+    pub tool: String,
+    /// JSON 字符串（原样展示）
+    pub args: String,
+    pub decision: String,
+    pub result: String,
+}
 
 impl MemoryStore {
     pub fn open(path: &str) -> Result<Self, String> {
@@ -411,6 +466,113 @@ impl MemoryStore {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// 删除会话中最后一条用户消息及其后的所有消息（编辑重发用），返回是否删除
+    pub fn delete_last_exchange(&self, conv_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let last_user: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE conversation_id = ?1 AND role = 'user' ORDER BY id DESC LIMIT 1",
+                params![conv_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(|e| e.to_string())?;
+        let Some(id) = last_user else {
+            return Ok(false);
+        };
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1 AND id >= ?2",
+            params![conv_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    /// 会话分支：复制前 keep_count 条消息到新会话，返回新会话 id
+    pub fn fork_conversation(&self, conv_id: &str, keep_count: usize, title: &str) -> Result<String, String> {
+        let new_id = uuid::Uuid::new_v4().to_string();
+        self.ensure_conversation(&new_id, title, None)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages(conversation_id, role, content, attachments, trace, created_at)
+             SELECT ?2, role, content, attachments, trace, created_at
+             FROM messages WHERE conversation_id = ?1 ORDER BY id ASC LIMIT ?3",
+            params![conv_id, new_id, keep_count as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(new_id)
+    }
+
+    // ---------- 快捷指令 ----------
+
+    pub fn quick_commands_list(&self) -> Result<Vec<QuickCommandRow>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT name, template, description FROM quick_commands ORDER BY name ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(QuickCommandRow {
+                    name: r.get(0)?,
+                    template: r.get(1)?,
+                    description: r.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).map(Ok).collect()
+    }
+
+    pub fn quick_command_save(&self, cmd: &QuickCommandRow) -> Result<(), String> {
+        let name = cmd.name.trim().trim_start_matches('/').to_string();
+        if name.is_empty() || cmd.template.trim().is_empty() {
+            return Err("指令名和模板不能为空".into());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO quick_commands(name, template, description, created_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET template = excluded.template, description = excluded.description",
+            params![name, cmd.template.trim(), cmd.description.trim(), Self::now()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn quick_command_delete(&self, name: &str) -> Result<bool, String> {
+        let name = name.trim().trim_start_matches('/');
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute("DELETE FROM quick_commands WHERE name = ?1", params![name])
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// 把 `/name a b c` 展开为模板；不是指令或未命中时返回 None（原样发送）
+    pub fn quick_command_expand(&self, message: &str) -> Option<String> {
+        let m = message.trim();
+        if !m.starts_with('/') || m.starts_with("//") {
+            return None;
+        }
+        let mut parts = m[1..].splitn(2, char::is_whitespace);
+        let name = parts.next()?.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let rest = parts.next().unwrap_or("").trim();
+        let cmds = self.quick_commands_list().ok()?;
+        let cmd = cmds.into_iter().find(|c| c.name == name)?;
+        let mut out = cmd.template;
+        out = out.replace("{args}", rest);
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        for (i, t) in tokens.iter().enumerate() {
+            out = out.replace(&format!("{{{}}}", i + 1), t);
+        }
+        Some(out)
     }
 
     pub fn messages(&self, conv_id: &str, limit: usize) -> Result<Vec<MessageRow>, String> {
@@ -594,6 +756,48 @@ impl MemoryStore {
             let _ = self.prune_audit(5000);
         }
         Ok(())
+    }
+
+    /// 审计回放查询：按时间倒序，可按工具名过滤
+    pub fn audit_query(&self, limit: usize, tool_filter: Option<&str>) -> Result<Vec<AuditQueryRow>, String> {
+        let limit = limit.clamp(1, 1000) as i64;
+        let conn = self.conn.lock().unwrap();
+        let (sql, has_filter): (&str, bool) = if tool_filter.is_some() {
+            (
+                "SELECT ts, subject, tool, args, decision, result FROM audit_log
+                 WHERE tool = ?2 ORDER BY ts DESC LIMIT ?1",
+                true,
+            )
+        } else {
+            (
+                "SELECT ts, subject, tool, args, decision, result FROM audit_log
+                 ORDER BY ts DESC LIMIT ?1",
+                false,
+            )
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<AuditQueryRow> {
+            Ok(AuditQueryRow {
+                ts: r.get::<_, i64>(0)? as u64,
+                subject: r.get(1)?,
+                tool: r.get(2)?,
+                args: r.get::<_, String>(3)?,
+                decision: r.get(4)?,
+                result: r.get::<_, String>(5)?,
+            })
+        };
+        let rows = if has_filter {
+            stmt.query_map(params![limit, tool_filter.unwrap()], map_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>()
+        } else {
+            stmt.query_map(params![limit], map_row)
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>()
+        };
+        Ok(rows)
     }
 
     /// 自维护：审计日志裁剪到最近 keep 条 + WAL 压缩，返回裁剪条数。
@@ -1165,6 +1369,106 @@ impl MemoryStore {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    // ---------- 模型用量统计 / 降级失败日志 ----------
+
+    /// 累计一次模型调用的 token 用量（按天 × 提供方 × 模型聚合）
+    pub fn add_model_usage(
+        &self,
+        provider: &str,
+        model: &str,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    ) -> Result<(), String> {
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO model_usage(day, provider, model, prompt_tokens, completion_tokens, calls)
+             VALUES(?1, ?2, ?3, ?4, ?5, 1)
+             ON CONFLICT(day, provider, model) DO UPDATE SET
+               prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+               completion_tokens = completion_tokens + excluded.completion_tokens,
+               calls = calls + 1",
+            params![day, provider, model, prompt_tokens as i64, completion_tokens as i64],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 最近 n 天的用量聚合（按提供方×模型汇总）
+    pub fn model_usage_report(&self, days: u32) -> Result<Vec<ModelUsageRow>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider, model, SUM(prompt_tokens), SUM(completion_tokens), SUM(calls)
+                 FROM model_usage
+                 WHERE day >= ?1
+                 GROUP BY provider, model
+                 ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let since = (chrono::Local::now() - chrono::Duration::days(days as i64))
+            .format("%Y-%m-%d")
+            .to_string();
+        let rows = stmt
+            .query_map(params![since], |r| {
+                Ok(ModelUsageRow {
+                    provider: r.get(0)?,
+                    model: r.get(1)?,
+                    prompt_tokens: r.get::<_, i64>(2)?.max(0) as u64,
+                    completion_tokens: r.get::<_, i64>(3)?.max(0) as u64,
+                    calls: r.get::<_, i64>(4)?.max(0) as u64,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).map(Ok).collect()
+    }
+
+    /// 按天聚合的 token 用量（最近 n 天，升序；成本面板画趋势图用）
+    pub fn model_usage_daily(&self, days: u32) -> Result<Vec<ModelUsageDayRow>, String> {
+        let conn = self.conn.lock().unwrap();
+        let since = (chrono::Local::now() - chrono::Duration::days(days as i64))
+            .format("%Y-%m-%d")
+            .to_string();
+        let mut stmt = conn
+            .prepare(
+                "SELECT day, SUM(prompt_tokens), SUM(completion_tokens), SUM(calls)
+                 FROM model_usage
+                 WHERE day >= ?1
+                 GROUP BY day
+                 ORDER BY day ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![since], |r| {
+                Ok(ModelUsageDayRow {
+                    day: r.get(0)?,
+                    prompt_tokens: r.get::<_, i64>(1)?.max(0) as u64,
+                    completion_tokens: r.get::<_, i64>(2)?.max(0) as u64,
+                    calls: r.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).map(Ok).collect()
+    }
+
+    /// 降级失败留痕（写入 audit_log，subject='model'）
+    pub fn log_model_failure(&self, provider: &str, error: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let brief: String = error.chars().take(200).collect();
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let _ = conn.execute(
+            "INSERT INTO audit_log(ts, subject, tool, args, decision, result)
+             VALUES(?1, 'model', 'fallback', ?2, 'fail', ?3)",
+            params![now, provider, brief],
+        );
     }
 
     // ---------- 凭据 Vault（值已由调用方加密为密文文本） ----------

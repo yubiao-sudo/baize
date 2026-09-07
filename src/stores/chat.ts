@@ -13,6 +13,8 @@ import {
   setConversationProject,
   setWorkspace,
   stopChat,
+  deleteLastExchange,
+  forkConversation,
 } from "../api";
 import type {
   ChatMsg,
@@ -92,6 +94,10 @@ interface ChatState {
   removeProject: (id: string) => Promise<void>;
   moveConversation: (convId: string, projectId: string | null) => Promise<void>;
   followProjectWorkspace: (convId: string) => void;
+  /** 编辑重发：删除最后一条用户消息及其后内容，用新内容重新发送 */
+  editResend: (msg: string) => Promise<void>;
+  /** 会话分支：以当前会话前 count 条消息为基础创建新会话并切换过去 */
+  forkFrom: (count: number) => Promise<void>;
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -302,6 +308,32 @@ export const useChat = create<ChatState>((set, get) => ({
     }
     // 项目↔工作空间联动：选中项目里的会话 = 切到该项目的工作目录
     get().followProjectWorkspace(id);
+  },
+
+  editResend: async (msg) => {
+    const convId = get().currentConvId;
+    if (!convId || get().busy) return;
+    try {
+      await deleteLastExchange(convId);
+      const msgs = await getMessages(convId);
+      set({ history: hydrate(msgs), streaming: "", thoughts: [], todos: [] });
+      await get().send(msg);
+    } catch (e) {
+      console.error("编辑重发失败:", e);
+    }
+  },
+
+  forkFrom: async (count) => {
+    const convId = get().currentConvId;
+    if (!convId || count <= 0 || get().busy) return;
+    try {
+      const src = get().conversations.find((c) => c.id === convId);
+      const newId = await forkConversation(convId, count, `⑂ 分支 · ${src?.title ?? "会话"}`);
+      await get().loadConversations();
+      await get().switchConversation(newId);
+    } catch (e) {
+      console.error("分支失败:", e);
+    }
   },
 
   newConversation: async (projectId) => {

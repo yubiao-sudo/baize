@@ -9,7 +9,8 @@ import { useVoiceConversation } from "../hooks/useVoiceConversation";
 import VoiceOrb from "./VoiceOrb";
 import ExecutionFlow from "./ExecutionFlow";
 import ReplayView from "./ReplayView";
-import { pickFiles, pickFolder, openPath, setWorkspace as setWorkspaceApi, detectImageModel, generateImage, getModelConfig, setActiveModel, onDocReady, saveUploadedImage } from "../api";
+import { pickFiles, pickFolder, openPath, setWorkspace as setWorkspaceApi, detectImageModel, generateImage, getModelConfig, setActiveModel, onDocReady, saveUploadedImage, listQuickCommands, captureScreenForChat } from "../api";
+import type { QuickCommand } from "../api";
 import { KOKORO_VOICES } from "../api";
 import { renderMarkdown } from "../utils/markdown";
 import type { ChatMsg, ThoughtEvent, Todo, ImageCapability, ModelConfig } from "../types";
@@ -160,13 +161,39 @@ function stripHl(text: string) {
 
 // ---------- 消息条目组件（memo 化：流式输出时历史消息不重复解析/渲染） ----------
 
-const UserMessage = memo(function UserMessage({ m }: { m: ChatMsg }) {
+const UserMessage = memo(function UserMessage({ m, onEdit }: { m: ChatMsg; onEdit?: () => void }) {
   const atts = m.attachments ?? [];
   const imgs = atts.filter((p) => IMAGE_EXT.test(p));
   const docs = atts.filter((p) => !IMAGE_EXT.test(p));
+  const [hovered, setHovered] = useState(false);
   return (
-    <div className="msg user">
+    <div
+      className="msg user"
+      style={{ position: "relative" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       {m.content}
+      {onEdit && hovered && (
+        <button
+          title="编辑并重发（该消息之后的内容将被替换）"
+          onClick={onEdit}
+          style={{
+            position: "absolute",
+            right: 0,
+            top: -18,
+            fontSize: 10,
+            padding: "1px 8px",
+            borderRadius: 8,
+            border: "1px solid var(--border-soft)",
+            background: "var(--bg-elevated)",
+            color: "var(--text-dim)",
+            cursor: "pointer",
+          }}
+        >
+          ✎ 编辑重发
+        </button>
+      )}
       {imgs.map((p, j) => (
         <img
           key={j}
@@ -225,14 +252,40 @@ const BranchesMessage = memo(function BranchesMessage({ m }: { m: ChatMsg }) {
   );
 });
 
-const AssistantMessage = memo(function AssistantMessage({ m }: { m: ChatMsg }) {
+const AssistantMessage = memo(function AssistantMessage({ m, onBranch }: { m: ChatMsg; onBranch?: () => void }) {
   const isError = m.content.startsWith("出错了");
   const trace = parseTrace(m.trace);
   const images = extractImages(m.content);
   // 执行回放：把该消息的思考流变成可播放的行动纪录片
   const [showReplay, setShowReplay] = useState(false);
+  const [hovered, setHovered] = useState(false);
   return (
-    <div className={`msg assistant${isError ? " error" : ""}`}>
+    <div
+      className={`msg assistant${isError ? " error" : ""}`}
+      style={{ position: "relative" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {onBranch && hovered && (
+        <button
+          title="从此处分支：以这条回复之前的内容为基础开一个新会话"
+          onClick={onBranch}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: -18,
+            fontSize: 10,
+            padding: "1px 8px",
+            borderRadius: 8,
+            border: "1px solid var(--border-soft)",
+            background: "var(--bg-elevated)",
+            color: "var(--text-dim)",
+            cursor: "pointer",
+          }}
+        >
+          ⑂ 从此分支
+        </button>
+      )}
       <Markdown text={m.content} />
       {images.map((p, j) => (
         <img
@@ -272,9 +325,25 @@ export default function ChatView() {
   // 流式内容延迟到渲染空档更新，避免每个 token 阻塞主线程（历史消息已 memo 化，不受影响）
   const deferredStreaming = useDeferredValue(streaming);
   const send = useChat((s) => s.send);
+  const editResend = useChat((s) => s.editResend);
+  const forkFrom = useChat((s) => s.forkFrom);
   const compare = useChat((s) => s.compare);
   const stop = useChat((s) => s.stop);
+  // 编辑重发状态：记录正在编辑的用户消息索引（发送时替换该消息及其后内容）
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  // 快捷指令 "/" 提示：输入 / 开头时列出匹配指令
+  const [quickCmds, setQuickCmds] = useState<QuickCommand[]>([]);
+  useEffect(() => {
+    listQuickCommands().then(setQuickCmds).catch(() => {});
+  }, []);
   const [input, setInput] = useState("");
+  const slashQuery = (() => {
+    if (!input.startsWith("/") || input.includes("\n")) return null;
+    const head = input.split(/\s/, 1)[0];
+    return head.slice(1).toLowerCase();
+  })();
+  const slashMatches =
+    slashQuery === null ? [] : quickCmds.filter((c) => c.name.toLowerCase().startsWith(slashQuery)).slice(0, 6);
   const [attachments, setAttachments] = useState<string[]>([]);
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [modelCfg, setModelCfg] = useState<ModelConfig | null>(null);
@@ -503,15 +572,26 @@ export default function ChatView() {
 
   // 内容高度观察：执行流单步展开 / 流式 markdown / 图标加载导致内容在两次提交之间
   // 静默长高时，scroll 事件不会触发，最后一行会卡在语音状态条与输入框下面。
-  // 观察直接子元素尺寸变化，贴底状态下始终重新钉底。
+  // 直接子元素是动态增删的（新消息、执行中的执行流块都是挂载后才追加），
+  // 只观察首帧子元素会让「展开折叠执行流 / 话语到达」后的长高永远不被感知，
+  // 最新话语会一直压在输入框下面 —— 所以用 MutationObserver 给新子元素补挂观察。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
       if (stickRef.current) el.scrollTop = el.scrollHeight;
     });
-    for (const child of Array.from(el.children)) ro.observe(child);
-    return () => ro.disconnect();
+    ro.observe(el); // 容器自身：会话区 0fr→1fr 展开动画期间逐帧长高，逐帧补钉
+    const attach = () => {
+      for (const child of Array.from(el.children)) ro.observe(child);
+    };
+    attach();
+    const mo = new MutationObserver(attach);
+    mo.observe(el, { childList: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   }, []);
 
   // 悬浮卡片模式：会话区平时收起为输入框一条，悬浮/聚焦展开；
@@ -576,9 +656,14 @@ export default function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceOpen]);
 
-  // 展开瞬间贴底（收起→展开时消息直接可见最新内容）
+  // 展开瞬间贴底（收起→展开时消息直接可见最新内容）。
+  // 展开是 0fr→1fr 的过渡动画（--dur-slow=0.5s），起点的钉底在动画结束后
+  // 会差出一截，导致执行流最新话语被输入框挡住 —— 动画结束后再补钉一次。
   useEffect(() => {
-    if (chatExpanded) scrollToBottom(true);
+    if (!chatExpanded) return;
+    scrollToBottom(true);
+    const t = window.setTimeout(() => scrollToBottom(true), 600);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatExpanded]);
 
@@ -587,15 +672,45 @@ export default function ChatView() {
     scrollToBottom(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history.length, busy]);
-  // 流式 token / 执行流步骤增长：贴底才跟随（不打断用户上翻回看）
+  // 流式 token / 执行流步骤增长：贴底才跟随（不打断用户上翻回看）。
+  // 依赖 deferredStreaming 而非 streaming：DOM 渲染的是 deferred 值，
+  // 用原始 streaming 触发时量到的是旧高度，钉底必然差一截。
   useEffect(() => {
     scrollToBottom(false);
-  }, [streaming, thoughts]);
+  }, [deferredStreaming, thoughts]);
+
+  // 执行中「过渡思考」（独白）的显示切换瞬间：独白出现 = 执行流整体卸载、
+  // 独白单独成条；独白结束（chat-round-reset）= 执行流带着全部轨迹整体重挂。
+  // 这两个方向的高度跳变 + deferred 内容滞后，软钉底会追丢，独白会被
+  // 输入框挡住 —— 切换瞬间强制钉底并补两帧，保证话语完整可见。
+  const narrating = busy && !!streaming;
+  useEffect(() => {
+    scrollToBottom(true);
+    const t1 = window.setTimeout(() => scrollToBottom(true), 80);
+    const t2 = window.setTimeout(() => scrollToBottom(true), 250);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [narrating]);
 
   const onPickFiles = async () => {
     const files = await pickFiles();
     if (files && files.length > 0) {
       setAttachments((prev) => [...prev, ...files]);
+    }
+  };
+
+  // 看屏幕：截屏 → 截图作为附件 + 预填分析指令（用户可直接发送或改问具体问题）
+  const onLookScreen = async () => {
+    if (busy) return;
+    try {
+      const shot = await captureScreenForChat();
+      setAttachments((prev) => [...prev, shot.path]);
+      setInput("👁 请看当前屏幕截图：描述屏幕上的内容（正在使用的应用、关键信息、明显的问题），并给出 1~3 条可执行的建议。");
+    } catch (e) {
+      console.error("截屏失败:", e);
     }
   };
 
@@ -656,6 +771,12 @@ export default function ChatView() {
     const atts = attachments;
     setInput("");
     setAttachments([]);
+    // 编辑重发：替换被编辑消息及其后内容；否则正常发送
+    if (editingIdx !== null) {
+      setEditingIdx(null);
+      void editResend(m);
+      return;
+    }
     void send(m, atts);
   };
 
@@ -744,11 +865,35 @@ export default function ChatView() {
           </div>
         )}
 
-        {history.map((m, i) => {
-          if (m.role === "user") return <UserMessage key={i} m={m} />;
-          if (m.branches && m.branches.length > 0) return <BranchesMessage key={i} m={m} />;
-          return <AssistantMessage key={i} m={m} />;
-        })}
+        {(() => {
+          // 最后一条用户消息的索引：只有它可以「编辑重发」
+          let lastUserIdx = -1;
+          for (let k = history.length - 1; k >= 0; k--) {
+            if (history[k].role === "user") {
+              lastUserIdx = k;
+              break;
+            }
+          }
+          return history.map((m, i) => {
+            if (m.role === "user")
+              return (
+                <UserMessage
+                  key={i}
+                  m={m}
+                  onEdit={
+                    !busy && i === lastUserIdx
+                      ? () => {
+                          setEditingIdx(i);
+                          setInput(m.content);
+                        }
+                      : undefined
+                  }
+                />
+              );
+            if (m.branches && m.branches.length > 0) return <BranchesMessage key={i} m={m} />;
+            return <AssistantMessage key={i} m={m} onBranch={!busy ? () => void forkFrom(i + 1) : undefined} />;
+          });
+        })()}
 
         {busy && streaming && (
           <div className="msg assistant streaming">
@@ -827,6 +972,48 @@ export default function ChatView() {
           </div>
         )}
 
+        {/* 快捷指令 "/" 提示浮层 */}
+        {slashMatches.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "100%",
+              left: 12,
+              right: 12,
+              marginBottom: 6,
+              background: "var(--bg-elevated, #1c1c24)",
+              border: "1px solid var(--border-soft, #2e2e3a)",
+              borderRadius: 10,
+              padding: 6,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+              zIndex: 50,
+            }}
+          >
+            {slashMatches.map((c) => (
+              <div
+                key={c.name}
+                onClick={() => setInput(`/${c.name} `)}
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  padding: "5px 8px",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--border-soft, #2e2e3a)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                <span style={{ color: "#f59e0b", fontFamily: "monospace" }}>/{c.name}</span>
+                <span style={{ color: "var(--text-dim, #999)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {c.description || c.template}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         {attachments.length > 0 && (
           <div className="attach-bar">
             {attachments.map((a) => (
@@ -847,6 +1034,35 @@ export default function ChatView() {
         )}
 
         {imgHint && <div className="img-hint">{imgHint}</div>}
+
+        {/* 编辑重发横幅：提示当前处于编辑状态 */}
+        {editingIdx !== null && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "4px 10px",
+              marginBottom: 6,
+              borderRadius: 8,
+              background: "var(--bg-elevated)",
+              border: "1px dashed var(--border-soft)",
+              fontSize: 11,
+              color: "var(--text-dim)",
+            }}
+          >
+            <span style={{ flex: 1 }}>✎ 正在编辑重发该消息，发送后将替换其后所有内容</span>
+            <button
+              onClick={() => {
+                setEditingIdx(null);
+                setInput("");
+              }}
+              style={{ cursor: "pointer", border: "none", background: "none", color: "var(--text-dim)", fontSize: 11 }}
+            >
+              取消
+            </button>
+          </div>
+        )}
 
         {imgOpen && imgCap?.supported && (
           <div className="img-panel">
@@ -927,6 +1143,14 @@ export default function ChatView() {
               </button>
               <button className="tool-btn" onClick={onPickFiles} title="上传文件">
                 ＋
+              </button>
+              <button
+                className="tool-btn"
+                onClick={onLookScreen}
+                title="看屏幕：截取当前屏幕，让白泽分析并给建议"
+                disabled={busy}
+              >
+                👁
               </button>
               <button
                 className={`tool-btn img-btn ${!imgCap ? "" : imgCap.supported ? "active" : "unsupported"}`}

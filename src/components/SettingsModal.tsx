@@ -15,6 +15,8 @@ import {
   getImChannels,
   getMcpConfig,
   getModelConfig,
+  getModelHealth,
+  type ModelHealth,
   getNotifyConfig,
   getRagState,
   getRuntimeConfig,
@@ -24,6 +26,15 @@ import {
   getVoice,
   getWechatStatus,
   indexRagDir,
+  getModelUsageReport,
+  getModelUsageDaily,
+  listQuickCommands,
+  saveQuickCommand,
+  deleteQuickCommand,
+  queryAuditLog,
+  listPermissionRules,
+  deletePermissionRule,
+  setPermissionRule,
   onFeishuStatus,
   onWechatQr,
   onWechatStatus,
@@ -44,8 +55,7 @@ import {
   wechatStop,
 } from "../api";
 import { reactiveSpeak, speakWithCloud, stopSpeaking } from "../voiceReactive";
-import type { TtsConfig, UpdateInfo } from "../api";
-import { KOKORO_VOICES, getKokoroVoices, getBrowserPathSetting, setBrowserPathSetting, updateCheck, updateInstall, onUpdateProgress } from "../api";
+import type { TtsConfig, UpdateInfo, ModelUsageRow, ModelUsageDayRow, QuickCommand, AuditRow } from "../api";import { KOKORO_VOICES, getKokoroVoices, getBrowserPathSetting, setBrowserPathSetting, updateCheck, updateInstall, onUpdateProgress } from "../api";
 import {
   getNotifyStyle,
   getSfxVolume,
@@ -120,6 +130,7 @@ export default function SettingsModal({
   initialTab?: string;
 }) {
   const [model, setModel] = useState<ModelConfig | null>(null);
+  const [health, setHealth] = useState<Record<string, ModelHealth>>({});
   const [mcp, setMcp] = useState<McpConfig | null>(null);
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
   const [notify, setNotify] = useState<NotifyConfig | null>(null);
@@ -344,6 +355,8 @@ export default function SettingsModal({
 
   useEffect(() => {
     getModelConfig().then(setModel).catch((e) => setError(String(e)));
+    // 健康状态点：读最近一次后台探活结果（5 分钟刷新一轮）
+    getModelHealth().then(setHealth).catch(() => {});
     getVendorPresets().then(setVendorPresets).catch(() => {});
     getMcpConfig()
       .then((c) => {
@@ -491,11 +504,14 @@ export default function SettingsModal({
 
   const doIndexRag = async () => {
     if (!ragPath.trim()) return;
-    setRagMsg("索引中…");
+    setRagMsg("已提交索引任务，进度见右下角浮层…");
     try {
-      const r = await indexRagDir(ragPath.trim());
-      setRagMsg(`已索引 ${r.chunks} 个分块`);
-      await loadRag();
+      // 后台任务：立即返回 job id，进度经 job-update 事件推送到 JobsToast 浮层
+      await indexRagDir(ragPath.trim());
+      // 延迟刷新一次状态（索引完成时浮层也会提示）
+      setTimeout(() => {
+        void loadRag();
+      }, 15000);
     } catch (e) {
       setRagMsg(String(e));
     }
@@ -771,6 +787,26 @@ export default function SettingsModal({
                         onChange={() => updModel({ active: p.id })}
                         title="设为当前使用模型"
                       />
+                      {/* 健康状态点：绿=最近探活正常，红=异常，灰=尚未探测（P1-5） */}
+                      {(() => {
+                        const h = health[p.id];
+                        const color = !h ? "#6b7280" : h.ok ? "#22c55e" : "#f87171";
+                        const tip = !h
+                          ? "尚未探测（后台每 5 分钟自动探活一次）"
+                          : `${h.ok ? "最近探活正常" : "最近探活失败"}：${h.detail}`;
+                        return (
+                          <span
+                            title={tip}
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: color,
+                              flexShrink: 0,
+                            }}
+                          />
+                        );
+                      })()}
                       <input
                         style={{ ...input, flex: 1, width: 60, marginBottom: 0 }}
                         value={p.name}
@@ -983,6 +1019,43 @@ export default function SettingsModal({
               <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8 }}>
                 选中「设为当前使用模型」后点底部「保存」生效；也可在聊天输入框直接切换。调用失败时按列表顺序自动降级到下一个可用模型。
               </div>
+
+              {/* 云端代理设置（P1-6）：显式化代理行为，替代环境变量隐式继承 */}
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border-soft)" }}>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+                  云端请求代理（GLM/DeepSeek 等国内 API 建议强制直连；跟随系统代理时若代理软件未启动，所有云端模型都会网络报错）
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select
+                    style={{ ...input, width: 150, marginBottom: 0 }}
+                    value={model.proxy?.mode || "env"}
+                    onChange={(e) =>
+                      setModel((c) =>
+                        c ? { ...c, proxy: { mode: e.target.value, url: c.proxy?.url ?? "" } } : c
+                      )
+                    }
+                  >
+                    <option value="env">跟随系统代理</option>
+                    <option value="direct">强制直连（国内 API 推荐）</option>
+                    <option value="custom">自定义代理</option>
+                  </select>
+                  {model.proxy?.mode === "custom" && (
+                    <input
+                      style={{ ...input, flex: 1, marginBottom: 0 }}
+                      value={model.proxy?.url ?? ""}
+                      onChange={(e) =>
+                        setModel((c) =>
+                          c ? { ...c, proxy: { mode: "custom", url: e.target.value } } : c
+                        )
+                      }
+                      placeholder="http://127.0.0.1:7890"
+                    />
+                  )}
+                </div>
+              </div>
+
+              {/* 用量成本面板（P0-2 配套 UI）：按模型汇总 + 按天趋势柱状图 */}
+              <UsagePanel />
             </section>
 
             {/* ============ 运行时模型 ============ */}
@@ -1286,6 +1359,9 @@ export default function SettingsModal({
                 端点：/v1/chat/completions（对话）· /v1/models（模型列表）· /api/memory/remember · /api/memory/search · /api/tools · /api/tools/execute（仅只读）
               </div>
             </section>
+
+            {/* 审计回放 + 权限白名单 */}
+            <AuditReplaySection />
             </div>
 
             {/* 环境检测页 */}
@@ -1557,6 +1633,9 @@ export default function SettingsModal({
                 )}
               </div>
             </section>
+
+            {/* ============ 快捷指令 ============ */}
+            <QuickCommandsSection />
             </div>
 
             {/* 通知与音效页 */}
@@ -2445,6 +2524,309 @@ function EnvCheckPage() {
       )}
       <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 10, lineHeight: 1.6 }}>
         检测到的运行时路径会自动索引进本地配置，相关功能（如本地 Kokoro 语音）直接使用，无需重复探测
+      </div>
+    </section>
+  );
+}
+
+// ───── 用量成本面板（P0-2 配套 UI）─────
+
+/** 粗略价格表：¥ / 1M tokens [输入, 输出]，未收录模型用默认值（仅估算） */
+const PRICE_TABLE: Record<string, [number, number]> = {
+  deepseek: [2, 8],
+  glm: [2, 8],
+  kimi: [4, 12],
+  qwen: [2, 8],
+  doubao: [0.8, 2],
+};
+
+function estimateCost(model: string, pt: number, ct: number): number {
+  const key = Object.keys(PRICE_TABLE).find((k) => model.toLowerCase().includes(k));
+  const pair = key ? PRICE_TABLE[key] : ([2, 8] as [number, number]);
+  const [pi, po] = pair;
+  return (pt / 1e6) * pi + (ct / 1e6) * po;
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+
+function UsagePanel() {
+  const [rows, setRows] = useState<ModelUsageRow[]>([]);
+  const [daily, setDaily] = useState<ModelUsageDayRow[]>([]);
+
+  useEffect(() => {
+    getModelUsageReport(7).then(setRows).catch(() => {});
+    getModelUsageDaily(14).then(setDaily).catch(() => {});
+  }, []);
+
+  if (rows.length === 0 && daily.length === 0) return null;
+
+  const maxDay = Math.max(1, ...daily.map((d) => d.prompt_tokens + d.completion_tokens));
+  const totalCost = rows.reduce((s, r) => s + estimateCost(r.model, r.prompt_tokens, r.completion_tokens), 0);
+  const totalTokens = rows.reduce((s, r) => s + r.prompt_tokens + r.completion_tokens, 0);
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border-soft)" }}>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+        Token 用量（近 7 天，费用按常见价格粗略估算，仅供参考）
+      </div>
+
+      {/* 按天趋势柱状图（近 14 天，纯 CSS 无依赖） */}
+      {daily.length > 0 && (
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, marginBottom: 10 }}>
+          {daily.map((d) => {
+            const total = d.prompt_tokens + d.completion_tokens;
+            const h = Math.max(3, Math.round((total / maxDay) * 60));
+            return (
+              <div
+                key={d.day}
+                title={d.day + "\n输入 " + fmtTokens(d.prompt_tokens) + " · 输出 " + fmtTokens(d.completion_tokens) + " · " + d.calls + " 次调用"}
+                style={{
+                  flex: 1,
+                  height: h,
+                  background: "linear-gradient(180deg, var(--accent, #6c7bff), var(--accent-dim, #3b4bdb))",
+                  borderRadius: 3,
+                  opacity: 0.85,
+                  cursor: "default",
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* 按模型汇总 */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {rows.map((r) => (
+          <div key={r.provider + r.model} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+            <span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+              {r.model}
+            </span>
+            <span style={{ color: "var(--text-faint)" }}>{r.calls} 次</span>
+            <span style={{ color: "var(--text-dim)", minWidth: 56, textAlign: "right" }}>{fmtTokens(r.prompt_tokens + r.completion_tokens)} tok</span>
+            <span style={{ color: "var(--text-dim)", minWidth: 64, textAlign: "right" }}>
+              ≈¥{estimateCost(r.model, r.prompt_tokens, r.completion_tokens).toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {rows.length > 0 && (
+        <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+          合计 {fmtTokens(totalTokens)} tokens ≈ ¥{totalCost.toFixed(2)}（未收录模型按 ¥2/¥8 每百万 token 估算）
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ───── 快捷指令管理（/name args 模板展开）─────
+
+function QuickCommandsSection() {
+  const [cmds, setCmds] = useState<QuickCommand[]>([]);
+  const [name, setName] = useState("");
+  const [template, setTemplate] = useState("");
+  const [desc, setDesc] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const load = () => listQuickCommands().then(setCmds).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  const save = async () => {
+    if (!name.trim() || !template.trim()) {
+      setMsg("指令名和模板不能为空");
+      return;
+    }
+    try {
+      await saveQuickCommand({ name: name.trim(), template: template.trim(), description: desc.trim() });
+      setName("");
+      setTemplate("");
+      setDesc("");
+      setMsg("已保存");
+      load();
+    } catch (e) {
+      setMsg(String(e));
+    }
+  };
+
+  return (
+    <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+      <h4 style={{ margin: "4px 0 8px", color: "#f59e0b" }}>快捷指令</h4>
+      <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 8, lineHeight: 1.6 }}>
+        在聊天输入框输入 <code>/名称 参数</code> 即可展开为模板发送。模板中 <code>{"{args}"}</code> 代表全部参数，<code>{"{1}"} {"{2}"}</code> 按位置替换。
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+        <input style={{ ...input, width: 130, marginBottom: 0 }} placeholder="/名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <input style={{ ...input, flex: 1, minWidth: 200, marginBottom: 0 }} placeholder="模板：如 帮我把 {args} 整理成周报" value={template} onChange={(e) => setTemplate(e.target.value)} />
+        <input style={{ ...input, width: 140, marginBottom: 0 }} placeholder="备注（可选）" value={desc} onChange={(e) => setDesc(e.target.value)} />
+        <button className="acui-btn" onClick={() => void save()}>保存</button>
+      </div>
+      {msg && <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 6 }}>{msg}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {cmds.map((c) => (
+          <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+            <span style={{ color: "#f59e0b", fontFamily: "monospace" }}>/{c.name}</span>
+            <span style={{ color: "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c.template}>
+              {c.template}
+            </span>
+            <button
+              className="acui-btn danger"
+              style={{ padding: "1px 8px", fontSize: 11 }}
+              onClick={async () => {
+                await deleteQuickCommand(c.name);
+                load();
+              }}
+            >
+              删除
+            </button>
+          </div>
+        ))}
+        {cmds.length === 0 && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>还没有快捷指令</div>}
+      </div>
+    </section>
+  );
+}
+
+// ───── 审计回放 + 权限白名单管理 ─────
+
+const DECISION_LABEL: Record<string, { text: string; color: string }> = {
+  "auto-allow": { text: "自动放行", color: "#30a46c" },
+  approved: { text: "已批准", color: "#30a46c" },
+  denied: { text: "已拒绝", color: "#e5484d" },
+  timeout: { text: "超时", color: "#f59e0b" },
+  "unknown-tool": { text: "未知工具", color: "#e5484d" },
+};
+
+function AuditReplaySection() {
+  const [rows, setRows] = useState<AuditRow[]>([]);
+  const [rules, setRules] = useState<[string, boolean][]>([]);
+  const [toolFilter, setToolFilter] = useState("");
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [newRule, setNewRule] = useState("");
+
+  const load = () => {
+    queryAuditLog(100).then(setRows).catch(() => {});
+    listPermissionRules().then(setRules).catch(() => {});
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filtered = toolFilter.trim() ? rows.filter((r) => r.tool === toolFilter.trim()) : rows;
+  const tools = Array.from(new Set(rows.map((r) => r.tool)));
+
+  return (
+    <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+      <h4 style={{ margin: "4px 0 8px", color: "#60a5fa" }}>审计回放 · 权限白名单</h4>
+
+      {/* 权限规则（白名单/黑名单） */}
+      <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 6 }}>
+        已记住的权限规则（审批时点「记住」产生；允许 = 自动放行，拒绝 = 自动拦截）
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        {rules.length === 0 && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>暂无规则</div>}
+        {rules.map(([k, allowed]) => (
+          <span
+            key={k}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 8,
+              border: "1px solid " + (allowed ? "#30a46c66" : "#e5484d66"),
+              color: allowed ? "#30a46c" : "#e5484d",
+            }}
+          >
+            {allowed ? "✓" : "✗"} {k}
+            <button
+              style={{ border: "none", background: "none", cursor: "pointer", color: "inherit", padding: 0 }}
+              title="删除规则"
+              onClick={async () => {
+                await deletePermissionRule(k);
+                load();
+              }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <input
+          style={{ ...input, flex: 1, marginBottom: 0 }}
+          placeholder="手动添加规则：工具名（如 shell）"
+          value={newRule}
+          onChange={(e) => setNewRule(e.target.value)}
+        />
+        <button
+          className="acui-btn"
+          onClick={async () => {
+            if (!newRule.trim()) return;
+            await setPermissionRule(newRule.trim(), true);
+            setNewRule("");
+            load();
+          }}
+        >
+          加入白名单
+        </button>
+      </div>
+
+      {/* 审计回放列表 */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <select style={{ ...input, width: 180, marginBottom: 0 }} value={toolFilter} onChange={(e) => setToolFilter(e.target.value)}>
+          <option value="">全部工具（最近 100 条）</option>
+          {tools.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        <button className="acui-btn" onClick={load}>
+          刷新
+        </button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 320, overflowY: "auto" }}>
+        {filtered.map((r, i) => {
+          const d = DECISION_LABEL[r.decision] ?? { text: r.decision, color: "var(--text-dim)" };
+          const time = new Date(r.ts).toLocaleString();
+          const open = expanded === i;
+          return (
+            <div
+              key={i}
+              onClick={() => setExpanded(open ? null : i)}
+              style={{ cursor: "pointer", padding: "4px 8px", borderRadius: 6, fontSize: 11.5, background: open ? "var(--border-soft)" : "transparent" }}
+            >
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ color: d.color, flexShrink: 0 }}>{d.text}</span>
+                <span style={{ color: "var(--text)", fontFamily: "monospace", flexShrink: 0 }}>{r.tool}</span>
+                <span style={{ color: "var(--text-dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.args.slice(0, 80)}
+                </span>
+                <span style={{ color: "var(--text-faint)", flexShrink: 0 }}>{time}</span>
+              </div>
+              {open && (
+                <div style={{ marginTop: 6, padding: 8, borderRadius: 6, background: "var(--bg-elevated, #1c1c24)", fontSize: 11 }}>
+                  <div style={{ color: "var(--text-faint)", marginBottom: 2 }}>参数：</div>
+                  <pre style={{ margin: "0 0 8px", whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-dim)" }}>{r.args}</pre>
+                  <div style={{ color: "var(--text-faint)", marginBottom: 2 }}>结果：</div>
+                  <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--text-dim)", maxHeight: 200, overflowY: "auto" }}>
+                    {r.result}
+                  </pre>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && <div style={{ fontSize: 11, color: "var(--text-faint)", padding: 8 }}>暂无审计记录</div>}
       </div>
     </section>
   );

@@ -23,6 +23,7 @@ const Galaxy = lazy(() => import("./components/Galaxy"));
 // 首次启动环境自检（全屏引导层）+ 非首次启动提示卡
 const Onboarding = lazy(() => import("./components/Onboarding"));
 import { EnvNotice } from "./components/Onboarding";
+import { JobsToast } from "./components/JobsToast";
 import {
   envGetState,
   getPendingPermissions,
@@ -689,6 +690,9 @@ export default function App() {
 
       {/* 非首次启动：必需环境仍缺失时的非阻塞提示卡（自查缓存报告，通过则不渲染） */}
       {onboarding === false && <EnvNotice />}
+
+      {/* 后台任务浮层：RAG 索引等长操作进度实时显示 */}
+      <JobsToast />
 
       {/* 首次安装启动：全屏环境自检引导层 */}
       {onboarding === true && (

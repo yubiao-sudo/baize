@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
-use crate::model::{ChatMessage, ChatResponse};
+use crate::model::{ChatMessage, ChatResponse, ModelRouter};
 use crate::security::{AuditEntry, PermissionDecision, SecurityManager};
 use crate::AppState;
 
@@ -698,6 +698,9 @@ impl<'a> AgentLoop<'a> {
             tool_calls: None,
             tool_call_id: None,
         });
+        // 上下文预算（P0-3+滚动摘要）：超预算的历史从最老轮次整体丢弃，
+        // 丢弃前先用快模型把旧历史压缩成一段摘要注入 system，长会话不"失忆"
+        apply_context_budget(&self.state.model, &mut messages).await;
 
         let tools = self.mode_tools();
 
@@ -1414,13 +1417,137 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-/// 若模型返回空内容，给一个默认回复（避免前端显示空气泡）
+/// 若模型返回空内容，如实提示（避免前端显示空气泡）。
+/// 不得伪装成"任务完成"——那会让用户误以为模型真的执行了操作。
 fn finalize(content: Option<String>) -> String {
     let c = content.unwrap_or_default();
     if c.trim().is_empty() {
-        "已根据你的要求完成任务。".to_string()
+        "（模型返回了空回复：没有文字也没有工具调用。可能是模型服务异常或思考类模型只输出了思考内容，请重试或切换模型。）".to_string()
     } else {
         c
+    }
+}
+
+// ───── 上下文预算（P0-3）─────
+
+/// 粗略字符预算：中文约 1 字 ≈ 1 token、英文约 4 字符 ≈ 1 token，
+/// 取 48000 字符（约 12k~48k token），适配 128k 上下文的现代模型并留足输出余量
+const CTX_BUDGET_CHARS: usize = 48_000;
+/// 单条工具结果字符上限：超长截断（保留首尾），避免读文件/截图描述撑爆上下文
+const TOOL_MSG_CHAR_LIMIT: usize = 4_000;
+
+/// 超预算时从最老的轮次开始整体丢弃；被丢弃内容先用快模型压缩成滚动摘要注入。
+/// 工具调用必须成组丢弃（assistant+tool_calls 与其后跟随的 tool 消息），
+/// 否则会出现孤立的 tool 消息，OpenAI 兼容协议会直接拒绝请求。
+async fn apply_context_budget(model: &ModelRouter, messages: &mut Vec<ChatMessage>) {
+    // 单条工具结果截断（无论总量是否超限，单条超长都先压下来）
+    for m in messages.iter_mut() {
+        if m.role == "tool" {
+            let count = m.content.chars().count();
+            if count > TOOL_MSG_CHAR_LIMIT {
+                let head: String = m.content.chars().take(TOOL_MSG_CHAR_LIMIT / 2).collect();
+                let tail: String = m
+                    .content
+                    .chars()
+                    .skip(count - TOOL_MSG_CHAR_LIMIT / 4)
+                    .collect();
+                m.content = format!("{head}\n…（中间内容过长已截断）…\n{tail}");
+            }
+        }
+    }
+
+    if messages.len() <= 2 {
+        return; // 只有 system + 当前 user，无需裁剪
+    }
+    let total: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+    if total <= CTX_BUDGET_CHARS {
+        return;
+    }
+
+    // 历史区间为 [1, len-2]；messages[0] 是 system、最后一条是当前 user，均保留
+    let end = messages.len() - 1;
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    let mut i = 1;
+    while i < end {
+        let start = i;
+        if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
+            let mut j = i + 1;
+            while j < end && messages[j].role == "tool" {
+                j += 1;
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+        groups.push((start, i - 1));
+    }
+
+    let mut remaining = total;
+    let mut drop_until = 1usize; // [1, drop_until) 为丢弃区间
+    for (s, e) in &groups {
+        if remaining <= CTX_BUDGET_CHARS {
+            break;
+        }
+        let span: usize = (*s..=*e).map(|k| messages[k].content.chars().count()).sum();
+        remaining -= span;
+        drop_until = e + 1;
+    }
+    if drop_until > 1 {
+        // 滚动摘要：把将丢弃的旧历史压缩成一段摘要，插在主 system 之后
+        // 失败/超时静默降级为普通丢弃，绝不阻塞对话
+        let dropped_chars: usize = (1..drop_until).map(|k| messages[k].content.chars().count()).sum();
+        let mut inserted_summary = false;
+        if dropped_chars > 800 {
+            let mut digest = String::new();
+            let mut budget = 2_500usize;
+            for m in &messages[1..drop_until] {
+                let c = m.content.chars().count();
+                if c == 0 {
+                    continue;
+                }
+                let take = c.min(budget).min(700);
+                let piece: String = m.content.chars().take(take).collect();
+                digest.push_str(&format!("[{}] {piece}\n", m.role));
+                budget -= take;
+                if budget == 0 {
+                    break;
+                }
+            }
+            let prompt = format!(
+                "以下是助手与用户较早前的对话片段（将被裁剪出上下文）。请压缩成 300 字以内的滚动摘要：\
+                 保留用户的目标、关键决定、已完成的事实与悬而未决的问题。只输出摘要正文。\n\n{digest}"
+            );
+            let msgs = vec![ChatMessage {
+                role: "user".into(),
+                content: prompt,
+                tool_calls: None,
+                tool_call_id: None,
+            }];
+            if let Ok(Ok(r)) = tokio::time::timeout(
+                Duration::from_secs(15),
+                model.chat(&msgs, &[]),
+            )
+            .await
+            {
+                let summary = r.content.unwrap_or_default();
+                let s = summary.trim();
+                if s.chars().count() >= 20 {
+                    messages.insert(
+                        1,
+                        ChatMessage {
+                            role: "system".into(),
+                            content: format!("【早期对话滚动摘要】\n{s}\n（以上为更早对话的压缩记录，细节可能省略）"),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        },
+                    );
+                    inserted_summary = true;
+                }
+            }
+        }
+        // 摘要插在 index 1，原丢弃区间 [1, drop_until) 整体右移一位
+        let drain_start = if inserted_summary { 2 } else { 1 };
+        messages.drain(drain_start..drop_until + if inserted_summary { 1 } else { 0 });
     }
 }
 

@@ -26,6 +26,9 @@ pub fn embed(text: &str) -> Result<Vec<f32>, String> {
 
     std::thread::spawn(move || -> Result<Vec<f32>, String> {
         let client = reqwest::blocking::Client::builder()
+            // 本机回环（Ollama embed）绝不走代理：代理软件接管 127.0.0.1 会导致连不上
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;

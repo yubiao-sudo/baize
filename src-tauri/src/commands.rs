@@ -65,7 +65,16 @@ pub async fn chat(
     }
 
     // 附件文档：抽取文本 + 脱敏，注入为本轮上下文（不写入消息/记忆）
-    let agent_input = enrich_with_attachments(&message, &attachments);
+    // 快捷指令：/name args → 模板展开（命中才替换，普通消息原样）
+    let expanded = state
+        .store
+        .quick_command_expand(&message)
+        .unwrap_or_else(|| message.clone());
+    if expanded != message {
+        let _ = app.emit("thought", json!({ "kind": "phase", "label": "快捷指令", "detail": format!("/{message} → 模板已展开") }));
+        state.log_thought("phase", "快捷指令", &format!("已展开为：{}", expanded.chars().take(80).collect::<String>()));
+    }
+    let agent_input = enrich_with_attachments(&expanded, &attachments);
 
     // Token 节约：长对话超阈值时压缩早期消息为摘要（本地免费模型压缩）
     let (history, compress_stats) = crate::token_saver::compress_history(&state, history).await;
@@ -570,7 +579,7 @@ pub async fn test_model_profile(state: State<'_, AppState>, id: String) -> Resul
         .cloned()
         .ok_or_else(|| format!("模型 {id} 不存在"))?;
     let prov = p
-        .to_provider()
+        .to_provider(&config.proxy)
         .ok_or_else(|| "模型不可用（云端需配置 API Key）".to_string())?;
     let msgs = vec![ChatMessage {
         role: "user".to_string(),
@@ -588,6 +597,32 @@ pub async fn test_model_profile(state: State<'_, AppState>, id: String) -> Resul
     } else {
         Ok(content)
     }
+}
+
+/// 各提供方最近一次健康探测结果（P1-5：后台每 5 分钟探活，前端状态点展示）
+#[tauri::command]
+pub fn model_health(
+) -> std::collections::HashMap<String, crate::model::HealthStatus> {
+    crate::model::health_snapshot()
+}
+
+/// 模型 token 用量报表（P0-2：最近 n 天，按提供方×模型聚合）
+#[tauri::command]
+pub fn model_usage_report(
+    state: State<'_, AppState>,
+    days: Option<u32>,
+) -> Result<Vec<crate::memory::ModelUsageRow>, String> {
+    let days = days.unwrap_or(7).clamp(1, 90);
+    state.store.model_usage_report(days)
+}
+
+#[tauri::command]
+pub fn model_usage_daily(
+    state: State<'_, AppState>,
+    days: Option<u32>,
+) -> Result<Vec<crate::memory::ModelUsageDayRow>, String> {
+    let days = days.unwrap_or(14).clamp(1, 90);
+    state.store.model_usage_daily(days)
 }
 
 // ---------------- 对话分支（同一问题并行对比多个模型） ----------------
@@ -722,7 +757,7 @@ pub async fn run_meeting(
         if !profile.enabled {
             return Err(format!("成员「{}」绑定的模型 {} 未启用", p.name, p.profile_id));
         }
-        let provider = profile.to_provider().ok_or_else(|| {
+        let provider = profile.to_provider(&config.proxy).ok_or_else(|| {
             format!("成员「{}」绑定的模型 {} 不可用（云端需填写 API Key）", p.name, p.profile_id)
         })?;
         members.push((p.clone(), provider));
@@ -1203,7 +1238,7 @@ pub async fn run_teamwork(
         if !profile.enabled {
             return Err(format!("成员「{}」绑定的模型 {} 未启用", p.name, p.profile_id));
         }
-        let provider = profile.to_provider().ok_or_else(|| {
+        let provider = profile.to_provider(&config.proxy).ok_or_else(|| {
             format!("成员「{}」绑定的模型 {} 不可用（云端需填写 API Key）", p.name, p.profile_id)
         })?;
         members.push((p.clone(), provider));
@@ -1617,13 +1652,132 @@ pub fn get_rag_state(state: State<'_, AppState>) -> Vec<Value> {
 
 #[tauri::command]
 pub async fn index_rag_dir(state: State<'_, AppState>, path: String) -> Result<Value, String> {
-    // 目录索引涉及文件读取 + 文本切分 + 向量化，属于阻塞 I/O/计算，移到 blocking 线程池执行
+    // 改为后台任务（JobManager）：立即返回 job id，进度经 "job-update" 事件实时推送，
+    // 前端不再需要挂着一个 await 等大目录索引完成
     let rag = state.rag.clone();
     let path_for_index = path.clone();
-    let count = tokio::task::spawn_blocking(move || rag.index_dir(&path_for_index, 200))
-        .await
-        .map_err(|e| format!("索引任务异常: {e}"))??;
-    Ok(json!({ "ok": true, "path": path, "chunks": count }))
+    let job_id = crate::jobs::start("rag", &format!("索引知识库 · {path}"), 0);
+
+    // 先同步扫描拿到文件总数用于进度分母；扫描失败立即收尾
+    let scan = tokio::task::spawn_blocking({
+        let p = path.clone();
+        move || crate::rag::scan_text_files(&p)
+    })
+    .await
+    .map_err(|e| format!("索引任务异常: {e}"));
+    match scan {
+        Ok(Ok(files)) => {
+            crate::jobs::set_total(&job_id, files.len() as u64);
+            crate::jobs::update(&job_id, 0, &format!("共 {} 个文本文件", files.len()));
+        }
+        Ok(Err(e)) => {
+            crate::jobs::finish(&job_id, false, &e);
+            return Err(e);
+        }
+        Err(e) => {
+            crate::jobs::finish(&job_id, false, &format!("{e}"));
+            return Err(format!("索引任务异常: {e}"));
+        }
+    }
+
+    let job_for_bg = job_id.clone();
+    // 记录监听目录：rag_watch 后台线程据此自动重索引
+    let _ = state.store.set_setting("rag_watch_dir", &path);
+    tokio::task::spawn_blocking(move || {
+        let job = job_for_bg.clone();
+        let cb = move |done: usize, total: usize| {
+            crate::jobs::update(&job, done as u64, "");
+        };
+        match rag.index_dir_with_progress(&path_for_index, 200, Some(&cb)) {
+            Ok(count) => crate::jobs::finish(&job_for_bg, true, &format!("完成，共 {count} 个分块")),
+            Err(e) => crate::jobs::finish(&job_for_bg, false, &e),
+        }
+    });
+
+    Ok(json!({ "ok": true, "async": true, "job_id": job_id, "path": path }))
+}
+
+#[tauri::command]
+pub fn list_active_jobs() -> Vec<crate::jobs::JobInfo> {
+    crate::jobs::list_active()
+}
+
+// ---------------- 消息编辑重发 / 会话分支 ----------------
+
+#[tauri::command]
+pub fn delete_last_exchange(state: State<'_, AppState>, conv_id: String) -> Result<bool, String> {
+    state.store.delete_last_exchange(&conv_id)
+}
+
+#[tauri::command]
+pub fn fork_conversation(
+    state: State<'_, AppState>,
+    conv_id: String,
+    keep_count: usize,
+    title: String,
+) -> Result<String, String> {
+    state.store.fork_conversation(&conv_id, keep_count, &title)
+}
+
+// ---------------- 快捷指令 ----------------
+
+#[tauri::command]
+pub fn list_quick_commands(state: State<'_, AppState>) -> Result<Vec<crate::memory::QuickCommandRow>, String> {
+    state.store.quick_commands_list()
+}
+
+#[tauri::command]
+pub fn save_quick_command(state: State<'_, AppState>, cmd: crate::memory::QuickCommandRow) -> Result<(), String> {
+    state.store.quick_command_save(&cmd)
+}
+
+#[tauri::command]
+pub fn delete_quick_command(state: State<'_, AppState>, name: String) -> Result<bool, String> {
+    state.store.quick_command_delete(&name)
+}
+
+// ---------------- 审计回放 + 权限白名单管理 ----------------
+
+#[tauri::command]
+pub fn query_audit_log(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+    tool: Option<String>,
+) -> Result<Vec<crate::memory::AuditQueryRow>, String> {
+    state
+        .store
+        .audit_query(limit.unwrap_or(100) as usize, tool.as_deref())
+}
+
+#[tauri::command]
+pub fn list_permission_rules(state: State<'_, AppState>) -> Vec<(String, bool)> {
+    state.security.rules_list()
+}
+
+#[tauri::command]
+pub fn delete_permission_rule(state: State<'_, AppState>, key: String) -> bool {
+    state.security.rules_remove(&key)
+}
+
+#[tauri::command]
+pub fn set_permission_rule(state: State<'_, AppState>, key: String, allowed: bool) {
+    state.security.rules_set(&key, allowed);
+}
+
+// ---------------- 屏幕感知 ----------------
+
+/// 一键截屏：返回截图路径（前端把截图作为附件 + 默认问题发送给模型分析）
+#[tauri::command]
+pub fn capture_screen_for_chat(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let info = state
+        .capability
+        .capture_screen()
+        .map_err(|e| format!("截屏失败: {e}"))?;
+    Ok(json!({
+        "path": info.path,
+        "width": info.width,
+        "height": info.height,
+    }))
 }
 
 #[tauri::command]

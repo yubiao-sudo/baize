@@ -153,6 +153,7 @@ pub fn vision_generate_raw(base64: &str, prompt: &str, timeout: Duration) -> Res
     };
 
     let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
         .build()
         .map_err(|e| {
@@ -204,6 +205,7 @@ fn vision_generate_multimodal(
     timeout: Duration,
 ) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
         .build()
         .map_err(|e| {

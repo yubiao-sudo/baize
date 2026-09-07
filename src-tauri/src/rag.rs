@@ -42,9 +42,23 @@ impl RagIndex {
 
     /// 索引一个目录：扫描文本文件 → 分块 → embedding
     pub fn index_dir(&self, path: &str, max_chunks: usize) -> Result<usize, String> {
+        self.index_dir_with_progress(path, max_chunks, None)
+    }
+
+    /// 同上，带进度回调（files_done, files_total）——供后台任务面板实时显示
+    pub fn index_dir_with_progress(
+        &self,
+        path: &str,
+        max_chunks: usize,
+        on_progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<usize, String> {
         let files = scan_text_files(path)?;
+        let total = files.len();
         let mut chunks: Vec<DocChunk> = Vec::new();
-        for f in files {
+        for (done, f) in files.into_iter().enumerate() {
+            if let Some(cb) = on_progress {
+                cb(done + 1, total);
+            }
             let Ok(content) = std::fs::read_to_string(&f) else {
                 continue;
             };
@@ -139,7 +153,7 @@ impl RagIndex {
 }
 
 /// 递归扫描目录下的文本文件
-fn scan_text_files(dir: &str) -> Result<Vec<String>, String> {
+pub(crate) fn scan_text_files(dir: &str) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     scan_dir(dir, &mut files, 0)?;
     if files.is_empty() {

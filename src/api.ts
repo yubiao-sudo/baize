@@ -467,6 +467,103 @@ export async function testModelProfile(id: string): Promise<string> {
   return invoke<string>("test_model_profile", { id });
 }
 
+/** 各提供方最近一次健康探测结果（后台每 5 分钟自动探活） */
+export interface ModelHealth {
+  ok: boolean;
+  detail: string;
+  checked_at: number;
+}
+
+export async function getModelHealth(): Promise<Record<string, ModelHealth>> {
+  return invoke<Record<string, ModelHealth>>("model_health");
+}
+
+/** 模型 token 用量报表（最近 n 天，按提供方×模型聚合） */
+export interface ModelUsageRow {
+  provider: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  calls: number;
+}
+
+export async function getModelUsageReport(days = 7): Promise<ModelUsageRow[]> {
+  return invoke<ModelUsageRow[]>("model_usage_report", { days });
+}
+
+/** 按天聚合的用量（升序，成本面板趋势图用） */
+export interface ModelUsageDayRow {
+  day: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  calls: number;
+}
+
+export async function getModelUsageDaily(days = 14): Promise<ModelUsageDayRow[]> {
+  return invoke<ModelUsageDayRow[]>("model_usage_daily", { days });
+}
+
+/** 编辑重发：删除会话最后一条用户消息及其后的所有消息 */
+export async function deleteLastExchange(convId: string): Promise<boolean> {
+  return invoke<boolean>("delete_last_exchange", { convId });
+}
+
+/** 会话分支：复制前 keepCount 条消息到新会话，返回新会话 id */
+export async function forkConversation(convId: string, keepCount: number, title: string): Promise<string> {
+  return invoke<string>("fork_conversation", { convId, keepCount, title });
+}
+
+/** 快捷指令：/name args 展开为模板（{args} 整体、{1}{2} 按位置） */
+export interface QuickCommand {
+  name: string;
+  template: string;
+  description: string;
+}
+
+export async function listQuickCommands(): Promise<QuickCommand[]> {
+  return invoke<QuickCommand[]>("list_quick_commands");
+}
+
+export async function saveQuickCommand(cmd: QuickCommand): Promise<void> {
+  return invoke("save_quick_command", { cmd });
+}
+
+export async function deleteQuickCommand(name: string): Promise<boolean> {
+  return invoke<boolean>("delete_quick_command", { name });
+}
+
+/** 审计回放：工具调用历史（按时间倒序） */
+export interface AuditRow {
+  ts: number;
+  subject: string;
+  tool: string;
+  args: string;
+  decision: string;
+  result: string;
+}
+
+export async function queryAuditLog(limit = 100, tool?: string): Promise<AuditRow[]> {
+  return invoke<AuditRow[]>("query_audit_log", { limit, tool: tool || null });
+}
+
+/** 权限规则（白名单/黑名单）：key 为工具名或「工具|参数指纹」 */
+export async function listPermissionRules(): Promise<[string, boolean][]> {
+  return invoke<[string, boolean][]>("list_permission_rules");
+}
+
+export async function deletePermissionRule(key: string): Promise<boolean> {
+  return invoke<boolean>("delete_permission_rule", { key });
+}
+
+export async function setPermissionRule(key: string, allowed: boolean): Promise<void> {
+  return invoke("set_permission_rule", { key, allowed });
+}
+
+/** 一键截屏：返回截图路径（用于「看屏幕」按钮） */
+export async function captureScreenForChat(): Promise<{ path: string; width: number; height: number }> {
+  return invoke("capture_screen_for_chat");
+}
+
 export async function getTokenSaverConfig(): Promise<TokenSaverConfig> {
   return invoke<TokenSaverConfig>("get_token_saver_config");
 }

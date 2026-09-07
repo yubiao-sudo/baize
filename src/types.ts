@@ -178,6 +178,8 @@ export interface ModelConfig {
   priority: "local" | "cloud";
   profiles: ModelProfile[];
   active: string;
+  // 云端代理设置（P1-6）：mode = "env"(跟随环境) | "direct"(直连) | "custom"(自定义)
+  proxy?: { mode: string; url: string };
 }
 
 // 多 Agent 会议室：参会成员（与后端 commands::MeetingParticipant 对齐）

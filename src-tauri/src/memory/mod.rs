@@ -2,6 +2,7 @@ mod store;
 pub mod tools;
 
 pub use store::{
-    ConversationRow, MemoryGraph, MemoryOverview, MemoryRow, MemoryStore, MessageRow, ProjectRow,
-    RememberOutcome, ngram_overlap,
+    AuditQueryRow, ConversationRow, MemoryGraph, MemoryOverview, MemoryRow, MemoryStore,
+    MessageRow, ModelUsageDayRow, ModelUsageRow, ProjectRow, QuickCommandRow, RememberOutcome,
+    ngram_overlap,
 };

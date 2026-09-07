@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useChat } from "../stores/chat";
 import { openTerminalWithCommand } from "../api";
@@ -421,6 +421,24 @@ export default function ExecutionFlow({
   const liveTodos = useChat((s) => s.todos);
   const currentConvId = useChat((s) => s.currentConvId);
   const [open, setOpen] = useState(defaultOpen);
+  const blockRef = useRef<HTMLDivElement>(null);
+
+  // 展开/折叠执行流。展开时正文会在下一帧长高一截（历史流可达上百行），
+  // 这类长高不触发任何数据变化（thoughts/history 不变），父级的滚动跟随感知不到，
+  // 最新话语/轨迹会压在输入框下面 —— 展开后显式把会话区钉到底部一次。
+  const toggleOpen = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) {
+      // 双 rAF：确保展开后的正文已提交布局再测量，否则钉底会差一截
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const scroller = blockRef.current?.closest(".chat-scroll");
+          if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        });
+      });
+    }
+  };
 
   const thoughts = useMemo(() => {
     const raw =
@@ -454,8 +472,8 @@ export default function ExecutionFlow({
   if (done && todos.length === 0 && thoughts.length === 0) return null;
 
   return (
-    <div className="think-block">
-      <div className="think-head" onClick={() => setOpen((v) => !v)}>
+    <div className="think-block" ref={blockRef}>
+      <div className="think-head" onClick={toggleOpen}>
         <span className={`think-caret ${open ? "open" : ""}`}>▸</span>
         <span className="think-title">执行流</span>
         {todos.length > 0 && (

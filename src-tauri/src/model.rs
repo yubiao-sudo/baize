@@ -6,9 +6,10 @@
 //! - 配置可运行时修改并持久化，失败自动切换
 //! - 支持流式（SSE）输出：边生成边回调 token，替换完整返回后模拟逐字
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -26,10 +27,19 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
 }
 
+/// token 用量（OpenAI 兼容 usage 字段；成本统计与上下文预算的地基）
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
     pub content: Option<String>,
     pub tool_calls: Option<Vec<Value>>,
+    /// 本轮调用的 token 用量（提供方未返回则为 None）
+    pub usage: Option<Usage>,
 }
 
 /// 「对话分支」单模型应答（同题对比多模型时返回）
@@ -137,9 +147,129 @@ pub struct ModelProfile {
     pub multimodal: bool,
 }
 
+/// 云端代理设置（全局，ModelConfig 持久化）：
+/// "env" = 跟随环境/系统代理（reqwest 默认）；"direct" = 强制直连；"custom" = 使用 proxy_url
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProxySetting {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+impl ProxySetting {
+    pub fn is_default(&self) -> bool {
+        self.mode.is_empty() || self.mode == "env"
+    }
+}
+
+/// 统一的云端 HTTP 客户端工厂：连接超时 + 代理模式集中配置（P1-6 / P2-10）
+pub fn build_cloud_client(proxy: &ProxySetting) -> reqwest::Client {
+    let mut b = reqwest::Client::builder()
+        // 连接超时：代理失效/DNS 卡死时 10s 内快速失败，触发降级而不是挂死
+        .connect_timeout(Duration::from_secs(10));
+    match proxy.mode.as_str() {
+        "direct" => b = b.no_proxy(),
+        "custom" if !proxy.url.trim().is_empty() => {
+            match reqwest::Proxy::all(proxy.url.trim()) {
+                Ok(p) => {
+                    // 先 no_proxy 排除环境变量干扰，再叠加自定义代理，行为完全确定
+                    b = b.no_proxy().proxy(p);
+                }
+                Err(e) => eprintln!("[模型] 自定义代理地址无效({})，回退环境代理: {e}", proxy.url),
+            }
+        }
+        _ => {} // env：reqwest 默认读环境变量
+    }
+    b.build().expect("构建 HTTP 客户端失败")
+}
+
+// ───── 用量上报 sink（P0-2）：路由层每成功一次调用即上报，lib.rs 注入落库实现 ─────
+static USAGE_SINK: OnceLock<Box<dyn Fn(&str, &str, &Usage) + Send + Sync>> = OnceLock::new();
+
+pub fn set_usage_sink(f: Box<dyn Fn(&str, &str, &Usage) + Send + Sync>) {
+    let _ = USAGE_SINK.set(f);
+}
+
+fn report_usage(provider: &str, model: &str, usage: &Usage) {
+    if let Some(f) = USAGE_SINK.get() {
+        f(provider, model, usage);
+    }
+}
+
+// ───── 降级失败日志 sink（P1-7）：note_fallback 同步落库，供可靠性分析 ─────
+static FAILURE_LOG: OnceLock<Box<dyn Fn(&str, &str) + Send + Sync>> = OnceLock::new();
+
+pub fn set_failure_logger(f: Box<dyn Fn(&str, &str) + Send + Sync>) {
+    let _ = FAILURE_LOG.set(f);
+}
+
+fn log_failure(provider: &str, err: &str) {
+    if let Some(f) = FAILURE_LOG.get() {
+        f(provider, err);
+    }
+}
+
+// ───── 健康探活（P1-5）：后台定时最小消息探测，前端状态点展示 ─────
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HealthStatus {
+    pub ok: bool,
+    pub detail: String,
+    /// 探测时间戳（毫秒）
+    pub checked_at: u128,
+}
+
+static HEALTH: OnceLock<Mutex<HashMap<String, HealthStatus>>> = OnceLock::new();
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn health_map() -> &'static Mutex<HashMap<String, HealthStatus>> {
+    HEALTH.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn record_health(name: &str, ok: bool, detail: String) {
+    if let Ok(mut m) = health_map().lock() {
+        m.insert(
+            name.to_string(),
+            HealthStatus { ok, detail, checked_at: now_ms() },
+        );
+    }
+}
+
+pub fn health_snapshot() -> HashMap<String, HealthStatus> {
+    health_map().lock().unwrap().clone()
+}
+
+/// 探测单个提供方：发送最小消息，成功/失败记入健康表（不触碰熔断器）
+pub async fn probe_provider(p: &dyn ModelProvider) -> bool {
+    let msgs = vec![ChatMessage {
+        role: "user".to_string(),
+        content: "ping".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+    }];
+    let ok = match p.chat(&msgs, &[]).await {
+        Ok(_) => true,
+        Err(e) => {
+            record_health(p.name(), false, e.chars().take(160).collect());
+            false
+        }
+    };
+    if ok {
+        record_health(p.name(), true, "正常".to_string());
+    }
+    ok
+}
+
 impl ModelProfile {
-    /// 依据 profile 构建对应 provider；云端未填 API Key 时返回 None
-    pub fn to_provider(&self) -> Option<Arc<dyn ModelProvider>> {
+    /// 依据 profile 构建对应 provider；云端未填 API Key 时返回 None。
+    /// proxy 仅作用于云端提供方（本地 Ollama 恒为直连回环）。
+    pub fn to_provider(&self, proxy: &ProxySetting) -> Option<Arc<dyn ModelProvider>> {
         match self.tier {
             ModelTier::Local => Some(Arc::new(OllamaProvider::new(
                 self.base_url.clone(),
@@ -156,12 +286,14 @@ impl ModelProfile {
                         &self.base_url,
                         key,
                         &self.model,
+                        proxy,
                     ))),
                     ProviderKind::Gemini => Some(Arc::new(GeminiProvider::new(
                         &self.name,
                         &self.base_url,
                         key,
                         &self.model,
+                        proxy,
                     ))),
                     // OpenAI 兼容（DeepSeek/豆包/通义/Kimi/GLM/OpenRouter 等）
                     _ => Some(Arc::new(CloudProvider::new(
@@ -169,6 +301,7 @@ impl ModelProfile {
                         &self.base_url,
                         key,
                         &self.model,
+                        proxy,
                     ))),
                 }
             }
@@ -195,6 +328,9 @@ pub struct ModelConfig {
     /// 当前激活模型 id（全局生效；为空时按 priority 取第一个可用）
     #[serde(default)]
     pub active: String,
+    /// 云端代理设置（P1-6：显式化，替代环境变量隐式行为；默认 env 跟随环境）
+    #[serde(default)]
+    pub proxy: ProxySetting,
 }
 
 impl Default for ModelConfig {
@@ -211,11 +347,50 @@ impl Default for ModelConfig {
             priority: "local".to_string(),
             profiles: Vec::new(),
             active: String::new(),
+            proxy: ProxySetting::default(),
         }
     }
 }
 
 impl ModelConfig {
+    /// 按端点指纹去重（P1-4）：同 tier+kind+base_url+model 视为重复；
+    /// 优先保留激活项，其次保留先出现者。脏数据（历史重复添加）自动清理。
+    pub fn dedupe(&mut self) {
+        if self.profiles.is_empty() {
+            return;
+        }
+        let key = |p: &ModelProfile| {
+            (
+                p.tier,
+                p.kind,
+                p.base_url.trim_end_matches('/').to_string(),
+                p.model.clone(),
+            )
+        };
+        let mut seen: Vec<(ModelTier, ProviderKind, String, String)> = Vec::new();
+        let mut kept: Vec<ModelProfile> = Vec::new();
+        // 激活项优先入列
+        let active_first: Vec<ModelProfile> = {
+            let mut v: Vec<ModelProfile> = self
+                .profiles
+                .iter()
+                .filter(|p| p.id == self.active)
+                .cloned()
+                .collect();
+            v.extend(self.profiles.iter().filter(|p| p.id != self.active).cloned());
+            v
+        };
+        for p in active_first {
+            let k = key(&p);
+            if seen.contains(&k) {
+                continue;
+            }
+            seen.push(k);
+            kept.push(p);
+        }
+        self.profiles = kept;
+    }
+
     /// 从环境变量构建初始配置（作为默认值；持久化配置会覆盖它）
     pub fn from_env() -> Self {
         let mut c = Self::default();
@@ -308,7 +483,7 @@ impl ModelConfig {
         let mut v: Vec<Arc<dyn ModelProvider>> = Vec::new();
         for p in profiles {
             if p.enabled {
-                if let Some(prov) = p.to_provider() {
+                if let Some(prov) = p.to_provider(&self.proxy) {
                     v.push(prov);
                 }
             }
@@ -402,12 +577,44 @@ impl ModelConfig {
     }
 }
 
+/// 流式降级重置回调：某提供方流式输出到一半失败、切换下一个提供方前，
+/// 通知前端清空已渲染的半截回复，避免两个提供方的内容拼接/重复显示
+static STREAM_RESET: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// 注册流式降级重置回调（lib 启动时注入 AppHandle 的 emit）
+pub fn set_stream_reset(f: Box<dyn Fn() + Send + Sync>) {
+    let _ = STREAM_RESET.set(f);
+}
+
+fn notify_stream_reset() {
+    if let Some(f) = STREAM_RESET.get() {
+        f();
+    }
+}
+
+/// 熔断器：连续失败达阈值的提供方进入冷却期，期间自动跳过（不再每轮白白试一遍）；
+/// 若所有候选都被熔断，则全部放行照常尝试（宁可慢也不拒绝服务）
+struct Breaker {
+    consecutive_fails: u32,
+    open_until: Option<Instant>,
+}
+
+const BREAKER_THRESHOLD: u32 = 2;
+const BREAKER_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// 限流/服务端瞬时错误的可重试状态码
+fn is_retryable_status(s: u16) -> bool {
+    matches!(s, 429 | 500 | 502 | 503 | 504)
+}
+
 /// 模型路由：按序尝试，失败自动切换；配置可运行时重建
 pub struct ModelRouter {
     providers: RwLock<Vec<Arc<dyn ModelProvider>>>,
     last: Mutex<String>,
     /// 本轮首个失败提供方及原因（降级时设置，供前端执行流透出），每次调用开始清空
     fallback_note: Mutex<Option<String>>,
+    /// 按提供方名记录的熔断状态
+    breakers: Mutex<HashMap<String, Breaker>>,
 }
 
 impl ModelRouter {
@@ -416,7 +623,43 @@ impl ModelRouter {
             providers: RwLock::new(providers),
             last: Mutex::new("未使用".to_string()),
             fallback_note: Mutex::new(None),
+            breakers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// 熔断是否放行：冷却期内的提供方返回 false（跳过）
+    fn breaker_allow(&self, name: &str) -> bool {
+        let map = self.breakers.lock().unwrap();
+        match map.get(name) {
+            Some(b) => b.open_until.map_or(true, |t| Instant::now() >= t),
+            None => true,
+        }
+    }
+
+    fn breaker_fail(&self, name: &str) {
+        let mut map = self.breakers.lock().unwrap();
+        let b = map
+            .entry(name.to_string())
+            .or_insert(Breaker { consecutive_fails: 0, open_until: None });
+        b.consecutive_fails += 1;
+        if b.consecutive_fails >= BREAKER_THRESHOLD && b.open_until.is_none() {
+            b.open_until = Some(Instant::now() + BREAKER_COOLDOWN);
+            eprintln!("[模型熔断] {name} 连续失败 {} 次，冷却 60s（期间自动跳过）", b.consecutive_fails);
+        }
+    }
+
+    fn breaker_ok(&self, name: &str) {
+        self.breakers.lock().unwrap().remove(name);
+    }
+
+    /// 过滤掉冷却中的提供方；若全部被熔断则原样返回（全放行）
+    fn filter_breakers(&self, candidates: Vec<Arc<dyn ModelProvider>>) -> Vec<Arc<dyn ModelProvider>> {
+        let usable: Vec<Arc<dyn ModelProvider>> = candidates
+            .iter()
+            .filter(|p| self.breaker_allow(p.name()))
+            .cloned()
+            .collect();
+        if usable.is_empty() { candidates } else { usable }
     }
 
     /// 运行时重建提供方链（配置变更后调用）
@@ -446,6 +689,8 @@ impl ModelRouter {
     fn note_fallback(&self, provider: &str, err: &str) {
         // 控制台同步留痕，便于后端日志排查
         eprintln!("[模型降级] {provider} 调用失败（{err}），尝试下一个提供方");
+        // 落库留痕（P1-7）：audit_log 记录每次降级原因，供可靠性分析
+        log_failure(provider, err);
         let brief: String = if err.chars().count() > 160 {
             let s: String = err.chars().take(160).collect();
             format!("{s}…")
@@ -458,7 +703,11 @@ impl ModelRouter {
         }
     }
 
-    fn record(&self, p: &dyn ModelProvider) {
+    fn record(&self, p: &dyn ModelProvider, resp: &ChatResponse) {
+        // 用量上报（P0-2）：有 usage 就落库累计
+        if let Some(u) = resp.usage {
+            report_usage(p.name(), p.model(), &u);
+        }
         let tier = match p.tier() {
             ModelTier::Local => "本地",
             ModelTier::Cloud => "云端",
@@ -466,13 +715,75 @@ impl ModelRouter {
         *self.last.lock().unwrap() = format!("{}（{}）", p.name(), tier);
     }
 
-    /// 只用指定 tier 的提供方（用于「强模型规划、快模型执行」分工）；无该 tier 则回退到全部
-    pub async fn chat_with_tier(
+    /// 降级链公共实现（P2-8）：熔断过滤 → 逐个尝试 → 成功记录/失败熔断+落库。
+    /// chat_with_tier 与 chat 共用；stream 变体见 try_stream_chain。
+    async fn try_chat_chain(
         &self,
-        tier: ModelTier,
         messages: &[ChatMessage],
         tools: &[Value],
+        candidates: Vec<Arc<dyn ModelProvider>>,
+        err_prefix: &str,
     ) -> Result<ChatResponse, String> {
+        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
+        let candidates = self.filter_breakers(candidates);
+        let mut errors = Vec::new();
+        for p in candidates {
+            match p.chat(messages, tools).await {
+                Ok(resp) => {
+                    self.record(p.as_ref(), &resp);
+                    self.breaker_ok(p.name());
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    self.breaker_fail(p.name());
+                    self.note_fallback(p.name(), &e);
+                    errors.push(format!("[{}] {e}", p.name()));
+                }
+            }
+        }
+        Err(format!("{err_prefix}{}", errors.join("；")))
+    }
+
+    /// 流式降级链公共实现：额外处理「已输出半截内容后失败」的前端重置
+    async fn try_stream_chain(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[Value],
+        candidates: Vec<Arc<dyn ModelProvider>>,
+        on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+        err_prefix: &str,
+    ) -> Result<ChatResponse, String> {
+        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
+        let candidates = self.filter_breakers(candidates);
+        let mut errors = Vec::new();
+        for p in candidates {
+            // 记录是否已向前端推送过 token：失败降级时需通知前端清空半截内容
+            let had_output = AtomicBool::new(false);
+            let wrapped = |t: &str| {
+                had_output.store(true, Ordering::SeqCst);
+                on_token(t);
+            };
+            match p.stream_chat(messages, tools, &wrapped).await {
+                Ok(resp) => {
+                    self.record(p.as_ref(), &resp);
+                    self.breaker_ok(p.name());
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    self.breaker_fail(p.name());
+                    if had_output.load(Ordering::SeqCst) {
+                        notify_stream_reset(); // 清掉半截回复，避免下一提供方内容拼接重复
+                    }
+                    self.note_fallback(p.name(), &e);
+                    errors.push(format!("[{}] {e}", p.name()));
+                }
+            }
+        }
+        Err(format!("{err_prefix}{}", errors.join("；")))
+    }
+
+    /// 按 tier 挑选候选（无该 tier 则回退到全部）
+    fn candidates_for_tier(&self, tier: ModelTier) -> Vec<Arc<dyn ModelProvider>> {
         let providers: Vec<Arc<dyn ModelProvider>> = self.providers.read().unwrap().clone();
         let mut candidates: Vec<Arc<dyn ModelProvider>> = providers
             .iter()
@@ -482,21 +793,18 @@ impl ModelRouter {
         if candidates.is_empty() {
             candidates = providers;
         }
-        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
-        let mut errors = Vec::new();
-        for p in candidates {
-            match p.chat(messages, tools).await {
-                Ok(resp) => {
-                    self.record(p.as_ref());
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    self.note_fallback(p.name(), &e);
-                    errors.push(format!("[{}] {e}", p.name()));
-                }
-            }
-        }
-        Err(format!("模型调用失败：{}", errors.join("；")))
+        candidates
+    }
+
+    /// 只用指定 tier 的提供方（用于「强模型规划、快模型执行」分工）；无该 tier 则回退到全部
+    pub async fn chat_with_tier(
+        &self,
+        tier: ModelTier,
+        messages: &[ChatMessage],
+        tools: &[Value],
+    ) -> Result<ChatResponse, String> {
+        let candidates = self.candidates_for_tier(tier);
+        self.try_chat_chain(messages, tools, candidates, "模型调用失败：").await
     }
 
     /// 只用指定 tier 的提供方做流式对话；无该 tier 则回退到全部（供管线阶段边生成边广播进度）
@@ -507,49 +815,14 @@ impl ModelRouter {
         tools: &[Value],
         on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<ChatResponse, String> {
-        let providers: Vec<Arc<dyn ModelProvider>> = self.providers.read().unwrap().clone();
-        let mut candidates: Vec<Arc<dyn ModelProvider>> = providers
-            .iter()
-            .filter(|p| p.tier() == tier)
-            .cloned()
-            .collect();
-        if candidates.is_empty() {
-            candidates = providers;
-        }
-        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
-        let mut errors = Vec::new();
-        for p in candidates {
-            match p.stream_chat(messages, tools, on_token).await {
-                Ok(resp) => {
-                    self.record(p.as_ref());
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    self.note_fallback(p.name(), &e);
-                    errors.push(format!("[{}] {e}", p.name()));
-                }
-            }
-        }
-        Err(format!("模型调用失败：{}", errors.join("；")))
+        let candidates = self.candidates_for_tier(tier);
+        self.try_stream_chain(messages, tools, candidates, on_token, "模型调用失败：")
+            .await
     }
 
     pub async fn chat(&self, messages: &[ChatMessage], tools: &[Value]) -> Result<ChatResponse, String> {
         let providers: Vec<Arc<dyn ModelProvider>> = self.providers.read().unwrap().clone();
-        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
-        let mut errors = Vec::new();
-        for p in providers {
-            match p.chat(messages, tools).await {
-                Ok(resp) => {
-                    self.record(p.as_ref());
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    self.note_fallback(p.name(), &e);
-                    errors.push(format!("[{}] {e}", p.name()));
-                }
-            }
-        }
-        Err(format!("所有模型提供方均失败：{}", errors.join("；")))
+        self.try_chat_chain(messages, tools, providers, "所有模型提供方均失败：").await
     }
 
     pub async fn stream_chat(
@@ -559,21 +832,8 @@ impl ModelRouter {
         on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<ChatResponse, String> {
         let providers: Vec<Arc<dyn ModelProvider>> = self.providers.read().unwrap().clone();
-        self.fallback_note.lock().unwrap().take(); // 清空上轮备注
-        let mut errors = Vec::new();
-        for p in providers {
-            match p.stream_chat(messages, tools, on_token).await {
-                Ok(resp) => {
-                    self.record(p.as_ref());
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    self.note_fallback(p.name(), &e);
-                    errors.push(format!("[{}] {e}", p.name()));
-                }
-            }
-        }
-        Err(format!("所有模型提供方均失败：{}", errors.join("；")))
+        self.try_stream_chain(messages, tools, providers, on_token, "所有模型提供方均失败：")
+            .await
     }
 
     /// 「对话分支」：同一问题并行对比所有可用模型，各自返回独立结果（互不失败透传）
@@ -614,9 +874,26 @@ fn parse_openai_response(text: &str) -> Result<ChatResponse, String> {
         return Err(format!("API 错误: {err}"));
     }
     let msg = &v["choices"][0]["message"];
-    let content = msg["content"].as_str().map(|s| s.to_string());
+    let mut content = msg["content"].as_str().map(|s| s.to_string());
+    // 兜底：思考类模型（GLM-Z 系列 / DeepSeek R1 等）若只吐了思考没吐正文，
+    // content 为空会随后被当成"空回复"，这里退而取 reasoning_content
+    if content.as_deref().map_or(true, |s| s.trim().is_empty()) {
+        if let Some(rc) = msg["reasoning_content"].as_str() {
+            if !rc.trim().is_empty() {
+                content = Some(rc.to_string());
+            }
+        }
+    }
     let tool_calls = msg["tool_calls"].as_array().cloned();
-    Ok(ChatResponse { content, tool_calls })
+    Ok(ChatResponse { content, tool_calls, usage: parse_usage(&v) })
+}
+
+/// 提取 OpenAI 兼容 usage 字段（缺失/非对象返回 None）
+fn parse_usage(v: &Value) -> Option<Usage> {
+    let u = v.get("usage")?;
+    let p = u["prompt_tokens"].as_u64()?;
+    let c = u["completion_tokens"].as_u64()?;
+    Some(Usage { prompt_tokens: p, completion_tokens: c })
 }
 
 /// 消费 OpenAI 兼容的流式（SSE）响应：累积 content + tool_calls，content 片段实时回调
@@ -626,7 +903,9 @@ async fn stream_openai_compat(
     cancel: &AtomicBool,
 ) -> Result<ChatResponse, String> {
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut tc_map: BTreeMap<usize, Value> = BTreeMap::new();
+    let mut usage: Option<Usage> = None;
 
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
@@ -668,6 +947,18 @@ async fn stream_openai_compat(
                     }
                 }
 
+                // 思考片段（GLM-Z / DeepSeek R1 等）：仅累积备用，正文为空时兜底
+                if let Some(delta) = v["choices"][0]["delta"]["reasoning_content"].as_str() {
+                    if !delta.is_empty() {
+                        reasoning.push_str(delta);
+                    }
+                }
+
+                // 用量（通常随最后一个 chunk 下发）
+                if let Some(u) = parse_usage(&v) {
+                    usage = Some(u);
+                }
+
                 // tool_calls 片段（按 index 累积）
                 if let Some(tcs) = v["choices"][0]["delta"]["tool_calls"].as_array() {
                     for tc in tcs {
@@ -698,13 +989,20 @@ async fn stream_openai_compat(
         }
     }
 
-    let content = if content.is_empty() { None } else { Some(content) };
+    // 正文为空但有思考内容 → 用思考内容兜底，避免"空回复"
+    let content = if content.is_empty() && !reasoning.is_empty() {
+        Some(reasoning)
+    } else if content.is_empty() {
+        None
+    } else {
+        Some(content)
+    };
     let tool_calls = if tc_map.is_empty() {
         None
     } else {
         Some(tc_map.into_values().collect())
     };
-    Ok(ChatResponse { content, tool_calls })
+    Ok(ChatResponse { content, tool_calls, usage })
 }
 
 /// 在字节切片中查找子序列，返回起始位置
@@ -728,6 +1026,9 @@ impl OllamaProvider {
             base_url,
             model,
             client: reqwest::Client::builder()
+                // 本地回环绝不走代理：若启动环境带 HTTP_PROXY/HTTPS_PROXY，
+                // 代理软件会把 127.0.0.1:11434 也接管转发，导致连不上本机 Ollama
+                .no_proxy()
                 .build()
                 .expect("构建 HTTP 客户端失败"),
         }
@@ -757,6 +1058,8 @@ impl ModelProvider for OllamaProvider {
             .client
             .post(&url)
             .json(&body)
+            // 本地推理可能较慢，给足 5 分钟，防止无限挂死
+            .timeout(Duration::from_secs(300))
             .send()
             .await
             .map_err(|e| format!("请求失败（请确认已 ollama serve）: {e}"))?;
@@ -819,15 +1122,13 @@ pub struct CloudProvider {
 }
 
 impl CloudProvider {
-    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str, proxy: &ProxySetting) -> Self {
         Self {
             name: name.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
-            client: reqwest::Client::builder()
-                .build()
-                .expect("构建 HTTP 客户端失败"),
+            client: build_cloud_client(proxy),
         }
     }
 }
@@ -851,14 +1152,34 @@ impl ModelProvider for CloudProvider {
             "tools": tools,
             "stream": false,
         });
-        let resp = self
+        // 429/5xx 指数退避重试（1s → 3s）：限流/瞬时抖动时优先原地重试，
+        // 重试耗尽才进降级链换厂商（P0-1）
+        let mut resp = self
             .client
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
+            // 非流式整体超时：思考类模型可能较慢，给足 3 分钟，防止无限挂死
+            .timeout(Duration::from_secs(180))
             .send()
             .await
-            .map_err(|e| format!("云端请求失败: {e}"))?;
+            .map_err(|e| format!("云端请求失败: {e}；若开启了代理/VPN，请确认其可用（国内 API 如 GLM/DeepSeek 可直连，建议清掉代理后重试）"))?;
+        for wait_ms in [1000u64, 3000u64] {
+            if !is_retryable_status(resp.status().as_u16()) {
+                break;
+            }
+            eprintln!("[模型重试] {} 返回 {}，{}ms 后重试", self.name, resp.status(), wait_ms);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            resp = self
+                .client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .timeout(Duration::from_secs(180))
+                .send()
+                .await
+                .map_err(|e| format!("云端请求失败: {e}；若开启了代理/VPN，请确认其可用（国内 API 如 GLM/DeepSeek 可直连，建议清掉代理后重试）"))?;
+        }
         let status = resp.status();
         let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
         if !status.is_success() {
@@ -892,14 +1213,30 @@ impl ModelProvider for CloudProvider {
             "tools": tools,
             "stream": true,
         });
-        let resp = self
+        let mut resp = self
             .client
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("云端请求失败: {e}"))?;
+            .map_err(|e| format!("云端请求失败: {e}；若开启了代理/VPN，请确认其可用（国内 API 如 GLM/DeepSeek 可直连，建议清掉代理后重试）"))?;
+        // 流式：仅在尚未输出前允许 429/5xx 退避重试（一旦开始输出就无法回退）
+        for wait_ms in [1000u64, 3000u64] {
+            if !is_retryable_status(resp.status().as_u16()) {
+                break;
+            }
+            eprintln!("[模型重试] {} 流式返回 {}，{}ms 后重试", self.name, resp.status(), wait_ms);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            resp = self
+                .client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("云端请求失败: {e}；若开启了代理/VPN，请确认其可用（国内 API 如 GLM/DeepSeek 可直连，建议清掉代理后重试）"))?;
+        }
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
@@ -949,15 +1286,13 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str, proxy: &ProxySetting) -> Self {
         Self {
             name: name.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
-            client: reqwest::Client::builder()
-                .build()
-                .expect("构建 HTTP 客户端失败"),
+            client: build_cloud_client(proxy),
         }
     }
 
@@ -1010,6 +1345,10 @@ impl AnthropicProvider {
         Ok(ChatResponse {
             content: if content.is_empty() { None } else { Some(content) },
             tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            usage: Some(Usage {
+                prompt_tokens: v["usageMetadata"]["promptTokenCount"].as_u64().unwrap_or(0),
+                completion_tokens: v["usageMetadata"]["candidatesTokenCount"].as_u64().unwrap_or(0),
+            }),
         })
     }
 }
@@ -1082,15 +1421,13 @@ pub struct GeminiProvider {
 }
 
 impl GeminiProvider {
-    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str) -> Self {
+    pub fn new(name: &str, base_url: &str, api_key: &str, model: &str, proxy: &ProxySetting) -> Self {
         Self {
             name: name.to_string(),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             model: model.to_string(),
-            client: reqwest::Client::builder()
-                .build()
-                .expect("构建 HTTP 客户端失败"),
+            client: build_cloud_client(proxy),
         }
     }
 
@@ -1143,6 +1480,10 @@ impl GeminiProvider {
         Ok(ChatResponse {
             content: if content.is_empty() { None } else { Some(content) },
             tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            usage: Some(Usage {
+                prompt_tokens: v["usage"]["input_tokens"].as_u64().unwrap_or(0),
+                completion_tokens: v["usage"]["output_tokens"].as_u64().unwrap_or(0),
+            }),
         })
     }
 }
@@ -1333,5 +1674,82 @@ mod tests {
     fn parse_api_error() {
         let text = r#"{"error":{"message":"bad request"}}"#;
         assert!(parse_openai_response(text).is_err());
+    }
+
+    #[test]
+    fn parse_reasoning_content_fallback() {
+        // GLM-Z / DeepSeek R1 思考类模型：只吐 reasoning_content 时兜底取思考内容
+        let text = r#"{"choices":[{"message":{"content":"","reasoning_content":"思考中..."}}]}"#;
+        let resp = parse_openai_response(text).unwrap();
+        assert_eq!(resp.content.as_deref(), Some("思考中..."));
+    }
+
+    #[test]
+    fn parse_usage() {
+        let text = r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let resp = parse_openai_response(text).unwrap();
+        let u = resp.usage.expect("usage 应被解析");
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
+    }
+
+    #[test]
+    fn parse_usage_missing_is_none() {
+        let text = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+        let resp = parse_openai_response(text).unwrap();
+        assert!(resp.usage.is_none());
+    }
+
+    #[test]
+    fn find_subsequence_works() {
+        let hay = b"data: {\"a\":1}\n\ndata: [DONE]\n\n";
+        assert_eq!(find_subsequence(hay, b"\n\n"), Some(13));
+        assert_eq!(find_subsequence(hay, b"\r\n"), None);
+        assert_eq!(find_subsequence(hay, b""), Some(0));
+    }
+
+    #[test]
+    fn retryable_status_detection() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(402)); // 余额不足重试无意义，直接降级
+        assert!(!is_retryable_status(200));
+    }
+
+    fn profile(id: &str, tier: ModelTier, kind: ProviderKind, url: &str, model: &str) -> ModelProfile {
+        ModelProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            tier,
+            kind,
+            base_url: url.to_string(),
+            api_key: String::new(),
+            model: model.to_string(),
+            vision_model: None,
+            embedding_model: None,
+            enabled: true,
+            has_key: false,
+            multimodal: false,
+        }
+    }
+
+    #[test]
+    fn dedupe_keeps_active_and_first() {
+        let mut c = ModelConfig {
+            active: "model-b".to_string(),
+            ..Default::default()
+        };
+        c.profiles = vec![
+            profile("cloud", ModelTier::Cloud, ProviderKind::OpenAI, "https://api.deepseek.com", "deepseek-v4-flash"),
+            profile("model-x", ModelTier::Cloud, ProviderKind::OpenAI, "https://api.deepseek.com", "deepseek-v4-flash"),
+            profile("model-b", ModelTier::Cloud, ProviderKind::OpenAI, "https://open.bigmodel.cn/api/paas/v4", "glm-5.3-flash"),
+            profile("model-dup", ModelTier::Cloud, ProviderKind::OpenAI, "https://open.bigmodel.cn/api/paas/v4/", "glm-5.3-flash"),
+            profile("local", ModelTier::Local, ProviderKind::Ollama, "http://127.0.0.1:11434", "qwen3.6"),
+        ];
+        c.dedupe();
+        let ids: Vec<&str> = c.profiles.iter().map(|p| p.id.as_str()).collect();
+        // 重复的 model-x / model-dup 被去掉；base_url 尾斜杠视为同端点；激活项 model-b 保留
+        assert_eq!(ids, vec!["model-b", "cloud", "local"]);
     }
 }

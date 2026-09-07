@@ -340,7 +340,7 @@ impl GatewayInner {
                 .runtime
                 .block_on(async { self.model.chat(&messages, &tools).await })?;
             let (content, tool_calls) = match res {
-                ChatResponse { content, tool_calls } => (content, tool_calls),
+                ChatResponse { content, tool_calls, .. } => (content, tool_calls),
             };
             let finish_reason = if tool_calls.is_some() {
                 "tool_calls"

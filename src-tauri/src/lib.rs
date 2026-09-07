@@ -32,8 +32,10 @@ mod plugin;
 mod popup;
 mod proactive;
 mod rag;
+mod rag_watch;
 mod read_document;
 mod replay;
+mod jobs;
 mod scheduler;
 mod security;
 mod skill;
@@ -68,7 +70,7 @@ use model::{ModelConfig, ModelRouter};
 use security::SecurityManager;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tools::ToolRegistry;
 
 /// 全局共享状态：经 `tauri::Builder::manage` 注入后，各命令通过 `State<AppState>` 访问。
@@ -116,6 +118,23 @@ pub struct AppState {
 impl AppState {
     fn new() -> Self {
         let store = Arc::new(MemoryStore::open("baize.db").expect("无法打开本地数据库 baize.db"));
+
+        // 模型用量上报 / 降级失败日志 sink（P0-2 / P1-7）：路由层事件统一落库
+        {
+            let usage_store = store.clone();
+            crate::model::set_usage_sink(Box::new(move |provider, model, usage| {
+                let _ = usage_store.add_model_usage(
+                    provider,
+                    model,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                );
+            }));
+            let fail_store = store.clone();
+            crate::model::set_failure_logger(Box::new(move |provider, err| {
+                fail_store.log_model_failure(provider, err);
+            }));
+        }
 
         // 运行时配置：从持久化恢复 embedding/vision 模型
         if let Ok(Some(embed)) = store.get_setting("embed_model") {
@@ -483,6 +502,8 @@ pub(crate) fn load_model_config(store: &MemoryStore) -> ModelConfig {
             config = saved;
         }
     }
+    // 历史脏数据清理：重复添加的相同端点 profile 去重（激活项优先保留）
+    config.dedupe();
     hydrate_model_keys(store, &mut config);
     config
 }
@@ -628,6 +649,32 @@ pub fn run() {
             // 初始化屏幕接管：常驻低层键鼠钩子（GUI 任务阻断外界输入，Ctrl+Shift+F12 紧急解除）
             takeover::init(app.handle().clone());
             panel::init_handle(app.handle().clone());
+
+            // 流式降级重置：某提供方输出到一半失败、路由切换下一个时，
+            // 通知前端清空半截回复，避免两个提供方的内容拼接/重复显示
+            {
+                let handle = app.handle().clone();
+                crate::model::set_stream_reset(Box::new(move || {
+                    let _ = handle.emit("chat-round-reset", serde_json::json!({}));
+                }));
+            }
+
+            // 提供方健康探活（P1-5）：每 5 分钟对启用的模型发一条最小消息，
+            // 结果记入健康表（model_health 命令读取），前端状态点展示用
+            {
+                let probe_store = app.state::<AppState>().store.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let config = crate::load_model_config(&probe_store);
+                        for p in config.profiles.iter().filter(|p| p.enabled) {
+                            if let Some(prov) = p.to_provider(&config.proxy) {
+                                crate::model::probe_provider(prov.as_ref()).await;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                    }
+                });
+            }
 
             // 兜底：主窗口以 visible=false 创建，正常时由前端首帧上屏后显示；
             // 若前端 10 秒内未就绪（JS 异常/资源损坏），强制显示窗口避免永远黑屏
@@ -914,6 +961,15 @@ pub fn run() {
             let schedule_state = app.state::<AppState>().scheduler.clone();
             scheduler::run_schedule(schedule_state, app.handle().clone());
 
+            // 后台任务面板：注册事件句柄（进度经 job-update 广播）
+            jobs::init(app.handle().clone());
+
+            // RAG 目录监听：最近索引目录变更 → 防抖后自动重索引
+            {
+                let state = app.state::<AppState>();
+                rag_watch::spawn(app.handle().clone(), state.rag.clone(), state.store.clone());
+            }
+
             // 后台启动剪贴板监听（记录外部复制，实时推送历史变更）
             clipboard::start_monitor(app.handle().clone());
 
@@ -1024,6 +1080,20 @@ pub fn run() {
             commands::set_active_model,
             commands::get_vendor_presets,
             commands::test_model_profile,
+            commands::model_health,
+            commands::model_usage_report,
+            commands::model_usage_daily,
+            commands::list_active_jobs,
+            commands::delete_last_exchange,
+            commands::fork_conversation,
+            commands::list_quick_commands,
+            commands::save_quick_command,
+            commands::delete_quick_command,
+            commands::query_audit_log,
+            commands::list_permission_rules,
+            commands::delete_permission_rule,
+            commands::set_permission_rule,
+            commands::capture_screen_for_chat,
             commands::compare_models,
             commands::run_meeting,
             commands::meeting_interrupt,

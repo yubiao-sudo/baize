@@ -144,6 +144,38 @@ impl SecurityManager {
         };
         save_rules(&self.store, &snapshot);
     }
+
+    /// 列出全部已记住的权限规则（白名单可视化）
+    pub fn rules_list(&self) -> Vec<(String, bool)> {
+        let map = self.remembered.lock().unwrap();
+        let mut v: Vec<(String, bool)> = map.iter().map(|(k, b)| (k.clone(), *b)).collect();
+        v.sort();
+        v
+    }
+
+    /// 删除一条规则，返回是否存在
+    pub fn rules_remove(&self, key: &str) -> bool {
+        let snapshot = {
+            let mut map = self.remembered.lock().unwrap();
+            let existed = map.remove(key).is_some();
+            if !existed {
+                return false;
+            }
+            map.clone()
+        };
+        save_rules(&self.store, &snapshot);
+        true
+    }
+
+    /// 直接添加/更新一条规则（手动白名单/黑名单；key 为工具名或「工具|参数指纹」）
+    pub fn rules_set(&self, key: &str, allowed: bool) {
+        let snapshot = {
+            let mut map = self.remembered.lock().unwrap();
+            map.insert(key.to_string(), allowed);
+            map.clone()
+        };
+        save_rules(&self.store, &snapshot);
+    }
 }
 
 /// 计算权限记忆的「情况指纹」：让「记住」只作用于相同具体情况。
