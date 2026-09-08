@@ -1362,7 +1362,7 @@ select option:checked {
   margin-top: 10px;
   font-size: 11px;
   color: var(--text-faint);
-  text-align: right;
+  text-align: left;
   user-select: none;
 }
 

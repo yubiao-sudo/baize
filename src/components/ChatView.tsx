@@ -247,7 +247,7 @@ const BranchesMessage = memo(function BranchesMessage({ m }: { m: ChatMsg }) {
           </div>
         ))}
       </div>
-      <div className="ai-notice">内容由AI生成</div>
+      <div className="ai-notice">内容由AI生成，请自行甄别</div>
     </div>
   );
 });
@@ -311,7 +311,7 @@ const AssistantMessage = memo(function AssistantMessage({ m, onBranch }: { m: Ch
           )}
         </>
       )}
-      <div className="ai-notice">内容由AI生成</div>
+      <div className="ai-notice">内容由AI生成，请自行甄别</div>
     </div>
   );
 });
