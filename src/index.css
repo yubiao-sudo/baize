@@ -1217,6 +1217,14 @@ select option:checked {
   padding-bottom: 14px;
   scroll-padding-bottom: 14px;
 }
+/* 会话流子元素禁止 flex 收缩：流式气泡 .streaming 的 overflow:hidden 会让其
+   自动最小尺寸（min-height:auto）归零，长文流式时被 flex 压缩、内容在自身
+   overflow:hidden 里被裁——表现为最新段落下半截被输入框挡住，而容器
+   scrollHeight 不增长（gap=0），一切钉底机制全部失效。禁止收缩后内容
+   完整进入滚动区，钉底恢复作用。生成结束 .streaming 移除前也保持一致。 */
+.chat-scroll > * {
+  flex-shrink: 0;
+}
 /* 展开但还没有消息时给欢迎语一点呼吸空间 */
 .chat.open .chat-scroll {
   min-height: 140px;
