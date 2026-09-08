@@ -44,7 +44,7 @@ pub fn ensure_browser_window(app: &AppHandle) {
             let _ = win.set_focus();
             return;
         }
-        let (x, y, h) = side_geometry(&handle, true);
+        let (x, y, h) = side_slot(&handle, SIDE_WIDTH, true, "browser");
         match WebviewWindowBuilder::new(
             &handle,
             "browser",
@@ -72,7 +72,7 @@ pub fn ensure_markdown_window(app: &AppHandle) {
             let _ = win.set_focus();
             return;
         }
-        let (x, y, h) = side_geometry(&handle, false);
+        let (x, y, h) = side_slot(&handle, SIDE_WIDTH, false, "markdown");
         match WebviewWindowBuilder::new(
             &handle,
             "markdown",
@@ -100,13 +100,16 @@ pub fn ensure_terminal_window(app: &AppHandle, terminal: Arc<crate::terminal::Te
             let _ = win.set_focus();
             return;
         }
+        // 终端窗口：与浏览器/文档同一套侧边落位（宽 760，优先右侧），不再交给系统默认位置遮挡主窗
+        let (tx, ty, th) = side_slot(&handle, 760.0, false, "terminal");
         match WebviewWindowBuilder::new(
             &handle,
             "terminal",
             WebviewUrl::App("index.html#/terminal".into()),
         )
         .title("白泽 · 终端")
-        .inner_size(760.0, 480.0)
+        .position(tx, ty)
+        .inner_size(760.0, th)
         .on_page_load(|_win, payload| {
             eprintln!(
                 "[终端] 页面加载事件: {:?} url={}",
@@ -170,13 +173,92 @@ pub fn resize_window(app: &AppHandle, target: &str, width: f64, height: f64) {
     });
 }
 
-/// 计算侧窗位置：left=true 在主窗口左侧，否则在右侧
-fn side_geometry(app: &AppHandle, left: bool) -> (f64, f64, f64) {
-    if let Some((mx, my, mw, mh)) = main_geometry(app) {
-        let x = if left { (mx - SIDE_WIDTH).max(0.0) } else { mx + mw };
-        return (x, my, mh.max(480.0));
+/// 计算侧窗落位（逻辑坐标，宽高对齐主窗口）：
+/// 1. 优先贴主窗口偏好一侧（browser=左 / markdown、terminal=右），并排不遮挡；
+/// 2. 偏好侧被其他侧窗占位或贴出屏幕时，自动换另一侧；
+/// 3. 两侧都放不下（屏幕不够宽）才允许遮挡——落在剩余空间更大的一侧并夹回屏幕内。
+/// 返回 (x, y, height)。exclude 传自身窗口标签，避免把自己算进占位。
+fn side_slot(app: &AppHandle, width: f64, prefer_left: bool, exclude: &str) -> (f64, f64, f64) {
+    const GAP: f64 = 8.0;
+    let Some((mx, my, mw, mh)) = main_geometry(app) else {
+        return (0.0, 0.0, 720.0);
+    };
+    // 主窗口所在显示器边界（逻辑坐标）；取不到时视为无限大屏幕
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|m| m.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let (mon_x, mon_y, mon_w, mon_h) = match &monitor {
+        Some(m) => {
+            let scale = m.scale_factor();
+            let pos = m.position();
+            let size = m.size();
+            (
+                pos.x as f64 / scale,
+                pos.y as f64 / scale,
+                size.width as f64 / scale,
+                size.height as f64 / scale,
+            )
+        }
+        None => (0.0, 0.0, f64::MAX, f64::MAX),
+    };
+    // 已打开的兄弟侧窗矩形（同一条侧窗链上要依次排开，不互相叠）
+    let others: Vec<(f64, f64, f64, f64)> = ["browser", "markdown", "terminal"]
+        .iter()
+        .filter(|l| **l != exclude)
+        .filter_map(|l| app.get_webview_window(l))
+        .filter_map(|w| {
+            let pos = w.outer_position().ok()?;
+            let size = w.outer_size().ok()?;
+            let scale = w.scale_factor().ok()?;
+            Some((
+                pos.x as f64 / scale,
+                pos.y as f64 / scale,
+                size.width as f64 / scale,
+                size.height as f64 / scale,
+            ))
+        })
+        .collect();
+
+    // 左侧候选：从主窗左缘向左排，若已有侧窗则继续向左串
+    let mut lx = mx - GAP - width;
+    for (ox, _, ow, _) in &others {
+        if *ox < mx && ox + ow > lx {
+            lx = ox - GAP - width;
+        }
     }
-    (0.0, 0.0, 720.0)
+    let left_fits = lx >= mon_x;
+    // 右侧候选：从主窗右缘向右排，若已有侧窗则继续向右串
+    let mut rx = mx + mw + GAP;
+    for (ox, _, ow, _) in &others {
+        if *ox >= mx + mw && *ox < rx {
+            rx = ox + ow + GAP;
+        }
+    }
+    let right_fits = rx + width <= mon_x + mon_w;
+
+    let x = if prefer_left && left_fits {
+        lx
+    } else if !prefer_left && right_fits {
+        rx
+    } else if left_fits {
+        lx
+    } else if right_fits {
+        rx
+    } else {
+        // 屏幕不够宽：允许遮挡，挑剩余空间更大的一侧并夹回屏幕内
+        let free_left = mx - mon_x;
+        let free_right = mon_x + mon_w - (mx + mw);
+        if free_left >= free_right {
+            (mx - width).max(mon_x)
+        } else {
+            (mx + mw).min(mon_x + mon_w - width)
+        }
+    };
+    // 垂直方向对齐主窗并夹回显示器内
+    let y = my.max(mon_y);
+    let h = mh.min(mon_y + mon_h - y).max(480.0);
+    (x, y, h)
 }
 
 /// 主窗口几何信息（逻辑坐标）
