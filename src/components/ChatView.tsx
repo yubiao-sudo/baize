@@ -702,15 +702,21 @@ export default function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrating]);
 
-  // 兜底校准：生成期间每 300ms 强制钉底。事件驱动的钉底（token/step/RO）
+  // 兜底校准：生成期间逐帧强制钉底（rAF）。事件驱动的钉底（token/step/RO）
   // 依赖「事件 → 渲染 → 观察」的时序链，任何一环错过（clamp 抖动、deferred
-  // 渲染晚帧、一次无意的滚轮上滚把 stick 翻假）都会让视口停在半空——独白
-  // 首行露在折叠线上、其余藏在输入框后。生成中内容可见性优先级最高：
-  // busy 期间无条件钉底（不做 stick 判断），会话结束后恢复自由滚动。
+  // 渲染晚帧、300ms 定时档的窗口期）都会让新增长的内容在折叠线下被截断——
+  // 用户实测流式期间最新一行被输入框上方一小块挡住即此窗口期。
+  // rAF 每帧校准：内容增长的同一帧就贴底，浏览器合并同一帧内的滚动与绘制，
+  // 不产生可见的截断帧；成本仅每帧一次 scrollTop 写入。会话结束后恢复自由滚动。
   useEffect(() => {
     if (!busy) return;
-    const id = window.setInterval(() => scrollToBottom(true), 300);
-    return () => window.clearInterval(id);
+    let raf = 0;
+    const tick = () => {
+      scrollToBottom(true);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
