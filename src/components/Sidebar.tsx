@@ -246,17 +246,10 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      {/* 白泽状态卡：活动状态 + 当前工作模式（点击弹快捷菜单）+ 当前模型健康 + 今日用量 */}
-      <div className="baize-card">
-        <div className="baize-card-top">
-          <span className={`baize-card-orb tone-${activity.tone}`} />
-          <div className="baize-card-state">
-            <div className="baize-card-name">白泽</div>
-            <div className="baize-card-activity" title={activity.detail || activity.label}>
-              {activity.label}
-            </div>
-          </div>
-        </div>
+      {/* 白泽状态卡：心跳波纹待机（执行时加速）+ 执行时光带跟随扫过 + 模式/模型/用量实时信息 */}
+      <div className={`baize-card ${activity.tone !== "idle" ? "executing" : ""}`}>
+        <span className="baize-card-ripple" aria-hidden />
+        <span className="baize-card-sweep" aria-hidden />
         <button
           type="button"
           className="baize-card-mode"

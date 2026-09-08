@@ -269,71 +269,57 @@ select option:checked {
   position: relative;
   overflow: hidden;
 }
-.baize-card::after {
-  /* 顶部流光：缓慢扫过，赋予生命感 */
-  content: "";
+.baize-card-ripple {
+  /* 心跳波纹：双跳节奏（咚-咚——），描边由内向外扩散后消隐 */
   position: absolute;
-  top: 0;
-  left: -60%;
-  width: 45%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.75), transparent);
-  animation: baize-card-sheen 7s var(--ease-in-out) infinite;
+  inset: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  animation: baize-heartbeat 2.6s ease-out infinite;
 }
-@keyframes baize-card-sheen {
-  0%, 55% { left: -60%; }
-  85%, 100% { left: 115%; }
+.baize-card.executing .baize-card-ripple {
+  /* 执行中心跳加速、波纹更亮 */
+  border-color: rgba(34, 211, 238, 0.65);
+  animation-duration: 1.4s;
+}
+@keyframes baize-heartbeat {
+  0%   { transform: scale(1);    opacity: 0; }
+  6%   { transform: scale(1);    opacity: 0.55; }
+  14%  { transform: scale(1.012); opacity: 0.1; }
+  22%  { transform: scale(1.012); opacity: 0.42; }
+  36%  { transform: scale(1.035); opacity: 0; }
+  100% { transform: scale(1.035); opacity: 0; }
 }
 
-.baize-card-top {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.baize-card-orb {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: radial-gradient(circle at 32% 30%, #7dd3fc, #38bdf8 45%, #1d4ed8 90%);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
-  position: relative;
-}
-.baize-card-orb::after {
-  content: "";
+.baize-card-sweep {
+  /* 执行光带：待机时隐身，执行时跟随动作反复扫过卡片 */
   position: absolute;
-  inset: -4px;
-  border-radius: 50%;
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  animation: baize-orb-pulse 2.6s var(--ease-in-out) infinite;
+  top: -15%;
+  bottom: -15%;
+  left: 0;
+  width: 32%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    rgba(56, 189, 248, 0.08) 38%,
+    rgba(125, 211, 252, 0.30) 50%,
+    rgba(56, 189, 248, 0.08) 62%,
+    transparent
+  );
+  filter: blur(2px);
+  transform: translateX(-140%);
+  opacity: 0;
+  pointer-events: none;
 }
-.baize-card-orb.tone-active,
-.baize-card-orb.tone-phase {
-  background: radial-gradient(circle at 32% 30%, #a5f3fc, #22d3ee 45%, #0e7490 90%);
-  box-shadow: 0 0 14px rgba(34, 211, 238, 0.6), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
+.baize-card.executing .baize-card-sweep {
+  opacity: 1;
+  animation: baize-sweep 2s var(--ease-in-out) infinite;
 }
-.baize-card-orb.tone-tool {
-  background: radial-gradient(circle at 32% 30%, #fde68a, #f59e0b 50%, #b45309 90%);
-  box-shadow: 0 0 14px rgba(245, 158, 11, 0.55), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
-}
-@keyframes baize-orb-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.7; }
-  50% { transform: scale(1.12); opacity: 0.25; }
-}
-
-.baize-card-state { min-width: 0; }
-.baize-card-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.5px;
-}
-.baize-card-activity {
-  font-size: 11px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+@keyframes baize-sweep {
+  0%   { transform: translateX(-140%); }
+  100% { transform: translateX(460%); }
 }
 
 .baize-card-mode {
@@ -426,14 +412,6 @@ select option:checked {
   50% { opacity: 0.55; }
 }
 
-.baize-card-stats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-faint);
-  padding: 0 2px;
-}
 .baize-card-sep {
   width: 1px;
   height: 10px;
