@@ -1874,14 +1874,19 @@ select option:checked {
   gap: 6px;
   padding: 10px 12px;
   min-width: 0;
-  background: var(--card);
+  /* 玻璃化：降低不透明度透出对话区底色，blur 保证文字可读 */
+  background: color-mix(in srgb, var(--card) 38%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
   border: 1px solid var(--border);
   border-radius: 16px;
-  transition: border 0.15s, box-shadow 0.15s;
+  transition: border 0.15s, box-shadow 0.15s, background 0.25s;
 }
 .chat-input:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
+  /* 打字时略微回实，保证长文可读 */
+  background: color-mix(in srgb, var(--card) 52%, transparent);
 }
 
 .chat-input-footer {
