@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useChat } from "../stores/chat";
 import {
   exportConversation,
+  getModelConfig,
+  getModelHealth,
+  getModelUsageDaily,
   getWorkMode,
   getWorkModes,
   onWorkModeChange,
   pickFolder,
   setWorkMode,
 } from "../api";
-import type { Conversation, WorkModeInfo } from "../types";
+import type { Conversation, ModelConfig, WorkModeInfo } from "../types";
 import { derive } from "./AiActivity";
 
 /** 侧边栏视图：对话列表 / 项目分组 */
@@ -93,6 +96,64 @@ export default function Sidebar() {
 
   const currentModeInfo = modes.find((m) => m.id === currentMode);
 
+  // ── 状态卡实时数据：当前模型 + 健康探活结果 + 今日 token 用量 ──
+  const [modelCfg, setModelCfg] = useState<ModelConfig | null>(null);
+  // null = 尚未探活（灰点）；true/false = 探活结果（绿/红点）
+  const [activeHealth, setActiveHealth] = useState<boolean | null>(null);
+  const [healthDetail, setHealthDetail] = useState("");
+  const [todayUsage, setTodayUsage] = useState<{ tokens: number; calls: number } | null>(null);
+
+  const refreshLive = useCallback(() => {
+    getModelConfig().then(setModelCfg).catch(() => {});
+    getModelUsageDaily(1)
+      .then((rows) => {
+        const today = new Date();
+        const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+        const r = rows.find((x) => x.day === key);
+        setTodayUsage(
+          r
+            ? { tokens: r.prompt_tokens + r.completion_tokens, calls: r.calls }
+            : { tokens: 0, calls: 0 }
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  // 模型配置到位后对齐健康状态；此后每 60s 轮询
+  useEffect(() => {
+    if (!modelCfg) return;
+    let disposed = false;
+    getModelHealth()
+      .then((h) => {
+        if (disposed) return;
+        const item = h[modelCfg.active];
+        if (item) {
+          setActiveHealth(item.ok);
+          setHealthDetail(item.detail);
+        } else {
+          setActiveHealth(null);
+          setHealthDetail("");
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [modelCfg]);
+
+  useEffect(() => {
+    refreshLive();
+    const t = setInterval(refreshLive, 60_000);
+    return () => clearInterval(t);
+  }, [refreshLive]);
+
+  // 任务结束瞬间立即刷新用量（不必等下一轮询）
+  useEffect(() => {
+    if (!busy) refreshLive();
+  }, [busy, refreshLive]);
+
+  const activeProfile = modelCfg?.profiles.find((p) => p.id === modelCfg.active);
+
   // 从思考流 + busy/streaming 派生当前 AI 活动状态（空闲/思考中/调用工具…），与「对话」导航项合并展示
   const activity = useMemo(() => derive(thoughts, busy, streaming), [thoughts, busy, streaming]);
 
@@ -175,9 +236,17 @@ export default function Sidebar() {
 
   const moveTarget = moveMenu ? conversations.find((c) => c.id === moveMenu.convId) : null;
 
+  /** token 数格式化：1234 → 1.2K，1234567 → 1.2M */
+  const fmtTokens = (n: number) =>
+    n >= 1_000_000
+      ? `${(n / 1_000_000).toFixed(1)}M`
+      : n >= 1_000
+        ? `${(n / 1_000).toFixed(1)}K`
+        : String(n);
+
   return (
     <aside className="sidebar">
-      {/* 白泽状态卡：AI 活动状态 + 当前工作模式（点击弹快捷切换菜单）+ 会话/项目统计 */}
+      {/* 白泽状态卡：活动状态 + 当前工作模式（点击弹快捷菜单）+ 当前模型健康 + 今日用量 */}
       <div className="baize-card">
         <div className="baize-card-top">
           <span className={`baize-card-orb tone-${activity.tone}`} />
@@ -197,10 +266,26 @@ export default function Sidebar() {
           <span className="baize-card-mode-label">{currentModeInfo?.label ?? "通用模式"}</span>
           <span className="baize-card-mode-arrow">›</span>
         </button>
-        <div className="baize-card-stats">
-          <span>{conversations.length} 会话</span>
-          <span className="baize-card-sep" />
-          <span>{projects.length} 项目</span>
+        <div className="baize-card-meta">
+          <div className="baize-card-row">
+            <span
+              className={`baize-dot ${activeHealth === null ? "unknown" : activeHealth ? "ok" : "bad"}`}
+              title={activeHealth === null ? "尚未探活" : activeHealth ? "连接正常" : healthDetail || "连接异常"}
+            />
+            <span className="baize-card-row-main" title={activeProfile ? `${activeProfile.name} · ${activeProfile.model}` : ""}>
+              {activeProfile?.name ?? "未配置模型"}
+            </span>
+            <span className="baize-card-row-side" title="今日消耗 token">
+              {todayUsage ? fmtTokens(todayUsage.tokens) : "—"}
+            </span>
+          </div>
+          <div className="baize-card-row dim">
+            <span>{conversations.length} 会话</span>
+            <span className="baize-card-sep" />
+            <span>{projects.length} 项目</span>
+            <span className="baize-card-sep" />
+            <span>{todayUsage ? `${todayUsage.calls} 次调用` : "今日暂无调用"}</span>
+          </div>
         </div>
       </div>
 

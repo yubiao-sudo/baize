@@ -373,6 +373,59 @@ select option:checked {
   color: var(--accent);
 }
 
+.baize-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.baize-card-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.baize-card-row.dim {
+  color: var(--text-faint);
+}
+.baize-card-row-main {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.baize-card-row-side {
+  color: var(--text-faint);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.baize-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+}
+.baize-dot.ok {
+  background: #34d399;
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.7);
+  animation: baize-dot-breathe 2.4s var(--ease-in-out) infinite;
+}
+.baize-dot.bad {
+  background: #f87171;
+  box-shadow: 0 0 6px rgba(248, 113, 113, 0.7);
+}
+.baize-dot.unknown {
+  background: var(--text-faint);
+}
+@keyframes baize-dot-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .baize-card-stats {
   display: flex;
   align-items: center;
