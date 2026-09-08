@@ -1119,20 +1119,18 @@ select option:checked {
   grid-template-rows: 0fr;
   overflow: hidden;
   opacity: 0;
-  transform: translateY(10px);
   visibility: hidden;
   pointer-events: none;
   transition:
     grid-template-rows var(--dur-slow) var(--ease-soft),
     opacity 0.4s var(--ease-out),
-    transform var(--dur-slow) var(--ease-soft),
     visibility var(--dur-slow) linear;
+  /* 不用 translateY 做入场位移：transform 的视觉下沉会把贴底内容的最后
+     一行压进输入卡背后（折叠线被输入框遮挡的根因），淡入已足够柔和 */
 }
 .chat.open .chat-body {
   grid-template-rows: 1fr;
   opacity: 1;
-  /* transform 过渡到 none：展开完成后不留变换，避免影响内部 fixed 定位元素 */
-  transform: none;
   visibility: visible;
   pointer-events: auto;
 }
@@ -1144,6 +1142,10 @@ select option:checked {
 .chat.collapsed {
   gap: 0;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+/* 收起态 0fr 行高下 padding-bottom 会泄漏成一条实体条沉到输入卡背后，归零 */
+.chat.collapsed .chat-scroll {
+  padding-bottom: 0;
 }
 
 /* ============ 银河背景：canvas 粒子旋涡星系（纯观赏，无数据） ============ */
