@@ -135,33 +135,76 @@ export default function Onboarding({
     const it = items[e.id];
     return it && e.level === "optional" && it.status !== "ok";
   }).map((e) => items[e.id]);
-
-  // 卡片超出 86vh 时内容会被裁掉：检测进行中自动钉底跟随（用户上翻即暂停），
-  // 检测完成后再平滑滚到底，确保修复提示与底部按钮可见。
+  // 卡片超出 86vh 时内容会被裁掉：滚动跟着检测节奏走——一个分类检测完，
+  // 慢速滚到下一个分类继续看；全部完成后滚到底部露出修复提示与按钮。
+  // 用户上翻即暂停自动滚动，滚回底部恢复跟随。
+  const groupRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const scrolledToRef = useRef(-1);
   const stickRef = useRef(true);
+
+  /** 慢速滚动：rAF + easeInOut，比原生 smooth 更从容 */
+  const slowScrollTo = useCallback((target: number, dur = 900) => {
+    const card = cardRef.current;
+    if (!card) return;
+    const max = card.scrollHeight - card.clientHeight;
+    const to = Math.max(0, Math.min(target, max));
+    const from = card.scrollTop;
+    const dist = to - from;
+    if (Math.abs(dist) < 2) return;
+    const t0 = performance.now();
+    const ease = (t: number) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+    const step = (now: number) => {
+      const p = Math.min(1, (now - t0) / dur);
+      card.scrollTop = from + dist * ease(p);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, []);
+
   useEffect(() => {
     const el = cardRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      const el = cardRef.current;
-      if (!el) return;
+      const card = cardRef.current;
+      if (!card) return;
       if (e.deltaY < 0) stickRef.current = false; // 用户主动上翻才解锁
-      else if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) stickRef.current = true; // 滚回底部重新跟随
+      else if (card.scrollHeight - card.scrollTop - card.clientHeight < 60)
+        stickRef.current = true; // 滚回底部重新跟随
     };
     el.addEventListener("wheel", onWheel, { passive: true });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // 每收到一个检测结果就检查：若某个分类刚好收齐，慢速滚向下一个分类
   useEffect(() => {
-    const el = cardRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [received]);
-  useEffect(() => {
-    if (!done) return;
-    const el = cardRef.current;
-    if (!el) return;
-    const t = setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 400);
-    return () => clearTimeout(t);
-  }, [done]);
+    if (!stickRef.current) return;
+    for (let i = 0; i < GROUPS.length; i++) {
+      const groupDone = GROUPS[i].ids.every((id) => items[id]);
+      if (!groupDone) {
+        if (i - 1 > scrolledToRef.current) {
+          scrolledToRef.current = i - 1;
+          const next = groupRefs.current[i];
+          const card = cardRef.current;
+          if (next && card) {
+            // offsetTop 相对的是 position:relative 的 .onb-groups，换算成卡片内坐标
+            const top =
+              next.getBoundingClientRect().top -
+              card.getBoundingClientRect().top +
+              card.scrollTop -
+              56;
+            slowScrollTo(top);
+          }
+        }
+        return;
+      }
+    }
+    // 全部分类收齐：慢速滚到底，修复提示 / 进入按钮进入视野
+    if (GROUPS.length - 1 > scrolledToRef.current) {
+      scrolledToRef.current = GROUPS.length - 1;
+      const card = cardRef.current;
+      if (card) slowScrollTo(card.scrollHeight - card.clientHeight, 1100);
+    }
+  }, [items, slowScrollTo]);
   const ready = complete && requiredMissing.length === 0;
 
   const copyFix = async (it: EnvItem) => {
@@ -233,8 +276,14 @@ export default function Onboarding({
 
         {/* 扫描光束悬浮于检测列表之上，检测进行中来回扫 */}
         <div className={`onb-groups${done ? " scanned" : ""}`}>
-          {GROUPS.map((g) => (
-            <div className="onb-group" key={g.title}>
+          {GROUPS.map((g, gi) => (
+            <div
+              className="onb-group"
+              key={g.title}
+              ref={(el) => {
+                groupRefs.current[gi] = el;
+              }}
+            >
               <div className="onb-group-title">
                 <span className="onb-group-icon">{g.icon}</span>
                 {g.title}
