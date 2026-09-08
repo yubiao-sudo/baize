@@ -859,9 +859,36 @@ export default function ChatView() {
         <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         {history.length === 0 && (
           <div className="chat-welcome">
-            <div className="chat-welcome-icon">🧭</div>
+            {/* 白泽徽标：圆角徽章 + 心电脉冲（与侧栏生命体征卡同源意象），光点持续巡游 */}
+            <div className="chat-welcome-mark" aria-hidden>
+              <svg viewBox="0 0 64 64" width="64" height="64">
+                <defs>
+                  <linearGradient id="welcome-ring" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stopColor="var(--accent)" />
+                    <stop offset="100%" stopColor="var(--cyan)" />
+                  </linearGradient>
+                </defs>
+                <rect x="6" y="6" width="52" height="52" rx="16" fill="var(--accent-soft)" stroke="url(#welcome-ring)" strokeWidth="1.5" />
+                <path
+                  className="welcome-pulse"
+                  d="M14 32 h9 l4 -9 l5 18 l4 -12 l3 6 h11"
+                  fill="none"
+                  stroke="url(#welcome-ring)"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  pathLength={80}
+                />
+              </svg>
+            </div>
             <div className="chat-welcome-title">问问白泽吧</div>
-            <div className="chat-welcome-sub">一个本地优先的桌面助手，能读写文件、操作界面、搜索网页、撰写文档</div>
+            <div className="chat-welcome-sub">
+              本地优先的桌面助手
+              <span className="chat-welcome-sep">·</span>读写文件
+              <span className="chat-welcome-sep">·</span>操作界面
+              <span className="chat-welcome-sep">·</span>搜索网页
+              <span className="chat-welcome-sep">·</span>撰写文档
+            </div>
           </div>
         )}
 

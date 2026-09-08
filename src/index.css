@@ -2245,22 +2245,54 @@ select option:checked {
 /* 欢迎区 */
 .chat-welcome {
   text-align: center;
-  margin-top: 60px;
+  margin-top: 52px;
   color: var(--text-faint);
+  animation: chat-welcome-in 0.6s var(--ease-in-out) both;
 }
-.chat-welcome-icon {
-  font-size: 28px;
-  margin-bottom: 8px;
+@keyframes chat-welcome-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.chat-welcome-mark {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 14px;
+  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--accent) 30%, transparent));
+  animation: chat-welcome-breathe 3.6s var(--ease-in-out) infinite;
+}
+@keyframes chat-welcome-breathe {
+  0%, 100% { filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 22%, transparent)); transform: scale(1); }
+  50% { filter: drop-shadow(0 0 20px color-mix(in srgb, var(--accent) 42%, transparent)); transform: scale(1.035); }
+}
+.chat-welcome-pulse,
+.welcome-pulse {
+  stroke-dasharray: 64 16;
+  animation: chat-welcome-ecg 2.6s linear infinite;
+}
+@keyframes chat-welcome-ecg {
+  from { stroke-dashoffset: 80; }
+  to { stroke-dashoffset: 0; }
 }
 .chat-welcome-title {
-  font-size: 18px;
-  color: var(--text);
-  margin-bottom: 6px;
-  font-weight: 600;
+  font-size: 20px;
+  margin-bottom: 7px;
+  font-weight: 650;
+  letter-spacing: 1px;
+  background: linear-gradient(92deg, var(--text) 30%, var(--accent) 75%, var(--cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 .chat-welcome-sub {
   font-size: 12px;
-  margin-top: 4px;
+  margin-top: 2px;
+  letter-spacing: 0.4px;
+  color: var(--text-faint);
+}
+.chat-welcome-sep {
+  margin: 0 7px;
+  color: var(--accent);
+  opacity: 0.65;
 }
 
 /* ============ 语音（工具按钮激活态） ============ */
