@@ -255,84 +255,137 @@ select option:checked {
   color: var(--accent);
 }
 
-/* ============ 工作模式下拉 ============ */
-.mode-select {
-  width: 100%;
-  padding: 6px 10px;
-  background-color: var(--card);
+/* ============ 侧边栏白泽状态卡 ============ */
+.baize-card {
+  margin: 4px 12px 10px;
+  padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 13px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color var(--dur-fast) var(--ease-in-out);
-}
-
-.mode-select:hover,
-.mode-select:focus {
-  border-color: var(--accent);
-}
-
-.mode-select option {
-  background: var(--panel);
-  color: var(--text);
-}
-
-/* ============ 工作模式详情 ============ */
-.mode-detail {
-  margin-top: 8px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: linear-gradient(160deg, rgba(37, 99, 235, 0.12), rgba(30, 64, 175, 0.03));
-  box-shadow: inset 0 0 18px rgba(37, 99, 235, 0.08);
+  border-radius: 14px;
+  background: linear-gradient(155deg, rgba(37, 99, 235, 0.14), rgba(30, 64, 175, 0.04) 55%, rgba(37, 99, 235, 0.07));
+  box-shadow: inset 0 0 22px rgba(37, 99, 235, 0.07);
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  font-size: 12px;
-  color: var(--text-dim);
+  gap: 10px;
+  position: relative;
+  overflow: hidden;
+}
+.baize-card::after {
+  /* 顶部流光：缓慢扫过，赋予生命感 */
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 45%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.75), transparent);
+  animation: baize-card-sheen 7s var(--ease-in-out) infinite;
+}
+@keyframes baize-card-sheen {
+  0%, 55% { left: -60%; }
+  85%, 100% { left: 115%; }
 }
 
-.mode-detail-desc {
-  line-height: 1.5;
-  color: var(--text-dim);
-}
-
-.mode-detail-group {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mode-detail-title {
-  font-size: 10px;
-  letter-spacing: 1px;
-  color: var(--text-faint);
-  text-transform: uppercase;
-}
-
-.mode-detail-item {
+.baize-card-top {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--text-dim);
+  gap: 10px;
 }
-.mode-detail-item:hover {
-  color: var(--text);
+.baize-card-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 32% 30%, #7dd3fc, #38bdf8 45%, #1d4ed8 90%);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
+  position: relative;
+}
+.baize-card-orb::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  animation: baize-orb-pulse 2.6s var(--ease-in-out) infinite;
+}
+.baize-card-orb.tone-active,
+.baize-card-orb.tone-phase {
+  background: radial-gradient(circle at 32% 30%, #a5f3fc, #22d3ee 45%, #0e7490 90%);
+  box-shadow: 0 0 14px rgba(34, 211, 238, 0.6), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
+}
+.baize-card-orb.tone-tool {
+  background: radial-gradient(circle at 32% 30%, #fde68a, #f59e0b 50%, #b45309 90%);
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.55), inset 0 -3px 6px rgba(2, 6, 23, 0.35);
+}
+@keyframes baize-orb-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.7; }
+  50% { transform: scale(1.12); opacity: 0.25; }
 }
 
-.mode-detail-item::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
+.baize-card-state { min-width: 0; }
+.baize-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+.baize-card-activity {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.baize-card-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease-in-out), background var(--dur-fast) var(--ease-in-out);
+}
+.baize-card-mode:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.baize-card-mode-icon { flex-shrink: 0; }
+.baize-card-mode-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.baize-card-mode-arrow {
+  color: var(--text-faint);
   flex-shrink: 0;
+  transition: transform var(--dur-fast) var(--ease-in-out);
+}
+.baize-card-mode:hover .baize-card-mode-arrow {
+  transform: translateX(2px);
+  color: var(--accent);
+}
+
+.baize-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 0 2px;
+}
+.baize-card-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--border-soft);
 }
 
 /* ============ 会话列表 ============ */

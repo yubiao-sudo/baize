@@ -52,6 +52,7 @@ const OVERLAYS: &[(&str, &str)] = &[
 /// 设置弹窗左侧导航页签（与前端 SettingsModal SETTING_PAGES 一致）
 const SETTINGS_TABS: &[&str] = &[
     "model",
+    "workmode",
     "tools",
     "gateway",
     "knowledge",

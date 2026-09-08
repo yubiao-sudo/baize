@@ -8,6 +8,10 @@ import {
   feishuStart,
   feishuStop,
   gatewayStart,
+  getWorkMode,
+  getWorkModes,
+  onWorkModeChange,
+  setWorkMode,
   gatewayStop,
   getDbConnections,
   getFeishuStatus,
@@ -72,6 +76,7 @@ import {
 /** 设置页左侧导航分组：相关设置聚成一页，避免长滚动找不到项 */
 const SETTING_PAGES = [
   { id: "model", label: "模型与推理", desc: "模型 · 运行时 · Token" },
+  { id: "workmode", label: "工作模式", desc: "模式切换 · 产出文档" },
   { id: "tools", label: "工具扩展", desc: "MCP 服务器" },
   { id: "gateway", label: "本地 AI 网关", desc: "HTTP 服务" },
   { id: "knowledge", label: "知识与数据", desc: "RAG · 数据库" },
@@ -90,6 +95,7 @@ import type {
   ModelConfig,
   ModelProfile,
   ModelTier,
+  WorkModeInfo,
   ProviderKind,
   NotifyConfig,
   RagDoc,
@@ -322,6 +328,26 @@ export default function SettingsModal({
       ? (initialTab as SettingsPageId)
       : "model"
   );
+
+  // 工作模式：模式列表 + 当前模式（订阅 workmode-change，与侧边栏徽标 / agent 切换保持同步）
+  const [workModes, setWorkModes] = useState<WorkModeInfo[]>([]);
+  const [currentWorkMode, setCurrentWorkMode] = useState<string>("");
+  useEffect(() => {
+    void getWorkModes().then(setWorkModes).catch(() => {});
+    void getWorkMode()
+      .then((s) => setCurrentWorkMode(s.current ?? ""))
+      .catch(() => {});
+    let un: (() => void) | null = null;
+    void onWorkModeChange((m) => setCurrentWorkMode(m.id || "")).then((f) => (un = f));
+    return () => un?.();
+  }, []);
+  /** 切换工作模式：乐观更新本地状态，后端持久化并回收跨模式工具 */
+  const applyWorkMode = (id: string) => {
+    if (id === currentWorkMode) return;
+    setCurrentWorkMode(id);
+    void setWorkMode(id);
+  };
+
   const pageContentRef = useRef<HTMLDivElement>(null);
   // 切换分类：右侧内容回到顶部
   useEffect(() => {
@@ -1208,6 +1234,103 @@ export default function SettingsModal({
                 )}
               </section>
             )}
+            </div>
+
+            {/* 工作模式页：卡片式选择（原侧边栏下拉框迁入，支持展示产出文档 / 可自研工具详情） */}
+            <div className="settings-page" style={{ display: page === "workmode" ? undefined : "none" }}>
+              <section style={{ paddingTop: 4 }}>
+                <h4 style={{ margin: "4px 0 4px", color: "var(--text)" }}>工作模式</h4>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 12 }}>
+                  选择白泽的工作身份：不同模式注入专属方法论与工具白名单，切换后即刻生效。
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {/* 通用模式 */}
+                  <button
+                    type="button"
+                    onClick={() => applyWorkMode("")}
+                    style={{
+                      textAlign: "left",
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${currentWorkMode === "" ? "rgba(56,189,248,.55)" : "var(--border-soft)"}`,
+                      background: currentWorkMode === "" ? "rgba(56,189,248,.08)" : "transparent",
+                      cursor: "pointer",
+                      transition: "border-color .15s, background .15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 15 }}>🧭</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>通用模式</span>
+                      {currentWorkMode === "" && (
+                        <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "rgba(56,189,248,.18)", color: "#38bdf8" }}>使用中</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                      无专属身份约束，自由对话与通用任务执行。
+                    </div>
+                  </button>
+                  {/* 各工作模式卡片 */}
+                  {workModes.map((m) => {
+                    const active = currentWorkMode === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => applyWorkMode(m.id)}
+                        style={{
+                          textAlign: "left",
+                          padding: "12px 14px",
+                          borderRadius: 12,
+                          border: `1px solid ${active ? "rgba(56,189,248,.55)" : "var(--border-soft)"}`,
+                          background: active ? "rgba(56,189,248,.08)" : "transparent",
+                          cursor: "pointer",
+                          transition: "border-color .15s, background .15s",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{m.label}</span>
+                          {active && (
+                            <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "rgba(56,189,248,.18)", color: "#38bdf8" }}>使用中</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>{m.description}</div>
+                        {m.doc_templates.length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 4 }}>产出文档</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {m.doc_templates.map((d) => (
+                                <span
+                                  key={d.id}
+                                  title={d.outline.join(" ／ ")}
+                                  style={{ fontSize: 11, padding: "3px 9px", borderRadius: 999, border: "1px solid var(--border-soft)", color: "var(--text-dim)" }}
+                                >
+                                  📄 {d.title}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {m.tool_templates.length > 0 && (
+                          <div style={{ marginTop: 8 }}>
+                            <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 4 }}>可自研工具</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {m.tool_templates.map((t) => (
+                                <span
+                                  key={t.name}
+                                  title={t.description}
+                                  style={{ fontSize: 11, padding: "3px 9px", borderRadius: 999, border: "1px solid var(--border-soft)", color: "var(--text-dim)" }}
+                                >
+                                  🛠 {t.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
             </div>
 
             {/* 工具扩展页 */}

@@ -365,6 +365,19 @@ export default function App() {
     };
   }, []);
 
+  // 前端内部打开设置直达页签：侧边栏状态卡等组件 dispatch「baize:open-settings」即可
+  useEffect(() => {
+    const onOpenSettings = (e: Event) => {
+      const tab = (e as CustomEvent<{ tab?: string }>).detail?.tab;
+      setSettingsTab(tab || undefined);
+      setSettingsNav((n) => n + 1);
+      openPanel("settings");
+    };
+    window.addEventListener("baize:open-settings", onOpenSettings);
+    return () => window.removeEventListener("baize:open-settings", onOpenSettings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 订阅 agent 面板控制：panel_control 工具打开/关闭面板、弹层（模型自主决策）
   useEffect(() => {
     let disposed = false;

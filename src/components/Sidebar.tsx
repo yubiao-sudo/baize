@@ -7,7 +7,6 @@ import {
   getWorkModes,
   onWorkModeChange,
   pickFolder,
-  setWorkMode,
 } from "../api";
 import type { Conversation, WorkModeInfo } from "../types";
 import { derive } from "./AiActivity";
@@ -70,9 +69,9 @@ export default function Sidebar() {
     return () => unlisten?.();
   }, []);
 
-  const onSelectMode = (id: string) => {
-    setCurrentMode(id || null);
-    void setWorkMode(id);
+  const onSelectMode = () => {
+    // 模式切换已迁至「设置 → 工作模式」；侧边栏仅展示当前身份徽标
+    window.dispatchEvent(new CustomEvent("baize:open-settings", { detail: { tab: "workmode" } }));
   };
 
   const currentModeInfo = modes.find((m) => m.id === currentMode);
@@ -161,48 +160,32 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="mode-section" style={{ padding: "0 16px 12px" }}>
-        <select
-          className="mode-select"
-          value={currentMode ?? ""}
-          onChange={(e) => onSelectMode(e.target.value)}
-          title="选择工作模式"
-        >
-          <option value="">🧭 通用模式</option>
-          {modes.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-
-        {currentModeInfo && (
-          <div className="mode-detail">
-            <div className="mode-detail-desc">{currentModeInfo.description}</div>
-
-            {currentModeInfo.doc_templates.length > 0 && (
-              <div className="mode-detail-group">
-                <div className="mode-detail-title">产出文档</div>
-                {currentModeInfo.doc_templates.map((d) => (
-                  <div className="mode-detail-item" key={d.id} title={d.outline.join(" ／ ")}>
-                    {d.title}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {currentModeInfo.tool_templates.length > 0 && (
-              <div className="mode-detail-group">
-                <div className="mode-detail-title">可自研工具</div>
-                {currentModeInfo.tool_templates.map((t) => (
-                  <div className="mode-detail-item" key={t.name} title={t.description}>
-                    {t.name}
-                  </div>
-                ))}
-              </div>
-            )}
+      {/* 白泽状态卡：AI 活动状态 + 当前工作模式徽标（点击进设置的工作模式页）+ 会话/项目统计 */}
+      <div className="baize-card">
+        <div className="baize-card-top">
+          <span className={`baize-card-orb tone-${activity.tone}`} />
+          <div className="baize-card-state">
+            <div className="baize-card-name">白泽</div>
+            <div className="baize-card-activity" title={activity.detail || activity.label}>
+              {activity.label}
+            </div>
           </div>
-        )}
+        </div>
+        <button
+          type="button"
+          className="baize-card-mode"
+          title="前往 设置 → 工作模式 切换工作身份"
+          onClick={onSelectMode}
+        >
+          <span className="baize-card-mode-icon">{currentModeInfo ? "🧰" : "🧭"}</span>
+          <span className="baize-card-mode-label">{currentModeInfo?.label ?? "通用模式"}</span>
+          <span className="baize-card-mode-arrow">›</span>
+        </button>
+        <div className="baize-card-stats">
+          <span>💬 {conversations.length} 会话</span>
+          <span className="baize-card-sep" />
+          <span>📁 {projects.length} 项目</span>
+        </div>
       </div>
 
       {/* 导航：对话 / 项目（对话项合并展示 AI 活动状态，项目项展示数量徽标） */}
