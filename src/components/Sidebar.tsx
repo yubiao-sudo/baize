@@ -15,6 +15,23 @@ import {
 import type { Conversation, ModelConfig, WorkModeInfo } from "../types";
 import { derive } from "./AiActivity";
 
+/**
+ * 生命体征线波形（viewBox 0 0 400 56，中线 y≈29）：
+ * 起伏的小波折模拟真实体征的不规则性，两处 QRS 尖峰是"心跳"，
+ * 两段心跳间距不等——刻意的，生命不是节拍器。
+ */
+const ECG_PATH = [
+  "M0,31",
+  "L12,27 L22,32 L34,26 L44,31 L54,28 L62,33 L70,27", // 起步的不规则波动
+  "L78,30 L86,24 L92,32 L100,28 L108,31 L116,26", // 深呼吸式下沉
+  "L122,31 L128,29 L134,33 L140,28", // 心跳前的小蓄力
+  "L146,30 L152,25 L158,34 L164,7 L170,50 L176,16 L182,31", // 第一次心搏（QRS 尖峰）
+  "L192,28 L204,32 L216,26 L228,30 L238,27 L248,33 L258,28 L266,31", // 平稳段的起伏
+  "L272,26 L278,30 L284,27 L290,32", // 短促的小波动
+  "L296,29 L302,25 L308,34 L314,9 L320,47 L326,18 L332,30", // 第二次心搏
+  "L342,28 L354,32 L366,27 L378,30 L388,26 L400,29", // 收尾回中线
+].join(" ");
+
 /** 侧边栏视图：对话列表 / 项目分组 */
 type SidebarView = "chat" | "projects";
 
@@ -246,10 +263,12 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      {/* 白泽状态卡：心跳波纹待机（执行时加速）+ 执行时光带跟随扫过 + 模式/模型/用量实时信息 */}
+      {/* 白泽状态卡：生命体征线（待机缓搏 / 执行加速）+ 模式/模型/用量实时信息 */}
       <div className={`baize-card ${activity.tone !== "idle" ? "executing" : ""}`}>
-        <span className="baize-card-ripple" aria-hidden />
-        <span className="baize-card-sweep" aria-hidden />
+        <svg className="baize-card-ecg" viewBox="0 0 400 56" preserveAspectRatio="none" aria-hidden>
+          <path className="baize-ecg-base" d={ECG_PATH} />
+          <path className="baize-ecg-pulse" d={ECG_PATH} pathLength={400} />
+        </svg>
         <button
           type="button"
           className="baize-card-mode"

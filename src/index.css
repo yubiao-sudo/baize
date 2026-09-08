@@ -269,57 +269,46 @@ select option:checked {
   position: relative;
   overflow: hidden;
 }
-.baize-card-ripple {
-  /* 心跳波纹：双跳节奏（咚-咚——），描边由内向外扩散后消隐 */
-  position: absolute;
-  inset: 0;
-  border-radius: 14px;
-  border: 1px solid rgba(56, 189, 248, 0.55);
-  opacity: 0;
-  pointer-events: none;
-  animation: baize-heartbeat 2.6s ease-out infinite;
-}
-.baize-card.executing .baize-card-ripple {
-  /* 执行中心跳加速、波纹更亮 */
-  border-color: rgba(34, 211, 238, 0.65);
-  animation-duration: 1.4s;
-}
-@keyframes baize-heartbeat {
-  0%   { transform: scale(1);    opacity: 0; }
-  6%   { transform: scale(1);    opacity: 0.55; }
-  14%  { transform: scale(1.012); opacity: 0.1; }
-  22%  { transform: scale(1.012); opacity: 0.42; }
-  36%  { transform: scale(1.035); opacity: 0; }
-  100% { transform: scale(1.035); opacity: 0; }
-}
-
-.baize-card-sweep {
-  /* 执行光带：待机时隐身，执行时跟随动作反复扫过卡片 */
-  position: absolute;
-  top: -15%;
-  bottom: -15%;
-  left: 0;
-  width: 32%;
-  background: linear-gradient(
-    100deg,
-    transparent,
-    rgba(56, 189, 248, 0.08) 38%,
-    rgba(125, 211, 252, 0.30) 50%,
-    rgba(56, 189, 248, 0.08) 62%,
-    transparent
-  );
-  filter: blur(2px);
-  transform: translateX(-140%);
-  opacity: 0;
+.baize-card-ecg {
+  /* 生命体征线：占卡片顶部一行，随内容自然排版 */
+  display: block;
+  width: 100%;
+  height: 26px;
+  flex-shrink: 0;
   pointer-events: none;
 }
-.baize-card.executing .baize-card-sweep {
-  opacity: 1;
-  animation: baize-sweep 2s var(--ease-in-out) infinite;
+.baize-ecg-base {
+  /* 底波：整条生命线的淡淡轮廓 */
+  fill: none;
+  stroke: rgba(56, 189, 248, 0.22);
+  stroke-width: 1.1;
+  stroke-linejoin: round;
+  transition: stroke 0.6s var(--ease-in-out);
 }
-@keyframes baize-sweep {
-  0%   { transform: translateX(-140%); }
-  100% { transform: translateX(460%); }
+.baize-card.executing .baize-ecg-base {
+  stroke: rgba(34, 211, 238, 0.30);
+}
+.baize-ecg-pulse {
+  /* 活性段：一段亮光沿生命线行走，像监护仪的光点扫过波形 */
+  fill: none;
+  stroke: #38bdf8;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  stroke-dasharray: 90 310; /* pathLength=400 归一化：亮 90 / 暗 310 */
+  filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.85));
+  animation: baize-ecg-run 7s linear infinite;
+}
+.baize-card.executing .baize-ecg-pulse {
+  /* 执行中：心率上升——光点跑快、变亮、辉光增强 */
+  stroke: #22d3ee;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px rgba(34, 211, 238, 0.95));
+  animation-duration: 2.4s;
+}
+@keyframes baize-ecg-run {
+  from { stroke-dashoffset: 400; }
+  to { stroke-dashoffset: 0; }
 }
 
 .baize-card-mode {
