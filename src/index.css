@@ -29,6 +29,8 @@
   --glow-cyan: rgba(34, 211, 238, 0.08);
   --input-solid: #111;
   --box-solid: #0f141a;
+  --option-bg: #1a2130;   /* 原生下拉弹层实色底（弹层不支持半透明） */
+  --code-inline: #93c5fd; /* 行内代码前景 */
   --flow-bg: rgba(15, 20, 26, 0.6);
   --flow-detail-bg: rgba(0, 0, 0, 0.28);
   --acui-bg: linear-gradient(160deg, #1b2330, #171d29);
@@ -221,6 +223,7 @@ select {
   appearance: none;
   -webkit-appearance: none;
   cursor: pointer;
+  color: var(--text);
   background-color: transparent;
   border-radius: 8px;
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -244,15 +247,15 @@ select:disabled {
   cursor: not-allowed;
 }
 select option {
-  background-color: var(--panel);
+  background-color: var(--option-bg);
   color: var(--text);
   font-size: 13px;
   padding: 6px 10px;
 }
 select option:hover,
 select option:checked {
-  background-color: var(--accent-soft);
-  color: var(--accent);
+  background-color: var(--accent);
+  color: #ffffff;
 }
 
 /* ============ 侧边栏白泽状态卡 ============ */
@@ -667,10 +670,10 @@ select option:checked {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: #171921;
+  background: var(--box-solid);
   border: 1px solid var(--border);
   border-radius: 9px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 28px var(--deep-shadow, rgba(0, 0, 0, 0.5));
   animation: fade-in var(--dur-fast) var(--ease-out);
 }
 
@@ -1396,7 +1399,7 @@ select option:checked {
 }
 .msg-md code {
   background: rgba(37, 99, 235, 0.16);
-  color: #93c5fd;
+  color: var(--code-inline);
   padding: 1px 5px;
   border-radius: 4px;
   font-family: "Cascadia Code", Consolas, "Courier New", monospace;
@@ -2287,7 +2290,7 @@ select option:checked {
   border-color: var(--accent);
 }
 .model-select option {
-  background: var(--panel);
+  background: var(--option-bg);
   color: var(--text);
 }
 
@@ -5626,10 +5629,20 @@ select option:checked {
   --glow-cyan: rgba(8, 145, 178, 0.1);
   --input-solid: #ffffff;
   --box-solid: #f1f5f9;
+  --option-bg: #ffffff;
+  --code-inline: #1d4ed8;
   --flow-bg: rgba(255, 255, 255, 0.65);
   --flow-detail-bg: rgba(15, 23, 42, 0.05);
   --acui-bg: linear-gradient(160deg, #ffffff, #f4f7fb);
 }
+/* 浅色主题下：半透明彩片上的近白文字改深色，保证对比度 */
+[data-theme="light-glass"] .nav-item.active .nav-activity { color: #1e40af; }
+[data-theme="light-glass"] .flow-term-btn { color: #0369a1; }
+[data-theme="light-glass"] .flow-term-btn:hover { color: #075985; }
+[data-theme="light-glass"] .flow-term-err { color: #b91c1c; }
+[data-theme="light-glass"] .md-hl, [data-theme="light-glass"] .hl { color: #854d0e; }
+[data-theme="light-glass"] .exec-phase-label { color: #4338ca; }
+
 /* 磨砂底：柔和粉彩光斑 + 浅色渐变，面板半透明叠在其上 */
 [data-theme="light-glass"] body {
   background:
@@ -6442,6 +6455,8 @@ select option:checked {
   --glow-cyan: rgba(251, 191, 36, 0.08);
   --input-solid: #17120d;
   --box-solid: #17110b;
+  --option-bg: #241c14;
+  --code-inline: #93c5fd;
   --flow-bg: rgba(26, 19, 13, 0.6);
   --acui-bg: linear-gradient(160deg, #241c12, #1d160e);
 }
