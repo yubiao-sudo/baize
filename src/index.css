@@ -5740,6 +5740,15 @@ select option:checked {
   from { opacity: 0; transform: translateY(14px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
+/* 就绪态：边框呼吸绿光 */
+.onb-card.is-ready {
+  border-color: rgba(52, 211, 153, 0.45);
+  animation: onb-in 0.5s ease, onb-ready-glow 2.4s ease-in-out infinite;
+}
+@keyframes onb-ready-glow {
+  0%, 100% { box-shadow: 0 0 40px rgba(52, 211, 153, 0.1); }
+  50% { box-shadow: 0 0 52px rgba(52, 211, 153, 0.28); }
+}
 .onb-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .onb-logo {
   width: 40px; height: 40px; border-radius: 12px;
@@ -5751,6 +5760,129 @@ select option:checked {
 }
 .onb-title { font-size: 17px; font-weight: 600; color: var(--text); }
 .onb-subtitle { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+/* ── 炫酷引导增强：logo 脉冲环 / 系统状态签 / 环形进度 / 分组扫描 / 数据绑定卡 ── */
+.onb-logo-wrap { position: relative; width: 40px; height: 40px; flex: none; }
+.onb-logo-wrap .onb-logo {
+  position: absolute; inset: 0;
+  animation: onb-logo-breathe 2.4s ease-in-out infinite;
+}
+@keyframes onb-logo-breathe {
+  0%, 100% { box-shadow: 0 0 10px rgba(34, 211, 238, 0.2); }
+  50% { box-shadow: 0 0 22px rgba(34, 211, 238, 0.45); }
+}
+/* 围绕 logo 旋转的轨道光点 */
+.onb-logo-ring {
+  position: absolute; inset: -5px; border-radius: 16px;
+  border: 1px dashed var(--accent-border-strong);
+  animation: onb-orbit-spin 6s linear infinite;
+  pointer-events: none;
+}
+.onb-logo-ring::after {
+  content: "";
+  position: absolute; top: -3px; left: 50%;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.9);
+}
+@keyframes onb-orbit-spin { to { transform: rotate(360deg); } }
+
+/* SYSTEM READY / INITIALIZING 状态签 */
+.onb-sys-tag {
+  margin-left: 10px; padding: 2px 8px; border-radius: 999px;
+  font-size: 10px; letter-spacing: 1.5px; vertical-align: 2px;
+  color: var(--accent); border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  animation: onb-tag-blink 1.6s ease-in-out infinite;
+}
+.onb-card.is-ready .onb-sys-tag {
+  color: #34d399; border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.08);
+  animation: none;
+}
+@keyframes onb-tag-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* 环形进度 */
+.onb-ring { flex: none; }
+.onb-ring-bg { fill: none; stroke: var(--border); stroke-width: 3; }
+.onb-ring-fill {
+  fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round;
+  transform: rotate(-90deg); transform-origin: center;
+  transition: stroke-dashoffset 0.4s ease;
+  filter: drop-shadow(0 0 4px rgba(34, 211, 238, 0.6));
+}
+.onb-ring-text { font-size: 11px; font-weight: 600; fill: var(--text); }
+.onb-card.is-ready .onb-ring-fill { stroke: #34d399; }
+
+/* 分组检测列表 + 扫描光束 */
+.onb-groups {
+  position: relative;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow: hidden;
+}
+.onb-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.onb-group-title {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 600; letter-spacing: 1px;
+  color: var(--text-dim); margin-bottom: 8px;
+}
+.onb-group-icon { color: var(--accent); font-size: 12px; }
+/* 检测进行中：一道光束在分组列表上扫过（GPU 合成，不触发重绘） */
+.onb-groups:not(.scanned)::after {
+  content: "";
+  position: absolute; left: 0; right: 0; top: 0;
+  height: 46px;
+  background: linear-gradient(180deg, transparent, rgba(34, 211, 238, 0.07), transparent);
+  animation: onb-scan 2.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes onb-scan {
+  0% { transform: translateY(-50px); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateY(calc(100% * 4 + 240px)); opacity: 0; }
+}
+
+/* 检测行：出结论瞬间点亮闪光 */
+.onb-row { animation: onb-row-in 0.3s ease; }
+.onb-row.st-pending { opacity: 0.45; }
+.onb-row.st-ok { animation: onb-row-in 0.3s ease, onb-row-flash 0.7s ease; }
+@keyframes onb-row-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes onb-row-flash {
+  0% { background: var(--accent-soft); border-radius: 8px; }
+  100% { background: transparent; }
+}
+
+/* 数据绑定卡：路径 + 打开按钮 */
+.onb-databind {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 8px; padding: 8px 10px;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 10px;
+  background: rgba(52, 211, 153, 0.06);
+}
+.onb-databind-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+  animation: onb-tag-blink 1.8s ease-in-out infinite;
+}
+.onb-databind-mid { flex: 1; min-width: 0; }
+.onb-databind-path {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  font-family: var(--font-mono, monospace);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left; /* 长路径省略左侧，保住末级目录名可见 */
+}
+.onb-databind-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 .onb-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .onb-progress-bar { flex: 1; height: 4px; border-radius: 99px; background: var(--border); overflow: hidden; }
 .onb-progress-fill {

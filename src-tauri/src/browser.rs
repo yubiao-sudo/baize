@@ -1153,11 +1153,9 @@ fn chrome_path() -> Option<std::path::PathBuf> {
 
 
 fn browser_profile_dir() -> std::path::PathBuf {
-    // 放 LocalAppData 而非 temp：系统磁盘清理会扫 temp，登录态/Cookie 可能被清掉；
-    // LocalAppData\baize 下只属于白泽，稳定且随应用卸载一并清理
-    let lad = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
-    std::path::PathBuf::from(lad).join("baize").join("browser-profile")
+    // 统一收编到「安装目录\data\browser-profile」（paths::init 含旧目录一次性迁移，
+    // 历史位置 LocalAppData\baize\browser-profile 的登录态会被复制过来），不再写 C 盘 AppData
+    crate::paths::browser_profile_dir()
 }
 
 /// 清理占用受控浏览器专属 user-data-dir 的孤儿 Chrome（宿主进程被强杀时来不及 drop 所致）。
@@ -1325,11 +1323,12 @@ fn capture_tab_png(tab: &Arc<headless_chrome::Tab>) -> Result<(String, f64), Str
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let name = format!("baize-browser-{ts}.png");
-    std::fs::write(&name, &data).map_err(|e| format!("保存截图失败: {e}"))?;
-    let path = std::env::current_dir()
-        .map(|d| d.join(&name).to_string_lossy().to_string())
-        .map_err(|e| format!("解析截图路径失败: {e}"))?;
-    Ok((path, dpr))
+    // 收编到「安装目录\data\screens」，不再散落工作目录
+    let dir = crate::paths::screens_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let full = dir.join(&name);
+    std::fs::write(&full, &data).map_err(|e| format!("保存截图失败: {e}"))?;
+    Ok((full.to_string_lossy().to_string(), dpr))
 }
 
 /// 在指定像素坐标处点击（先移动鼠标，再点击）

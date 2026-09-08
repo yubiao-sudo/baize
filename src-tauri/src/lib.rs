@@ -27,6 +27,7 @@ mod multimodal;
 mod notify;
 mod ocr;
 mod panel;
+mod paths;
 mod plaza;
 mod plugin;
 mod popup;
@@ -117,7 +118,14 @@ pub struct AppState {
 
 impl AppState {
     fn new() -> Self {
-        let store = Arc::new(MemoryStore::open("baize.db").expect("无法打开本地数据库 baize.db"));
+        // 数据目录绑定（最早执行）：所有运行时数据统一落「安装目录\data」，
+        // 内含旧数据一次性迁移（历史版本把 baize.db 写在相对工作目录，可能散落 C 盘各处）
+        crate::paths::init();
+        let db_path = crate::paths::db_path();
+        let store = Arc::new(
+            MemoryStore::open(db_path.to_string_lossy().as_ref())
+                .expect("无法打开本地数据库 baize.db"),
+        );
 
         // 模型用量上报 / 降级失败日志 sink（P0-2 / P1-7）：路由层事件统一落库
         {
@@ -1169,6 +1177,7 @@ pub fn run() {
             environment::env_detect_all,
             environment::env_get_state,
             environment::env_set_onboarding,
+            environment::data_open_folder,
             commands::software_search,
             commands::software_list,
             commands::system_get,

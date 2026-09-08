@@ -1419,6 +1419,11 @@ export async function envSetOnboarding(done: "done" | "skipped"): Promise<void> 
   return invoke<void>("env_set_onboarding", { done });
 }
 
+/** 在文件管理器中打开数据目录（安装目录\data） */
+export async function openDataFolder(): Promise<void> {
+  return invoke<void>("data_open_folder");
+}
+
 /** 订阅逐项检测结果（baize:env-check） */
 export async function onEnvCheckItem(cb: (item: EnvItem) => void): Promise<() => void> {
   const unlisten = await listen<EnvItem>("baize:env-check", (e) => cb(e.payload));

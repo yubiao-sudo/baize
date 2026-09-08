@@ -154,6 +154,108 @@ fn now_ms() -> u64 {
 
 // ───────────────────── 各检测项 ─────────────────────
 
+/// 硬件实测：CPU 型号 / 逻辑核数 / 物理内存（单次 CIM 查询，两条信息一次拿）
+fn detect_hardware() -> EnvItem {
+    let mut it = EnvItem::new("hardware", "处理器与内存", "info");
+    let script = "$p=Get-CimInstance Win32_Processor | Select-Object -First 1; $r=[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1); if($p){$p.Name.Trim() + '|' + $p.NumberOfLogicalProcessors + '|' + $r}else{'NONE'}";
+    match probe_line("powershell", &["-NoProfile", "-Command", script], 10) {
+        Ok(out) if out != "NONE" => {
+            let parts: Vec<&str> = out.splitn(3, '|').collect();
+            if parts.len() == 3 {
+                it.status = "ok".into();
+                it.vendor = parts[0].to_string();
+                it.version = format!("{} 线程", parts[1]);
+                it.detail = format!("{} · 物理内存 {} GB", parts[0], parts[2]);
+            } else {
+                it.status = "warn".into();
+                it.detail = format!("硬件信息不完整: {out}");
+            }
+        }
+        _ => {
+            it.status = "warn".into();
+            it.detail = "硬件信息获取失败（跳过）".into();
+        }
+    }
+    it
+}
+
+/// 显卡实测（影响视觉理解/截图分析场景的加速与显示能力）
+fn detect_gpu() -> EnvItem {
+    let mut it = EnvItem::new("gpu", "显卡", "info");
+    let script = "($g=Get-CimInstance Win32_VideoController | Where-Object {$_.Name -notmatch 'Basic|Hyper-V'}) -ne $null; ($g | Select-Object -First 2 | ForEach-Object { $_.Name }) -join ' / '";
+    match probe_line("powershell", &["-NoProfile", "-Command", script], 10) {
+        Ok(name) if !name.trim().is_empty() => {
+            it.status = "ok".into();
+            it.vendor = name.trim().to_string();
+            it.detail = format!("显卡：{}", name.trim());
+        }
+        _ => {
+            it.status = "warn".into();
+            it.detail = "显卡信息获取失败（跳过）".into();
+        }
+    }
+    it
+}
+
+/// WebView2 运行时版本（白泽界面本体就跑在它上面，能启动说明存在，这里取版本号做展示）
+fn detect_webview2() -> EnvItem {
+    let mut it = EnvItem::new("webview2", "WebView2 运行时", "info");
+    it.vendor = "Microsoft Edge WebView2".into();
+    let script = "$k='HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}','HKLM:\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}','HKCU:\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'; foreach($p in $k){$v=(Get-ItemProperty $p -ErrorAction SilentlyContinue).pv; if($v){$v; break}}";
+    match probe_line("powershell", &["-NoProfile", "-Command", script], 8) {
+        Ok(v) if v.contains('.') => {
+            it.status = "ok".into();
+            it.detail = format!("WebView2 {v}（界面渲染引擎）");
+            it.version = v;
+        }
+        _ => {
+            it.status = "warn".into();
+            it.detail = "版本读取失败（运行中即代表可用）".into();
+        }
+    }
+    it
+}
+
+/// 数据目录绑定：展示实际数据落盘位置（安装目录\data），验证可写性，
+/// 并如实报告是否处于兜底目录 / 是否发生了旧数据迁移
+fn detect_datadir() -> EnvItem {
+    let mut it = EnvItem::new("datadir", "数据目录绑定", "required");
+    it.vendor = "本地优先 · 数据不出本机".into();
+    let root = crate::paths::data_root().to_path_buf();
+    it.path = root.to_string_lossy().to_string();
+    let db = root.join("baize.db");
+    // 可写性实测：写删探针文件
+    let probe = root.join(".write-test");
+    let writable = std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)).is_ok();
+    if !writable {
+        it.status = "missing".into();
+        it.detail = "数据目录不可写".into();
+        it.hint = format!(
+            "{} 无法写入，数据库可能无法保存。请以可写权限重新安装白泽，或手动为该目录授予写权限",
+            it.path
+        );
+        return it;
+    }
+    if crate::paths::is_fallback() {
+        it.status = "warn".into();
+        it.detail = format!("安装目录不可写，已兜底到 {}", root.display());
+        it.hint = "当前以管理员权限运行安装包重装，即可把数据目录放回安装目录内".into();
+        return it;
+    }
+    it.status = "ok".into();
+    let db_size = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+    if db_size > 0 {
+        it.detail = format!(
+            "{}（已绑定，数据库 {} KB）",
+            it.path,
+            db_size / 1024
+        );
+    } else {
+        it.detail = format!("{}（已创建并验证可写）", it.path);
+    }
+    it
+}
+
 fn detect_powershell() -> EnvItem {
     let mut it = EnvItem::new("powershell", "Windows PowerShell", "required");
     it.vendor = "Microsoft".into();
@@ -503,9 +605,13 @@ fn detect_all_sync(store: &crate::memory::MemoryStore, app: &AppHandle) -> Vec<E
         println!("[环境检测] {} → {}", it.name, it.status);
         items.push(it);
     };
-    // 必需项优先出结论，增强项随后
+    // 必需项优先出结论，硬件实测次之，增强项随后
     push(detect_powershell());
+    push(detect_hardware());
+    push(detect_gpu());
     push(detect_network());
+    push(detect_webview2());
+    push(detect_datadir());
     push(detect_ocr());
     push(detect_disk());
     push(detect_admin());
@@ -516,21 +622,25 @@ fn detect_all_sync(store: &crate::memory::MemoryStore, app: &AppHandle) -> Vec<E
     push(detect_node());
     push(detect_git());
 
-    // 自动索引：检测到的路径写入 settings，后续功能免重复探测
-    let index = |key: &str, item: &EnvItem| {
-        if item.status == "ok" && !item.path.is_empty() {
-            let _ = store.set_setting(key, &item.path);
+    // 自动索引：按 id 定位（顺序无关，防止调整检测顺序时索引错位），检测到的路径写入 settings
+    let by_id = |id: &str| items.iter().find(|i| i.id == id).cloned();
+    let index = |key: &str, item: Option<EnvItem>| {
+        if let Some(it) = item {
+            if it.status == "ok" && !it.path.is_empty() {
+                let _ = store.set_setting(key, &it.path);
+            }
         }
     };
-    index("runtime_python", &items[5]);
-    index("runtime_tesseract", &items[7]);
-    index("runtime_node", &items[9]);
-    index("runtime_git", &items[10]);
+    index("runtime_python", by_id("python"));
+    index("runtime_tesseract", by_id("tesseract"));
+    index("runtime_node", by_id("node"));
+    index("runtime_git", by_id("git"));
     // Kokoro 目录单独处理：同步到 tts.rs 进程内缓存（解除硬编码）
-    let kokoro = &items[6];
-    if kokoro.status == "ok" && !kokoro.path.is_empty() {
-        let _ = store.set_setting("runtime_kokoro_dir", &kokoro.path);
-        crate::tts::set_kokoro_dir(kokoro.path.clone());
+    if let Some(kokoro) = by_id("kokoro") {
+        if kokoro.status == "ok" && !kokoro.path.is_empty() {
+            let _ = store.set_setting("runtime_kokoro_dir", &kokoro.path);
+            crate::tts::set_kokoro_dir(kokoro.path.clone());
+        }
     }
     items
 }
@@ -590,4 +700,16 @@ pub fn env_get_state(state: State<'_, crate::AppState>) -> Result<EnvState, Stri
 #[tauri::command]
 pub fn env_set_onboarding(state: State<'_, crate::AppState>, done: String) -> Result<(), String> {
     state.store.set_setting("onboarding_done", &done)
+}
+
+/// 在文件管理器中打开数据目录（引导层 / 设置页「打开数据文件夹」入口）
+#[tauri::command]
+pub fn data_open_folder() -> Result<(), String> {
+    let root = crate::paths::data_root();
+    std::fs::create_dir_all(root).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    crate::tools::silent_command("explorer")
+        .arg(root)
+        .spawn()
+        .map_err(|e| format!("打开文件管理器失败: {e}"))?;
+    Ok(())
 }

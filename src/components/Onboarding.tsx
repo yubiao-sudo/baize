@@ -1,21 +1,33 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { clipboardSetText, envDetectAll, envGetState, envSetOnboarding, onEnvCheckItem } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  clipboardSetText,
+  envDetectAll,
+  envGetState,
+  envSetOnboarding,
+  onEnvCheckItem,
+  openDataFolder,
+} from "../api";
 import type { EnvItem } from "../types";
 import { spawnDust } from "../utils/fx";
 
 /**
  * 首次启动环境自检（全屏引导层）+ 非首次启动的环境提示卡。
  *
- * 流程：挂载即调 env_detect_all，后端逐项 emit baize:env-check → 单卡片逐项出结论；
+ * 流程：挂载即调 env_detect_all，后端逐项 emit baize:env-check → 分组逐项出结论；
+ * 环形进度 + 扫描光束 + 检测项点亮闪光；硬件项（CPU/内存/显卡/WebView2）为真实实测；
+ * 数据绑定项展示「安装目录\data」实际落盘路径，可一键打开。
  * 全部必需项通过 → 「进入白泽」；有缺失 → 修复指引（复制命令）+「仍然进入」软拦截；
- * Esc 可跳过。完成/跳过都写 onboarding_done，后续启动不再弹全屏，
- * 改由 EnvNotice 非阻塞提示（必需项仍缺失时）。
+ * Esc 可跳过。完成/跳过都写 onboarding_done，后续启动不再弹全屏。
  */
 
-/** 检测项预期清单（与后端 environment.rs 派发顺序一致；未返回前显示"检测中"占位行） */
+/** 检测项清单（id 与后端 environment.rs 一致；顺序决定分组内展示顺序） */
 const EXPECTED: { id: string; name: string; level: EnvItem["level"] }[] = [
   { id: "powershell", name: "Windows PowerShell", level: "required" },
+  { id: "hardware", name: "处理器与内存", level: "info" },
+  { id: "gpu", name: "显卡", level: "info" },
   { id: "network", name: "网络连通", level: "required" },
+  { id: "webview2", name: "WebView2 运行时", level: "info" },
+  { id: "datadir", name: "数据目录绑定", level: "required" },
   { id: "ocr", name: "Windows OCR 引擎", level: "required" },
   { id: "disk", name: "磁盘空间", level: "required" },
   { id: "admin", name: "运行权限", level: "info" },
@@ -25,6 +37,18 @@ const EXPECTED: { id: string; name: string; level: EnvItem["level"] }[] = [
   { id: "audio", name: "音频设备", level: "optional" },
   { id: "node", name: "Node.js", level: "optional" },
   { id: "git", name: "Git", level: "optional" },
+];
+
+/** 检测分组：按「核心 → 硬件实测 → 数据绑定 → 增强」分区展示 */
+const GROUPS: { title: string; icon: string; ids: string[] }[] = [
+  { title: "核心环境", icon: "◈", ids: ["powershell", "network", "ocr", "disk"] },
+  { title: "硬件实测", icon: "▣", ids: ["hardware", "gpu", "webview2", "admin"] },
+  { title: "数据绑定", icon: "⛁", ids: ["datadir"] },
+  {
+    title: "增强能力",
+    icon: "✦",
+    ids: ["python", "kokoro", "tesseract", "audio", "node", "git"],
+  },
 ];
 
 const STATUS_ICON: Record<string, string> = { ok: "✓", warn: "!", missing: "✕" };
@@ -97,18 +121,21 @@ export default function Onboarding({
     return () => window.removeEventListener("keydown", onKey);
   }, [finishFx]);
 
-  const list = EXPECTED.map((e) => items[e.id] ?? null);
+  const get = (id: string) => items[id] ?? null;
   const received = Object.keys(items).length;
   const total = EXPECTED.length;
   const done = phase === "done";
   // 是否完整收齐了所有检测项（检测被并发拦截/失败时未收齐，不能误判「就绪」）
   const complete = done && received >= total;
-  const requiredMissing = list.filter(
-    (it): it is EnvItem => !!it && it.level === "required" && it.status === "missing"
-  );
-  const optionalMissing = list.filter(
-    (it): it is EnvItem => !!it && it.level === "optional" && it.status !== "ok"
-  );
+  const requiredMissing = EXPECTED.filter((e) => {
+    const it = items[e.id];
+    return it && e.level === "required" && it.status === "missing";
+  }).map((e) => items[e.id]);
+  const optionalMissing = EXPECTED.filter((e) => {
+    const it = items[e.id];
+    return it && e.level === "optional" && it.status !== "ok";
+  }).map((e) => items[e.id]);
+  const ready = complete && requiredMissing.length === 0;
 
   const copyFix = async (it: EnvItem) => {
     if (!it.fix_cmd) return;
@@ -121,25 +148,55 @@ export default function Onboarding({
     }
   };
 
+  const dataItem = get("datadir");
+
+  /** 环形进度（SVG 描边动画） */
+  const pct = Math.round((received / total) * 100);
+  const ring = useMemo(() => {
+    const r = 15;
+    const c = 2 * Math.PI * r;
+    return { r, c, off: c * (1 - (done ? 1 : received / total)) };
+  }, [received, total, done]);
+
   return (
     <div className="onb-root">
-      <div className="onb-card" ref={cardRef}>
+      <div className={`onb-card${ready ? " is-ready" : ""}`} ref={cardRef}>
         <button className="onb-skip" onClick={() => finishFx("skipped")} title="跳过引导 (Esc)">
           跳过 (Esc)
         </button>
         <div className="onb-head">
-          <span className="onb-logo">泽</span>
+          <div className="onb-logo-wrap">
+            <span className="onb-logo">泽</span>
+            <span className="onb-logo-ring" />
+          </div>
           <div>
-            <div className="onb-title">白泽 · 环境自检</div>
-            <div className="onb-subtitle">首次启动，正在确认这台电脑是否具备运行条件</div>
+            <div className="onb-title">
+              白泽 · 环境自检
+              <span className="onb-sys-tag">{ready ? "SYSTEM READY" : "INITIALIZING"}</span>
+            </div>
+            <div className="onb-subtitle">正在真实探测这台电脑的运行条件 · 全程在本机完成</div>
           </div>
         </div>
 
         <div className="onb-progress">
+          <svg className="onb-ring" viewBox="0 0 40 40" width="40" height="40">
+            <circle className="onb-ring-bg" cx="20" cy="20" r={ring.r} />
+            <circle
+              className="onb-ring-fill"
+              cx="20"
+              cy="20"
+              r={ring.r}
+              strokeDasharray={ring.c}
+              strokeDashoffset={ring.off}
+            />
+            <text className="onb-ring-text" x="20" y="21" textAnchor="middle" dominantBaseline="central">
+              {pct}
+            </text>
+          </svg>
           <div className="onb-progress-bar">
             <div
               className="onb-progress-fill"
-              style={{ width: `${Math.round((received / total) * 100)}%` }}
+              style={{ width: `${done ? 100 : Math.round((received / total) * 100)}%` }}
             />
           </div>
           <span className="onb-progress-text">
@@ -147,24 +204,54 @@ export default function Onboarding({
           </span>
         </div>
 
-        <div className="onb-list">
-          {EXPECTED.map((e, idx) => {
-            const it = list[idx];
-            const st = it ? it.status : "pending";
-            return (
-              <div className={`onb-row st-${st}`} key={e.id}>
-                <span className="onb-ico">{it ? STATUS_ICON[st] : "◌"}</span>
-                <div className="onb-mid">
-                  <div className="onb-name">
-                    {e.name}
-                    {it?.version && <span className="onb-ver">{it.version}</span>}
-                  </div>
-                  <div className="onb-sub">{rowSub(it, STATUS_LABEL[st])}</div>
-                </div>
-                <span className="onb-tag">{it ? STATUS_LABEL[st] : "…"}</span>
+        {/* 扫描光束悬浮于检测列表之上，检测进行中来回扫 */}
+        <div className={`onb-groups${done ? " scanned" : ""}`}>
+          {GROUPS.map((g) => (
+            <div className="onb-group" key={g.title}>
+              <div className="onb-group-title">
+                <span className="onb-group-icon">{g.icon}</span>
+                {g.title}
               </div>
-            );
-          })}
+              {g.ids.map((id) => {
+                const e = EXPECTED.find((x) => x.id === id)!;
+                const it = get(id);
+                const st = it ? it.status : "pending";
+                return (
+                  <div className={`onb-row st-${st}`} key={id}>
+                    <span className="onb-ico">{it ? STATUS_ICON[st] : "◌"}</span>
+                    <div className="onb-mid">
+                      <div className="onb-name">
+                        {e.name}
+                        {it?.version && <span className="onb-ver">{it.version}</span>}
+                      </div>
+                      <div className="onb-sub">{rowSub(it, STATUS_LABEL[st])}</div>
+                    </div>
+                    <span className="onb-tag">{it ? STATUS_LABEL[st] : "…"}</span>
+                  </div>
+                );
+              })}
+              {/* 数据绑定组：路径卡 + 打开按钮 */}
+              {g.title === "数据绑定" && dataItem && dataItem.status === "ok" && (
+                <div className="onb-databind">
+                  <span className="onb-databind-dot" />
+                  <div className="onb-databind-mid">
+                    <div className="onb-databind-path" title={dataItem.path}>
+                      {dataItem.path}
+                    </div>
+                    <div className="onb-databind-sub">
+                      对话 / 记忆 / 用量 / 登录态全部保存在安装目录内 · 卸载不残留
+                    </div>
+                  </div>
+                  <button
+                    className="onb-btn"
+                    onClick={() => void openDataFolder().catch(() => {})}
+                  >
+                    打开
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
 
         {done && requiredMissing.length > 0 && (
@@ -222,7 +309,7 @@ export default function Onboarding({
               </>
             )
           ) : (
-            <span className="onb-footer-msg">正在逐项检测，通常几秒内完成…</span>
+            <span className="onb-footer-msg">正在逐项真实探测，通常几秒内完成…</span>
           )}
         </div>
       </div>

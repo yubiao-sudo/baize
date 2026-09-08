@@ -75,16 +75,19 @@ pub fn run_maintenance(store: &MemoryStore) -> MaintenanceReport {
     // 1) 审计日志裁剪 + WAL 压缩
     let audit_pruned = store.prune_audit(AUDIT_KEEP).unwrap_or(0);
 
-    // 2) 任务截屏残留（新写临时目录 baize-screens + 兼容历史工作目录残留）
+    // 2) 任务截屏残留（新位置 data\screens + 兼容历史 temp 目录与工作目录残留）
     let now = now_ms();
     let (mut screenshots_pruned, mut screenshot_freed_bytes) = (0usize, 0u64);
-    let (c1, b1) = prune_screenshots(&std::env::temp_dir().join("baize-screens"), now);
+    let (c1, b1) = prune_screenshots(&crate::paths::screens_dir(), now);
     screenshots_pruned += c1;
     screenshot_freed_bytes += b1;
+    let (c2, b2) = prune_screenshots(&std::env::temp_dir().join("baize-screens"), now);
+    screenshots_pruned += c2;
+    screenshot_freed_bytes += b2;
     if let Ok(cwd) = std::env::current_dir() {
-        let (c2, b2) = prune_screenshots(&cwd, now);
-        screenshots_pruned += c2;
-        screenshot_freed_bytes += b2;
+        let (c3, b3) = prune_screenshots(&cwd, now);
+        screenshots_pruned += c3;
+        screenshot_freed_bytes += b3;
     }
 
     MaintenanceReport {

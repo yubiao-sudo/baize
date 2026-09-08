@@ -111,10 +111,12 @@ pub fn annotate(
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let name = format!("baize-som-{ts}.png");
-    img.save(&name).map_err(|e| format!("保存标注图失败: {e}"))?;
-    let path = std::env::current_dir()
-        .map(|d| d.join(&name).to_string_lossy().to_string())
-        .unwrap_or(name);
+    // 收编到「安装目录\data\screens」，不再散落工作目录
+    let dir = crate::paths::screens_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let full = dir.join(&name);
+    img.save(&full).map_err(|e| format!("保存标注图失败: {e}"))?;
+    let path = full.to_string_lossy().to_string();
 
     let centers = candidates
         .iter()

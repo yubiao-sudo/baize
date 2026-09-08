@@ -163,8 +163,8 @@ impl Capability for WindowsCapability {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        // 落到临时目录，避免污染工作目录/安装目录（region/board/video/stt 已统一用 temp_dir）
-        let dir = std::env::temp_dir().join("baize-screens");
+        // 收编到「安装目录\data\screens」（paths::init 自动创建），统一管理不散落 C 盘 temp
+        let dir = crate::paths::screens_dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| CapError::InvalidState(format!("创建截图目录失败: {e}")))?;
         let name = format!("baize-screenshot-{ts}.png");
