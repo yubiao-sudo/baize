@@ -2243,6 +2243,13 @@ pub fn set_work_mode(
 ) -> Result<Value, String> {
     // 切换前回收旧模式在 workmode 命名空间下的自研工具
     state.tools.remove_ns("workmode");
+    // 空 id = 回到通用模式（deactivate 清空当前身份；activate("") 会因查不到模式而报错）
+    if id.is_empty() {
+        state.workmodes.deactivate();
+        let _ = state.store.set_setting("work_mode_current", "");
+        let _ = app.emit("workmode-change", json!({ "id": "", "label": "通用模式" }));
+        return Ok(json!({ "id": "", "label": "通用模式" }));
+    }
     let mode = state.workmodes.activate(&id)?;
     // 持久化当前模式，重启后恢复
     let _ = state.store.set_setting("work_mode_current", &id);

@@ -7,6 +7,7 @@ import {
   getWorkModes,
   onWorkModeChange,
   pickFolder,
+  setWorkMode,
 } from "../api";
 import type { Conversation, WorkModeInfo } from "../types";
 import { derive } from "./AiActivity";
@@ -59,6 +60,9 @@ export default function Sidebar() {
   // 「归档到项目」弹出菜单
   const [moveMenu, setMoveMenu] = useState<MoveMenu | null>(null);
 
+  /** 工作模式快捷切换菜单（状态卡徽标点开，portal 弹出） */
+  const [modeMenu, setModeMenu] = useState<MoveMenu | null>(null);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void getWorkModes().then(setModes);
@@ -69,9 +73,22 @@ export default function Sidebar() {
     return () => unlisten?.();
   }, []);
 
-  const onSelectMode = () => {
-    // 模式切换已迁至「设置 → 工作模式」；侧边栏仅展示当前身份徽标
-    window.dispatchEvent(new CustomEvent("baize:open-settings", { detail: { tab: "workmode" } }));
+  /** 直接切换工作模式（乐观更新本地，后端持久化并广播同步设置页） */
+  const switchMode = (id: string) => {
+    setModeMenu(null);
+    if (id === currentMode) return;
+    setCurrentMode(id);
+    void setWorkMode(id);
+  };
+
+  /** 打开模式快捷菜单（定位到徽标下方） */
+  const openModeMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setModeMenu({
+      convId: "",
+      x: Math.max(8, Math.min(r.left, window.innerWidth - 200)),
+      y: Math.min(r.bottom + 6, window.innerHeight - 260),
+    });
   };
 
   const currentModeInfo = modes.find((m) => m.id === currentMode);
@@ -160,7 +177,7 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      {/* 白泽状态卡：AI 活动状态 + 当前工作模式徽标（点击进设置的工作模式页）+ 会话/项目统计 */}
+      {/* 白泽状态卡：AI 活动状态 + 当前工作模式（点击弹快捷切换菜单）+ 会话/项目统计 */}
       <div className="baize-card">
         <div className="baize-card-top">
           <span className={`baize-card-orb tone-${activity.tone}`} />
@@ -174,17 +191,16 @@ export default function Sidebar() {
         <button
           type="button"
           className="baize-card-mode"
-          title="前往 设置 → 工作模式 切换工作身份"
-          onClick={onSelectMode}
+          title="切换工作模式"
+          onClick={openModeMenu}
         >
-          <span className="baize-card-mode-icon">{currentModeInfo ? "🧰" : "🧭"}</span>
           <span className="baize-card-mode-label">{currentModeInfo?.label ?? "通用模式"}</span>
           <span className="baize-card-mode-arrow">›</span>
         </button>
         <div className="baize-card-stats">
-          <span>💬 {conversations.length} 会话</span>
+          <span>{conversations.length} 会话</span>
           <span className="baize-card-sep" />
-          <span>📁 {projects.length} 项目</span>
+          <span>{projects.length} 项目</span>
         </div>
       </div>
 
@@ -344,6 +360,33 @@ export default function Sidebar() {
                 移出项目
               </button>
             )}
+          </div>
+        </>,
+        document.body
+      )}
+
+      {/* 工作模式快捷切换菜单（状态卡徽标点开；复用 move-menu 弹层样式） */}
+      {modeMenu && createPortal(
+        <>
+          <div className="move-backdrop" onClick={() => setModeMenu(null)} />
+          <div className="move-menu" style={{ left: modeMenu.x, top: modeMenu.y }}>
+            <div className="move-menu-title">切换工作模式</div>
+            {[null, ...modes].map((m) => {
+              const id = m?.id ?? "";
+              const label = m?.label ?? "通用模式";
+              const active = id === (currentMode ?? "");
+              return (
+                <button
+                  key={id || "__general"}
+                  className={active ? "move-menu-active" : undefined}
+                  title={m?.description}
+                  onClick={() => switchMode(id)}
+                >
+                  {label}
+                  {active ? "  ·使用中" : ""}
+                </button>
+              );
+            })}
           </div>
         </>,
         document.body

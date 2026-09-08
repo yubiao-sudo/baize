@@ -355,7 +355,6 @@ select option:checked {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.baize-card-mode-icon { flex-shrink: 0; }
 .baize-card-mode-label {
   flex: 1;
   min-width: 0;
@@ -660,6 +659,17 @@ select option:checked {
 .move-menu button:hover {
   background: rgba(255, 255, 255, 0.07);
   color: var(--text);
+}
+
+/* 模式快捷菜单：当前使用中的模式高亮 */
+.move-menu button.move-menu-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.move-menu button.move-menu-active:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .move-menu button.move-menu-clear {

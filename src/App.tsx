@@ -348,11 +348,11 @@ export default function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getWorkMode().then((s) => {
-      if (!disposed) setWorkMode(s.current);
+      if (!disposed && s.current) setWorkMode(s.current);
     });
     void onWorkModeChange((m) => {
       if (disposed) return;
-      setWorkMode(m.id || null);
+      // 注意：这里只做界面联动，不回写 setWorkMode——命令本身会广播事件，回写会造成事件回声循环
       if (m.id !== "qa-engineer") {
         setActivePanel((p) => (p === "test" ? null : p));
       }
