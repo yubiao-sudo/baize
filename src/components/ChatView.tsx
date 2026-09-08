@@ -943,24 +943,6 @@ export default function ChatView() {
             <span className="voice-text">{transcript || "正在聆听，请说话…"}</span>
           </div>
         )}
-
-        {voiceConv.active && !listening && (
-          <div className="msg assistant voice-listening voice-conv-hint">
-            <span className={`voice-conv-dot ${voiceConv.mode}`} />
-            <span className="voice-text">
-              {voiceConv.error
-                ? `语音对话不可用：${voiceConv.error}`
-                : voiceConv.mode === "listening"
-                  ? `聆听中：${voiceConv.heard || "请说出你的需求…"}`
-                  : voiceConv.heard
-                    ? `待唤醒 · 刚听到「${voiceConv.heard}」（说「白泽」唤醒，说话时喊「白泽」可打断我）`
-                    : "待唤醒 · 说「白泽」开始对话（说话时喊「白泽」可打断我）"}
-            </span>
-            <button className="voice-conv-close" onClick={voiceConv.stop} title="退出连续对话">
-              ×
-            </button>
-          </div>
-        )}
         </div>
       </div>
 
