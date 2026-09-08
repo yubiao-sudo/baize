@@ -257,23 +257,45 @@ select option:checked {
 
 /* ============ 侧边栏白泽状态卡 ============ */
 .baize-card {
-  margin: 4px 12px 10px;
-  padding: 12px;
+  /* 贴合外侧边栏：负左距抵消 sidebar 的 10px 左内边距，左缘齐平、只圆右角 */
+  margin: 2px 2px 12px -10px;
+  padding: 14px 14px 14px 17px;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-left: none;
+  border-radius: 0 14px 14px 0;
   background: linear-gradient(155deg, rgba(37, 99, 235, 0.14), rgba(30, 64, 175, 0.04) 55%, rgba(37, 99, 235, 0.07));
   box-shadow: inset 0 0 22px rgba(37, 99, 235, 0.07);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   position: relative;
   overflow: hidden;
+}
+.baize-card::before {
+  /* 左缘光脊：一道贴着侧边栏外沿的呼吸光条，强调卡片“长”在侧边栏上 */
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12%;
+  bottom: 12%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, transparent, rgba(56, 189, 248, 0.8) 30%, rgba(96, 165, 250, 0.55) 70%, transparent);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
+  animation: baize-spine-breathe 3.2s var(--ease-in-out) infinite;
+}
+.baize-card.executing::before {
+  animation-duration: 1.6s;
+}
+@keyframes baize-spine-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 .baize-card-ecg {
   /* 生命体征线：占卡片顶部一行，随内容自然排版 */
   display: block;
   width: 100%;
-  height: 26px;
+  height: 34px;
   flex-shrink: 0;
   pointer-events: none;
 }
@@ -281,7 +303,7 @@ select option:checked {
   /* 底波：整条生命线的淡淡轮廓 */
   fill: none;
   stroke: rgba(56, 189, 248, 0.22);
-  stroke-width: 1.1;
+  stroke-width: 1.3;
   stroke-linejoin: round;
   transition: stroke 0.6s var(--ease-in-out);
 }
@@ -292,7 +314,7 @@ select option:checked {
   /* 活性段：一段亮光沿生命线行走，像监护仪的光点扫过波形 */
   fill: none;
   stroke: #38bdf8;
-  stroke-width: 1.7;
+  stroke-width: 2;
   stroke-linejoin: round;
   stroke-linecap: round;
   stroke-dasharray: 90 310; /* pathLength=400 归一化：亮 90 / 暗 310 */
@@ -302,7 +324,7 @@ select option:checked {
 .baize-card.executing .baize-ecg-pulse {
   /* 执行中：心率上升——光点跑快、变亮、辉光增强 */
   stroke: #22d3ee;
-  stroke-width: 2;
+  stroke-width: 2.4;
   filter: drop-shadow(0 0 5px rgba(34, 211, 238, 0.95));
   animation-duration: 2.4s;
 }
@@ -314,14 +336,14 @@ select option:checked {
 .baize-card-mode {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--border-soft);
-  border-radius: 9px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.035);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   text-align: left;
   transition: border-color var(--dur-fast) var(--ease-in-out), background var(--dur-fast) var(--ease-in-out);
@@ -351,13 +373,13 @@ select option:checked {
 .baize-card-meta {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 7px;
 }
 .baize-card-row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 11px;
+  gap: 8px;
+  font-size: 12px;
   color: var(--text-dim);
   min-width: 0;
 }
@@ -378,8 +400,8 @@ select option:checked {
   font-variant-numeric: tabular-nums;
 }
 .baize-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--text-faint);
@@ -403,7 +425,7 @@ select option:checked {
 
 .baize-card-sep {
   width: 1px;
-  height: 10px;
+  height: 12px;
   background: var(--border-soft);
 }
 
