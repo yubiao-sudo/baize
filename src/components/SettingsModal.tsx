@@ -4,6 +4,7 @@ import {
   clearRag,
   envDetectAll,
   envGetState,
+  envSetOnboarding,
   feishuSaveCredentials,
   feishuStart,
   feishuStop,
@@ -2557,6 +2558,7 @@ const ENV_STATUS_LABEL: Record<string, string> = { ok: "通过", warn: "注意",
 function EnvCheckPage() {
   const [items, setItems] = useState<EnvItem[]>([]);
   const [running, setRunning] = useState(false);
+  const [replaying, setReplaying] = useState(false);
   const [lastTime, setLastTime] = useState<number | null>(null);
   const [copied, setCopied] = useState("");
 
@@ -2594,6 +2596,17 @@ function EnvCheckPage() {
     }
   };
 
+  // 重播首次启动的全屏炫酷检测：清掉 onboarding 标记后整窗重载，App 会重新挂载 Onboarding
+  const replayOnboarding = async () => {
+    setReplaying(true);
+    try {
+      await envSetOnboarding("");
+      window.location.reload();
+    } catch {
+      setReplaying(false);
+    }
+  };
+
   const requiredMissing = items.filter((i) => i.level === "required" && i.status === "missing");
 
   return (
@@ -2604,6 +2617,14 @@ function EnvCheckPage() {
           {lastTime ? `上次检测：${new Date(lastTime).toLocaleString()}` : "尚未检测"}
         </span>
         <span className="side-spacer" style={{ flex: 1 }} />
+        <button
+          className="acui-btn"
+          disabled={replaying}
+          title="重新播放首次启动的全屏环境检测动画"
+          onClick={() => void replayOnboarding()}
+        >
+          {replaying ? "即将重播…" : "重播首启检测"}
+        </button>
         <button className="acui-btn" disabled={running} onClick={() => void recheck()}>
           {running ? "检测中…" : "重新检测"}
         </button>

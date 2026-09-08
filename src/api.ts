@@ -1415,7 +1415,7 @@ export async function envDetectAll(): Promise<EnvItem[]> {
 }
 
 /** 写入首次引导标记（"done" = 完成；"skipped" = 跳过） */
-export async function envSetOnboarding(done: "done" | "skipped"): Promise<void> {
+export async function envSetOnboarding(done: "done" | "skipped" | ""): Promise<void> {
   return invoke<void>("env_set_onboarding", { done });
 }
 

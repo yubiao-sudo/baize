@@ -292,9 +292,10 @@ select option:checked {
   50% { opacity: 1; }
 }
 .baize-card-ecg {
-  /* 生命体征线：占卡片顶部一行，随内容自然排版 */
+  /* 生命体征线：通铺到卡片左右边缘（与左缘光脊齐平），占顶部一行 */
   display: block;
-  width: 100%;
+  width: calc(100% + 31px);
+  margin: 0 -14px 0 -17px;
   height: 34px;
   flex-shrink: 0;
   pointer-events: none;
@@ -341,7 +342,7 @@ select option:checked {
   padding: 9px 12px;
   border: 1px solid var(--border-soft);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.028);
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
@@ -385,6 +386,7 @@ select option:checked {
 }
 .baize-card-row.dim {
   color: var(--text-faint);
+  padding-left: 16px;
 }
 .baize-card-row-main {
   flex: 1;
@@ -395,9 +397,10 @@ select option:checked {
   color: var(--text-dim);
 }
 .baize-card-row-side {
-  color: var(--text-faint);
+  color: var(--text-dim);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
+  padding-left: 10px;
 }
 .baize-dot {
   width: 8px;

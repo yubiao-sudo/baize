@@ -135,6 +135,33 @@ export default function Onboarding({
     const it = items[e.id];
     return it && e.level === "optional" && it.status !== "ok";
   }).map((e) => items[e.id]);
+
+  // 卡片超出 86vh 时内容会被裁掉：检测进行中自动钉底跟随（用户上翻即暂停），
+  // 检测完成后再平滑滚到底，确保修复提示与底部按钮可见。
+  const stickRef = useRef(true);
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const el = cardRef.current;
+      if (!el) return;
+      if (e.deltaY < 0) stickRef.current = false; // 用户主动上翻才解锁
+      else if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) stickRef.current = true; // 滚回底部重新跟随
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+  useEffect(() => {
+    const el = cardRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [received]);
+  useEffect(() => {
+    if (!done) return;
+    const el = cardRef.current;
+    if (!el) return;
+    const t = setTimeout(() => el.scrollTo({ top: el.scrollHeight, behavior: "smooth" }), 400);
+    return () => clearTimeout(t);
+  }, [done]);
   const ready = complete && requiredMissing.length === 0;
 
   const copyFix = async (it: EnvItem) => {
