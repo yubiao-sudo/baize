@@ -284,18 +284,25 @@ export const useChat = create<ChatState>((set, get) => ({
       return;
     }
     if (get().currentConvId) return;
-    // 启动不续接最近会话：最近会话已有消息则开新会话；
-    // 最近会话本身是空的就直接复用，避免每次启动堆积空会话
-    try {
-      const msgs = await getMessages(list[0].id);
-      if (msgs.length > 0) {
-        await get().newConversation();
-      } else {
-        await get().switchConversation(list[0].id);
+    // 启动/刷新复用策略：优先复用最近的一个空「新会话」（不限于列表第一位），
+    // 没有空会话才新建——否则每次重启/刷新都会多出一个空会话堆积在列表里
+    // （会话没有改名逻辑，空会话一定保留默认标题，按标题筛候选再逐个验证消息数）
+    const candidates = list
+      .filter((c) => c.title === "新会话")
+      .sort((a, b) => (a.project_id ? 1 : 0) - (b.project_id ? 1 : 0)) // 未归组空会话优先
+      .slice(0, 5);
+    for (const c of candidates) {
+      try {
+        const msgs = await getMessages(c.id);
+        if (msgs.length === 0) {
+          await get().switchConversation(c.id);
+          return;
+        }
+      } catch {
+        // 查询失败的会话不复用，继续找下一个候选
       }
-    } catch {
-      await get().switchConversation(list[0].id);
     }
+    await get().newConversation();
   },
 
   switchConversation: async (id) => {
@@ -337,6 +344,20 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   newConversation: async (projectId) => {
+    // 防堆积守卫：当前会话已经是一个空的「新会话」且项目归属一致时直接复用，
+    // 不再新建（刷新/重启之外的重复点击「新会话」同样受此保护）
+    const cur = get().conversations.find((c) => c.id === get().currentConvId);
+    if (
+      !get().busy &&
+      get().streaming === "" &&
+      cur &&
+      cur.title === "新会话" &&
+      (cur.project_id ?? null) === (projectId ?? null) &&
+      get().history.length === 0
+    ) {
+      get().followProjectWorkspace(cur.id);
+      return;
+    }
     const conv = await createConversation("新会话", projectId ?? null);
     set((s) => ({
       conversations: [conv, ...s.conversations],
