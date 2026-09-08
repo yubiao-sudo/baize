@@ -702,6 +702,18 @@ export default function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrating]);
 
+  // 兜底校准：生成期间每 300ms 校一次贴底。事件驱动的钉底（token/step/RO）
+  // 依赖「事件 → 渲染 → 观察」的时序链，任何一环错过（HMR 断连后的旧监听、
+  // 浏览器 clamp 抖动、deferred 渲染晚帧）都会让视口停在半空——独白首行
+  // 露在折叠线上、其余藏在输入框后。定时校准不依赖任何事件，只要用户
+  // 没有主动上翻（stick 为真）就一定收敛到底。
+  useEffect(() => {
+    if (!busy) return;
+    const id = window.setInterval(() => scrollToBottom(false), 300);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
   const onPickFiles = async () => {
     const files = await pickFiles();
     if (files && files.length > 0) {
