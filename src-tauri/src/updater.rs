@@ -178,6 +178,11 @@ pub async fn update_install(app: AppHandle) -> Result<Value, String> {
         json!({ "phase": "install", "pct": 100, "downloaded": downloaded, "total": total }),
     );
 
+    // 数据保险：NSIS 升级会先卸载旧版并清空 $INSTDIR（含 data 目录），
+    // 升级前先把数据备份到 LocalAppData，装完新版由 paths::init 检测缺库自动回填
+    //（NSIS 安装钩子 PREUNINSTALL/POSTINSTALL 亦会兜底，双保险）。
+    let _ = tokio::task::spawn_blocking(crate::paths::backup_to_appdata).await;
+
     // 更新链（脱离白泽进程存活）：等白泽退出 → NSIS 静默安装 → 自动重启新版。
     // 装机目录不变（覆盖安装），直接复用当前 exe 路径拉起新版。
     // 用 bat 承载链条规避 cmd /C 复杂引号转义；cmd 以裸文件名运行（current_dir 已设到该目录）。
