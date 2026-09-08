@@ -33,7 +33,14 @@ const TTS_STALL_MS = 120000;
 /** 识别重启退避上限 */
 const RESTART_BACKOFF_MAX_MS = 8000;
 
+/** 全局快照：最近一次广播的语音对话模式（供未挂载时错过事件的组件在挂载时取初值） */
+let currentVoiceMode: VoiceConvMode = "off";
+export function getVoiceMode(): VoiceConvMode {
+  return currentVoiceMode;
+}
+
 function dispatchVoiceMode(mode: VoiceConvMode) {
+  currentVoiceMode = mode;
   window.dispatchEvent(new CustomEvent("baize:voice-mode", { detail: { mode } }));
   void emit("baize:voice-mode", { mode }).catch(() => {});
 }

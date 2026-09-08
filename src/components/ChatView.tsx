@@ -965,29 +965,7 @@ export default function ChatView() {
       </div>
 
       <div className="chat-input-area">
-        {/* 收起态的语音对话状态（连续语音常驻时保持可见，不依赖展开） */}
-        {!chatExpanded && voiceConv.active && (
-          <div className="voice-conv-mini" onClick={() => setChatOpen(true)}>
-            <span className={`voice-conv-dot ${voiceConv.mode}`} />
-            <span>
-              {voiceConv.error
-                ? `语音对话不可用：${voiceConv.error}`
-                : voiceConv.mode === "listening"
-                  ? "聆听中…"
-                  : "语音待唤醒 · 说「白泽」"}
-            </span>
-            <button
-              className="voice-conv-close"
-              onClick={(e) => {
-                e.stopPropagation();
-                voiceConv.stop();
-              }}
-              title="退出连续对话"
-            >
-              ×
-            </button>
-          </div>
-        )}
+        {/* 连续语音对话状态已迁至右侧意识网络水球下方（mind-voice-hint），输入框上方不再重复显示 */}
 
         {chatExpanded && history.length === 0 && !busy && !listening && (
           <div className="chat-suggestions">

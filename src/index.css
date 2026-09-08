@@ -1221,27 +1221,6 @@ select option:checked {
 }
 
 /* 收起态的语音对话状态条（连续语音常驻时悬浮在输入框上方） */
-.voice-conv-mini {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--card, rgba(30, 41, 59, 0.5));
-  color: var(--text-dim);
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-.voice-conv-mini > span:nth-child(2) {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* 未贴底时的「回到底部」悬浮按钮 */
 .chat-jump {
   position: absolute;
@@ -2606,6 +2585,40 @@ select option:checked {
   color: var(--text-faint);
   font-size: 12px;
   pointer-events: none;
+}
+
+/* 连续语音对话状态徽标：贴水球下方（仅连续对话开启时渲染） */
+.mind-voice-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card, rgba(30, 41, 59, 0.5));
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+  animation: mind-hint-in 0.35s var(--ease-in-out) both;
+}
+.mind-voice-hint.listening {
+  border-color: color-mix(in srgb, #22c55e 45%, var(--border));
+  color: var(--text);
+}
+.mind-voice-hint.standby {
+  border-color: color-mix(in srgb, #22d3ee 40%, var(--border));
+}
+@keyframes mind-hint-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to { opacity: 1; transform: translateX(-50%); }
 }
 
 /* ============ 蠕动记忆水球：与启动动画同款 CSS 液态水球（keyframes 复用 index.html 全局动画） ============ */

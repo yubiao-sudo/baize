@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { getMemoryGraph, onMemoryRecall } from "../api";
 import { useChat } from "../stores/chat";
 import { derive } from "./AiActivity";
+import { getVoiceMode, type VoiceConvMode } from "../hooks/useVoiceConversation";
 
 // ── 三档：任务轨道卫星 —— 每颗代表一个后台子系统，活跃时点亮 ──
 // 外圈更慢，近开普勒节奏；半径按水球尺寸（canvas 高 53%）分层
@@ -133,6 +134,16 @@ export default function ConsciousnessNetwork() {
     };
   }, []);
 
+  // 连续语音对话状态徽标（水球下方）：跟随 baize:voice-mode 广播，
+  // off=连续对话未开启（不显示）；standby=待唤醒；listening=聆听中
+  const [voiceMode, setVoiceMode] = useState<VoiceConvMode>(getVoiceMode);
+  useEffect(() => {
+    const onMode = (e: Event) =>
+      setVoiceMode((e as CustomEvent<{ mode: VoiceConvMode }>).detail.mode);
+    window.addEventListener("baize:voice-mode", onMode);
+    return () => window.removeEventListener("baize:voice-mode", onMode);
+  }, []);
+
   // 任务形变：白泽不同行为 → 水球不同形态
   // 思考中=深潜（慢速大幅蠕动、色偏靛紫）| 调用工具=干练（快速摆动、色偏青绿）
   // 生成中=涌动（高频微颤、色相流转加速）| 空闲=默认呼吸；说话/记忆召回为事件类单独控制
@@ -237,6 +248,13 @@ export default function ConsciousnessNetwork() {
           </div>
           <div className="ripple-ring" />
         </div>
+        {/* 连续语音对话状态徽标：仅当用户开启连续对话时显示（off 不渲染） */}
+        {voiceMode !== "off" && (
+          <div className={`mind-voice-hint ${voiceMode}`} title="连续语音对话已开启">
+            <span className={`voice-conv-dot ${voiceMode}`} />
+            {voiceMode === "listening" ? "聆听中 · 请说出你的需求…" : "语音待唤醒 · 说「白泽」"}
+          </div>
+        )}
         {nodeCount === 0 && (
           <div className="mind-empty">暂无记忆 · 对话后水球会随检索泛起涟漪</div>
         )}
