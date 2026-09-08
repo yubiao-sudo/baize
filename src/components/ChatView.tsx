@@ -548,16 +548,21 @@ export default function ChatView() {
     }
   }, [history, ttsEnabled, ttsSupported, speak]);
 
-  // 智能滚动：用「用户是否贴底」的瞬时状态决定跟随（scroll 事件实时维护），
-  // 而不是内容长高后再补救——执行流单步增长上百像素时，事后判断永远追不上，
-  // 新内容会一直堆在可视区外，看起来像被输入框挡住。
+  // 智能滚动：只有「用户主动向上滚」才解除贴底跟随；内容增长本身（执行流单步
+  // 上百像素、独白流式 token）不产生 scroll 事件，不会误翻 stick —— 旧实现用
+  // 「距底 <60px」的瞬时状态判定，展开动画中间帧 / 输入区高度突变时的 clamp
+  // 都会算出假「离底」，从此钉底停用，新内容全部堆在输入框下面（看起来像被遮挡）。
   // rAF 二次滚动：大图/图标等异步资源加载后再补一次，避免次帧又冒出新高度。
   const stickRef = useRef(true);
   const [stick, setStick] = useState(true);
+  const lastScrollTopRef = useRef(0);
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const s = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    const goingUp = el.scrollTop < lastScrollTopRef.current - 2;
+    lastScrollTopRef.current = el.scrollTop;
+    const s = nearBottom ? true : goingUp ? false : stickRef.current;
     stickRef.current = s;
     setStick(s);
   };
@@ -667,8 +672,10 @@ export default function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatExpanded]);
 
-  // 新消息 / 执行开始：强制到底
+  // 新消息 / 执行开始：强制到底（并重置贴底状态——发新消息即想看新回答）
   useEffect(() => {
+    stickRef.current = true;
+    setStick(true);
     scrollToBottom(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history.length, busy]);

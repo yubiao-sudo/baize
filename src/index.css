@@ -1936,6 +1936,13 @@ select option:checked {
   background: var(--panel);
   color: var(--text);
 }
+/* 通用开启态：任何挂 active 的开关按钮都有背景色反馈（连续对话/文生图/工作空间等；
+   mic-btn.listening 的红色脉冲等更具体规则按优先级覆盖） */
+.tool-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-border, rgba(56, 189, 248, 0.35));
+}
 .tool-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
