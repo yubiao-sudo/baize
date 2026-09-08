@@ -257,6 +257,8 @@ select option:checked {
 
 /* ============ 侧边栏白泽状态卡 ============ */
 .baize-card {
+  /* 生命体征线主色随状态切换：空闲蓝 / 思考生成青 / 阶段推进紫 / 调用工具橙 / 连接异常红 */
+  --ecg: 56, 189, 248;
   /* 贴合外侧边栏：负左距抵消 sidebar 的 10px 左内边距，左缘齐平、只圆右角 */
   margin: 2px 2px 12px -10px;
   padding: 14px 14px 14px 17px;
@@ -303,13 +305,13 @@ select option:checked {
 .baize-ecg-base {
   /* 底波：整条生命线的淡淡轮廓 */
   fill: none;
-  stroke: rgba(56, 189, 248, 0.22);
+  stroke: rgba(var(--ecg), 0.22);
   stroke-width: 1.3;
   stroke-linejoin: round;
   transition: stroke 0.6s var(--ease-in-out);
 }
 .baize-card.executing .baize-ecg-base {
-  stroke: rgba(34, 211, 238, 0.30);
+  stroke: rgba(var(--ecg), 0.32);
 }
 .baize-ecg-pulse {
   /* 活性段：一段亮光沿生命线行走，像监护仪的光点扫过波形 */

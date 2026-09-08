@@ -263,8 +263,12 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      {/* 白泽状态卡：生命体征线（待机缓搏 / 执行加速）+ 模式/模型/用量实时信息 */}
-      <div className={`baize-card ${activity.tone !== "idle" ? "executing" : ""}`}>
+      {/* 白泽状态卡：生命体征线（随状态变色）+ 模式/模型/用量实时信息 */}
+      <div
+        className={`baize-card tone-${activeHealth === false ? "bad" : activity.tone} ${
+          activity.tone !== "idle" ? "executing" : ""
+        }`}
+      >
         <svg className="baize-card-ecg" viewBox="0 0 400 56" preserveAspectRatio="none" aria-hidden>
           <path className="baize-ecg-base" d={ECG_PATH} />
           <path className="baize-ecg-pulse" d={ECG_PATH} pathLength={400} />
