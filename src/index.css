@@ -268,8 +268,8 @@ select option:checked {
   border: 1px solid var(--border);
   border-left: none;
   border-radius: 0 14px 14px 0;
-  background: linear-gradient(155deg, rgba(37, 99, 235, 0.14), rgba(30, 64, 175, 0.04) 55%, rgba(37, 99, 235, 0.07));
-  box-shadow: inset 0 0 22px rgba(37, 99, 235, 0.07);
+  background: linear-gradient(155deg, rgba(var(--ecg), 0.13), rgba(var(--ecg), 0.03) 55%, rgba(var(--ecg), 0.06));
+  box-shadow: inset 0 0 22px rgba(var(--ecg), 0.07);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -285,8 +285,8 @@ select option:checked {
   bottom: 12%;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, transparent, rgba(56, 189, 248, 0.8) 30%, rgba(96, 165, 250, 0.55) 70%, transparent);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.45);
+  background: linear-gradient(180deg, transparent, rgba(var(--ecg), 0.8) 30%, rgba(var(--ecg), 0.55) 70%, transparent);
+  box-shadow: 0 0 10px rgba(var(--ecg), 0.45);
   animation: baize-spine-breathe 3.2s var(--ease-in-out) infinite;
 }
 .baize-card.executing::before {
@@ -319,20 +319,41 @@ select option:checked {
 .baize-ecg-pulse {
   /* 活性段：一段亮光沿生命线行走，像监护仪的光点扫过波形 */
   fill: none;
-  stroke: #38bdf8;
+  stroke: rgb(var(--ecg));
   stroke-width: 2;
   stroke-linejoin: round;
   stroke-linecap: round;
   stroke-dasharray: 90 310; /* pathLength=400 归一化：亮 90 / 暗 310 */
-  filter: drop-shadow(0 0 3px rgba(56, 189, 248, 0.85));
+  filter: drop-shadow(0 0 3px rgba(var(--ecg), 0.85));
+  transition: stroke 0.5s var(--ease-in-out), filter 0.5s var(--ease-in-out);
   animation: baize-ecg-run 7s linear infinite;
 }
 .baize-card.executing .baize-ecg-pulse {
-  /* 执行中：心率上升——光点跑快、变亮、辉光增强 */
-  stroke: #22d3ee;
+  /* 执行中：心率上升——光点跑快、变亮、辉光增强（颜色由状态 tone 决定） */
   stroke-width: 2.4;
-  filter: drop-shadow(0 0 5px rgba(34, 211, 238, 0.95));
+  filter: drop-shadow(0 0 5px rgba(var(--ecg), 0.95));
   animation-duration: 2.4s;
+}
+/* ---- 生命体征线五态配色 ---- */
+.baize-card.tone-idle {
+  /* 空闲：静息蓝 */
+  --ecg: 56, 189, 248;
+}
+.baize-card.tone-active {
+  /* 思考 / 生成中：青 */
+  --ecg: 34, 211, 238;
+}
+.baize-card.tone-phase {
+  /* 阶段推进 / 规划：紫 */
+  --ecg: 167, 139, 250;
+}
+.baize-card.tone-tool {
+  /* 调用工具：橙 */
+  --ecg: 251, 146, 60;
+}
+.baize-card.tone-bad {
+  /* 模型连接异常：红（健康探活失败时覆盖一切状态） */
+  --ecg: 248, 113, 113;
 }
 @keyframes baize-ecg-run {
   from { stroke-dashoffset: 400; }
