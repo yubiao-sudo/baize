@@ -265,6 +265,9 @@ impl AppState {
         tools.register(Box::new(capability::ReadWindowTool::new(capability.clone())));
         // 可交互元素地图：GUI 两阶段模式（先分析应用结构 → 一轮批量派发操作）
         tools.register(Box::new(capability::UiAnalyzeTool::new(capability.clone())));
+        // 应用类型画像：识别浏览器/Electron/原生/对话框/UWP/游戏全屏，按类型给推荐操作策略
+        #[cfg(windows)]
+        tools.register(Box::new(capability::AppProfileTool));
         // GUI 回退：操作日志回退（回退原则第 3 级）
         tools.register(Box::new(capability::GuiUndoTool::new(capability.clone())));
         // 回退原则第 1 级：批量派发前登记预期状态，批尾自动校验正确性

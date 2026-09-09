@@ -823,6 +823,38 @@ impl Tool for UiAnalyzeTool {
     }
 }
 
+/// 应用类型画像工具（只读）：识别窗口类型 + 树质量，给出推荐操作策略
+#[cfg(windows)]
+pub struct AppProfileTool;
+
+#[cfg(windows)]
+impl Tool for AppProfileTool {
+    fn name(&self) -> &str {
+        "app_profile"
+    }
+    fn description(&self) -> &str {
+        "识别目标窗口的应用类型（浏览器/Electron/原生/对话框/UWP/游戏全屏）与无障碍树质量，并返回针对该类型的推荐操作策略（语义点击 vs 截图坐标 vs region_ocr+macro）。对陌生应用开始 GUI 任务前先调用一次可少走弯路。window 传窗口标题或进程名关键词（缺省为当前前台窗口）。只读，无需授权"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "window": { "type": "string", "description": "目标窗口标题或进程名关键词（可选，缺省为当前前台窗口）" }
+            }
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        let window = args["window"]
+            .as_str()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        windows::app_profile_impl(window)
+    }
+}
+
 
 pub struct ReadScreenTool {
     capability: Arc<dyn Capability>,
@@ -852,7 +884,18 @@ impl Tool for ReadScreenTool {
             .capability
             .observe(&ObserveReq::default())
             .map_err(|e| e.to_string())?;
-        Ok(json!({ "text": obs.to_text() }))
+        let mut text = obs.to_text();
+        // 空树降级指引：树近空时附上原因与对策，避免模型在空观察上空转
+        if obs.tree.as_ref().map(|t| t.node_count <= 3).unwrap_or(true) {
+            text.push_str(
+                "\n\n[提示] 无障碍树几乎为空。常见原因与对策：\
+                 ① Chromium 系应用（浏览器/Electron）首次被访问需构建辅助功能树——等约 1 秒重试本工具；\
+                 ② 游戏全屏/自绘画面（DirectUI、部分 Qt）本身无树——改用 screen_elements 或 capture_screen + region_ocr 感知；\
+                 ③ 窗口最小化——先 window_focus 聚焦还原；\
+                 ④ 仍无头绪时调用 app_profile 查看窗口类型与推荐策略",
+            );
+        }
+        Ok(json!({ "text": text }))
     }
 }
 
@@ -1416,6 +1459,13 @@ impl Tool for FindElementTool {
                 })
             })
             .collect();
+        if arr.is_empty() {
+            // 空结果降级指引：自渲染窗口 UIA 可能读不到，给出替代路线而不是让模型干等
+            return Ok(json!({
+                "matches": [],
+                "note": "未找到匹配控件。可能是自渲染窗口（Electron 首次访问/游戏/自绘）UIA 读不到：等待 1-2 秒重试，或改用 screen_elements（UIA+OCR 一次汇总）、capture_screen 后 ground_on_screenshot 按文字视觉定位再 click_at；也可调用 app_profile 查看窗口类型与推荐策略"
+            }));
+        }
         Ok(json!(arr))
     }
 }

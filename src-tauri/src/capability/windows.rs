@@ -155,6 +155,22 @@ impl Capability for WindowsCapability {
         let mut truncated = false;
         let root_node = build(&root, 0, req, &condition, &mut count, &mut truncated)?;
 
+        // Chromium 系窗口（浏览器/Electron）首次被 UIA 访问时才构建辅助功能树，
+        // 首次读取常见空树/近空树：等待约 1s 后重建一次，避免模型在空观察上空转。
+        let root_node = if count <= 3
+            && root
+                .get_classname()
+                .map(|c| c == "Chrome_WidgetWin_1")
+                .unwrap_or(false)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            count = 0;
+            truncated = false;
+            build(&root, 0, req, &condition, &mut count, &mut truncated)?
+        } else {
+            root_node
+        };
+
         Ok(Observation {
             source: "windows_uia".to_string(),
             tree: Some(A11yTree {
@@ -563,7 +579,29 @@ impl Capability for WindowsCapability {
         }
         walk(&root, &condition, 0, &mut out)?;
 
-        Ok(json!({ "elements": out, "count": out.len() }))
+        // Chromium 系窗口首调常空树（辅助功能树首次访问才构建）：等待约 1s 换新根元素重走一遍
+        let mut note = String::new();
+        if out.len() <= 3
+            && root
+                .get_classname()
+                .map(|c| c == "Chrome_WidgetWin_1")
+                .unwrap_or(false)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            let root2 = self.resolve_root(&automation, &condition, &req)?;
+            out.clear();
+            walk(&root2, &condition, 0, &mut out)?;
+            if out.len() > 3 {
+                note = "首次读取为空（Chromium 首次访问需构建辅助功能树），已等待约 1s 重读"
+                    .to_string();
+            }
+        }
+
+        let mut result = json!({ "elements": out, "count": out.len() });
+        if !note.is_empty() {
+            result["note"] = json!(note);
+        }
+        Ok(result)
     }
 
     fn find_anywhere(&self, target: &str) -> Result<Vec<ElementMatch>, CapError> {
@@ -1598,6 +1636,215 @@ pub fn wait_ui_stable(timeout_ms: u64) -> (bool, u64) {
             stable_hits = 0;
         }
     }
+}
+
+// ───────────────────── 应用类型画像（app_profile） ─────────────────────
+
+/// UIA 树采样：统计节点数与各控件类型出现次数（深度/数量双上限，避免大树拖慢）
+fn sample_tree_nodes(
+    el: &UIElement,
+    condition: &UICondition,
+    depth: usize,
+    count: &mut usize,
+    roles: &mut std::collections::HashMap<String, usize>,
+) {
+    if depth > 6 || *count >= 400 {
+        return;
+    }
+    *count += 1;
+    if let Ok(ct) = el.get_control_type() {
+        *roles.entry(format!("{ct:?}")).or_insert(0) += 1;
+    }
+    if let Ok(children) = el.find_all(TreeScope::Children, condition) {
+        for c in children {
+            sample_tree_nodes(&c, condition, depth + 1, count, roles);
+        }
+    }
+}
+
+/// 浏览器主进程 exe 名（按进程名判定优先于类名：浏览器与 Electron 主窗口同为 Chrome_WidgetWin_1）
+fn is_browser_process(process: &str) -> bool {
+    matches!(
+        process.to_lowercase().as_str(),
+        "chrome.exe"
+            | "msedge.exe"
+            | "firefox.exe"
+            | "brave.exe"
+            | "opera.exe"
+            | "360se.exe"
+            | "360chrome.exe"
+            | "qqbrowser.exe"
+            | "sogou_explorer.exe"
+    )
+}
+
+/// 应用类型画像：Win32 窗口信息 + UIA 树采样 → 类型判定 + 推荐操作策略。
+/// GUI 任务对陌生应用先调用一次，选对感知/操作路线，避免在空树上空转。
+pub fn app_profile_impl(window: Option<&str>) -> Result<Value, String> {
+    // 1. 定位窗口：指定标题/进程关键词 → 查找；否则取前台窗口
+    let hwnd = match window {
+        Some(name) => find_window_by_name(name)
+            .ok_or_else(|| format!("未找到窗口: {name}（可先 list_windows 确认标题/进程名）"))?,
+        None => unsafe { GetForegroundWindow() },
+    };
+    if hwnd.0 == 0 {
+        return Err("当前没有前台窗口".to_string());
+    }
+
+    // 2. Win32 窗口信息
+    let title = window_title(hwnd).unwrap_or_default();
+    let class = window_class(hwnd);
+    let process = window_process_name(hwnd).unwrap_or_default();
+    let minimized = unsafe { IsIconic(hwnd).as_bool() };
+    let topmost = is_topmost(hwnd);
+    let rect = if minimized { None } else { window_rect(hwnd) };
+
+    // 3. 全屏判定：窗口矩形覆盖其中心所在显示器（±6px 容差，无边框/独占全屏均覆盖）
+    let fullscreen = rect
+        .as_ref()
+        .map(|r| {
+            let cx = (r.x + r.width / 2.0) as i32;
+            let cy = (r.y + r.height / 2.0) as i32;
+            if let Ok(monitors) = xcap::Monitor::all() {
+                for m in &monitors {
+                    let (mx, my) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
+                    let (mw, mh) =
+                        (m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+                    if cx >= mx && cx < mx + mw && cy >= my && cy < my + mh {
+                        return (r.x as i32 - mx).abs() <= 6
+                            && (r.y as i32 - my).abs() <= 6
+                            && ((r.x + r.width) as i32 - (mx + mw)).abs() <= 6
+                            && ((r.y + r.height) as i32 - (my + mh)).abs() <= 6;
+                    }
+                }
+            }
+            false
+        })
+        .unwrap_or(false);
+
+    // 4. UIA 树采样（最小化窗口树不可靠，跳过）
+    let mut roles: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let node_count = if minimized {
+        0
+    } else {
+        UIAutomation::new()
+            .ok()
+            .and_then(|automation| {
+                let handle = uiautomation::types::Handle::from(hwnd);
+                automation.element_from_handle(handle).ok().map(|root| {
+                    let mut count = 0;
+                    if let Ok(cond) = automation.create_true_condition() {
+                        sample_tree_nodes(&root, &cond, 0, &mut count, &mut roles);
+                    }
+                    count
+                })
+            })
+            .unwrap_or(0)
+    };
+    let quality = if minimized {
+        "unknown"
+    } else if node_count <= 3 {
+        "empty"
+    } else if node_count <= 12 {
+        "poor"
+    } else {
+        "rich"
+    };
+
+    // 5. 类型判定（进程名优先于类名：浏览器与 Electron 主窗口同为 Chrome_WidgetWin_1）
+    let app_type = if class == "#32770" || class == "#32769" {
+        "dialog"
+    } else if is_browser_process(&process) {
+        "browser"
+    } else if class == "Chrome_WidgetWin_1" {
+        "electron"
+    } else if class == "ApplicationFrameWindow" || class == "Windows.UI.Core.CoreWindow" {
+        "uwp"
+    } else if fullscreen && quality == "empty" {
+        "game"
+    } else if quality == "rich" {
+        "native"
+    } else {
+        "unknown"
+    };
+
+    // 6. 按类型 × 树质量生成建议
+    let mut suggest: Vec<&str> = Vec::new();
+    if minimized {
+        suggest.push("窗口处于最小化状态：先调用 window_focus 聚焦还原，再进行感知与操作");
+    }
+    match app_type {
+        "dialog" => {
+            suggest.push("对话框窗口：优先 click_element 点按钮；树里找不到时改 screen_elements + click_at；确认/取消类弹窗可直接 key_press（enter 确认 / esc 取消）");
+        }
+        "browser" => {
+            if quality == "empty" {
+                suggest.push("无障碍树为空：浏览器首次被 UIA 访问才构建辅助功能树，等待约 1 秒重试 read_screen/ui_analyze 通常即可读到控件");
+            }
+            if quality == "empty" || quality == "poor" {
+                suggest.push("网页内画布/视频/地图等自绘区域 UIA 读不到：用 capture_screen + ground_on_screenshot 视觉定位后 click_at");
+            }
+            if quality == "rich" {
+                suggest.push("无障碍树可用：优先 ui_analyze 拿可交互元素清单后批量 click_element/type_text");
+            }
+        }
+        "electron" => {
+            if quality == "empty" {
+                suggest.push("Chromium 系应用首次被 UIA 访问才构建辅助功能树：等待约 1 秒重试 read_screen/ui_analyze；仍为空则走 screen_elements 或截图 + ground_on_screenshot 坐标路线");
+            } else if quality == "poor" {
+                suggest.push("树信息有限：ui_analyze 拿到的元素不全时，补 capture_screen + ground_on_screenshot 视觉定位");
+            } else {
+                suggest.push("无障碍树可用：优先 ui_analyze 拿可交互元素清单后批量 click_element/type_text");
+            }
+        }
+        "game" => {
+            suggest.push("游戏/自渲染画面无障碍树不可用：region_ocr 定位文字、board_diff 感知局面变化、macro 批量执行固定操作序列，点击一律 click_at 坐标");
+            if fullscreen {
+                suggest.push("检测到全屏：独占全屏模式可能截屏黑屏，建议把游戏切到无边框窗口模式后再自动化");
+            }
+        }
+        "uwp" => {
+            suggest.push("UWP 应用：无障碍树通常可用，优先语义操作；标题栏/系统壳层控件读不到属正常，内容区定位不到时用 screen_elements 兜底");
+        }
+        "native" => {
+            suggest.push("原生应用树完整：优先 click_element/type_text 语义操作，批量派发前用 ui_analyze 分析结构");
+        }
+        _ => {
+            if quality == "empty" || quality == "poor" {
+                suggest.push("窗口类型与树质量都有限：先 capture_screen 看清界面，再走 ground_on_screenshot / screen_elements 坐标路线最稳");
+            }
+        }
+    }
+    if !minimized && quality == "empty" && app_type != "game" {
+        suggest.push("树为空也可能是窗口被遮挡/未激活：可先 window_focus 聚焦目标窗口再重试");
+    }
+
+    // 控件类型 Top5（帮助模型预判界面构成）
+    let mut top_roles: Vec<(String, usize)> = roles.into_iter().collect();
+    top_roles.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_roles: Value = top_roles
+        .into_iter()
+        .take(5)
+        .map(|(r, n)| json!({ "role": r, "count": n }))
+        .collect();
+
+    Ok(json!({
+        "title": title,
+        "class": class,
+        "process": process,
+        "app_type": app_type,
+        "a11y_quality": quality,
+        "node_count": node_count,
+        "top_roles": top_roles,
+        "fullscreen": fullscreen,
+        "minimized": minimized,
+        "topmost": topmost,
+        "rect": rect.map(|r| json!({
+            "x": r.x as i32, "y": r.y as i32,
+            "w": r.width as i32, "h": r.height as i32
+        })),
+        "suggest": suggest,
+    }))
 }
 
 // ───────────────────── 窗口控制（防遮挡） ─────────────────────
