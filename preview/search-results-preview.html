@@ -1,0 +1,58 @@
+<!DOCTYPE html><html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0b0e14;color:#e5e7eb;
+padding:0 0 30px;margin:0;min-height:100vh}
+.hero{padding:26px 24px 18px;background:linear-gradient(135deg,#101827 0%,#0b0e14 60%);
+border-bottom:1px solid #1c2434;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-70px;right:-40px;width:220px;height:220px;
+border-radius:50%;background:radial-gradient(circle,rgba(56,189,248,.14),transparent 70%);pointer-events:none}
+.q{font-size:19px;font-weight:700;color:#f8fafc;display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.q .icon{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+font-size:16px;background:linear-gradient(135deg,#0ea5e9,#6366f1);box-shadow:0 4px 14px rgba(14,165,233,.35)}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:11px;color:#94a3b8;background:#141a26;border:1px solid #232c3b;
+border-radius:999px;padding:4px 11px}
+.chip.acc{color:#7dd3fc;border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.08)}
+.list{max-width:780px;margin:18px auto 0;padding:0 20px}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.item{display:flex;gap:13px;align-items:flex-start;text-decoration:none;color:inherit;
+background:linear-gradient(180deg,#141926,#111622);border:1px solid #1e2636;border-radius:14px;
+padding:15px 17px;margin-bottom:11px;animation:rise .4s ease both;transition:border-color .18s,
+transform .18s,box-shadow .18s}
+.item:hover{border-color:rgba(56,189,248,.55);transform:translateY(-2px);
+box-shadow:0 8px 24px rgba(2,8,20,.5),0 0 0 1px rgba(56,189,248,.12)}
+.num{flex-shrink:0;width:20px;font-size:11px;color:#475569;font-weight:600;padding-top:5px;
+font-variant-numeric:tabular-nums}
+.ava{flex-shrink:0;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;
+justify-content:center;font-size:16px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3)}
+.body{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.t{font-size:14.5px;font-weight:600;color:#93c5fd;line-height:1.45;
+transition:color .15s;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+-webkit-box-orient:vertical}
+.item:hover .t{color:#bfdbfe}
+.meta{display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.s{font-size:12.5px;color:#9ca3af;line-height:1.65;overflow:hidden;display:-webkit-box;
+-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.empty{max-width:780px;margin:30px auto;padding:46px 20px;text-align:center;
+background:#10141f;border:1px dashed #26304a;border-radius:16px}
+.empty .ico{font-size:38px;margin-bottom:12px}
+.empty .msg{font-size:15px;color:#cbd5e1;font-weight:600;margin-bottom:6px}
+.empty .hint{font-size:12.5px;color:#64748b}
+.foot{max-width:780px;margin:22px auto 0;padding:0 20px;text-align:center;
+font-size:11px;color:#475569}
+</style></head><body>
+<div class='hero'><div class='q'><span class='icon'>🔍</span>2026 新能源汽车销量排行</div>
+<div class='chips'><span class='chip acc'>🌐 Bing</span><span class='chip'>10 条结果</span>
+<span class='chip'>🕒 18:12</span></div></div>
+<div class='list'>
+<a class='item' style='animation-delay:0ms' href='#'><span class='num'>1</span><span class='ava' style='background:linear-gradient(135deg,#6366f1,#8b5cf6)'>C</span><span class='body'><span class='t'>中汽协发布：2026 年新能源汽车上半年销量排行榜（完整版）</span><span class='meta'><span class='dot' style='background:#6366f1'></span>cav.org.cn</span><span class='s'>中国汽车工业协会最新统计数据显示，2026 年上半年新能源汽车销量同比增长 32.7%，比亚迪、吉利、特斯拉分列前三……</span></span></a>
+<a class='item' style='animation-delay:45ms' href='#'><span class='num'>2</span><span class='ava' style='background:linear-gradient(135deg,#0ea5e9,#22d3ee)'>Y</span><span class='body'><span class='t'>乘联会：6 月新能源乘用车零售 98.4 万辆，渗透率首次突破 60%</span><span class='meta'><span class='dot' style='background:#0ea5e9'></span>cpcaauto.com</span><span class='s'>乘用车市场信息联席会公布 6 月数据，新能源乘用车零售渗透率攀升至 60.2%，创历史新高……</span></span></a>
+<a class='item' style='animation-delay:90ms' href='#'><span class='num'>3</span><span class='ava' style='background:linear-gradient(135deg,#10b981,#34d399)'>Z</span><span class='body'><span class='t'>2026 上半年各大车企新能源车型销量对比：插混与纯电的分化</span><span class='meta'><span class='dot' style='background:#10b981'></span>zhihu.com</span><span class='s'>从插混爆发到纯电回暖，各家车企的产品策略差异正在销量榜上拉开差距。本文用数据拆解……</span></span></a>
+<a class='item' style='animation-delay:135ms' href='#'><span class='num'>4</span><span class='ava' style='background:linear-gradient(135deg,#f59e0b,#fbbf24)'>A</span><span class='body'><span class='t'>Autohome 排行榜：2026 新能源车型关注度 Top 20</span><span class='meta'><span class='dot' style='background:#f59e0b'></span>autohome.com.cn</span><span class='s'>汽车之家关注排行榜显示，紧凑型 SUV 仍然是新能源市场最受关注的细分品类……</span></span></a>
+<a class='item' style='animation-delay:180ms' href='#'><span class='num'>5</span><span class='ava' style='background:linear-gradient(135deg,#ef4444,#f97316)'>3</span><span class='body'><span class='t'>36 氪深度：新势力洗牌进行时，谁在 2026 掉队了？</span><span class='meta'><span class='dot' style='background:#ef4444'></span>36kr.com</span><span class='s'>头部集中度持续提升，二线新势力的生存空间被进一步挤压。销量数据背后的三个信号……</span></span></a>
+</div>
+<div class='foot'>白泽多引擎聚合搜索 · 点击卡片在新窗口打开来源</div>
+</body></html>

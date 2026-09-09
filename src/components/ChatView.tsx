@@ -628,13 +628,40 @@ export default function ChatView() {
     window.addEventListener("baize:tts-state", onTts);
     return () => window.removeEventListener("baize:tts-state", onTts);
   }, []);
-  const forceOpen = busy || comparing || !!streaming || listening || ttsSpeaking;
+  // 输入保持：正在输入（输入框聚焦或有未发送文字）时不允许收起——
+  // 光标在输入框里/打字途中哪怕鼠标移出，会话区也保持展开
+  const [inputFocused, setInputFocused] = useState(false);
+  const inputActive = inputFocused || input.trim().length > 0;
+  const forceOpen =
+    busy || comparing || !!streaming || listening || ttsSpeaking || inputActive;
   const [holdOpen, setHoldOpen] = useState(false); // 阅读保持期
   const chatExpanded = chatOpen || forceOpen || holdOpen;
   const hoverRef = useRef(false);
   const forceOpenRef = useRef(forceOpen);
   const holdRef = useRef(false);
   const relaxTimerRef = useRef<number | null>(null);
+
+  // 任务完成流光：执行/对比从「进行中」转「空闲」的下降沿触发，
+  // 整个聊天框边框闪一圈流光，按「通知与音效」页配置的时长后淡出。
+  // 时长存 localStorage（baize_glow_ms），0 = 关闭流光
+  const [glowPhase, setGlowPhase] = useState<"on" | "fade" | null>(null);
+  const prevRunRef = useRef(false);
+  useEffect(() => {
+    const running = busy || comparing;
+    const was = prevRunRef.current;
+    prevRunRef.current = running;
+    if (!was || running) return;
+    const cfg = Number(localStorage.getItem("baize_glow_ms") ?? "4000");
+    if (!Number.isFinite(cfg) || cfg <= 0) return;
+    setGlowPhase("on");
+    const fadeAt = Math.max(500, cfg - 700);
+    const t1 = window.setTimeout(() => setGlowPhase("fade"), fadeAt);
+    const t2 = window.setTimeout(() => setGlowPhase(null), fadeAt + 700);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [busy, comparing]);
 
   useEffect(() => {
     forceOpenRef.current = forceOpen;
@@ -887,6 +914,8 @@ export default function ChatView() {
         if (!forceOpenRef.current && holdRef.current) exitHold();
       }}
     >
+      {/* 任务完成流光边框（纯装饰层，不挡交互） */}
+      {glowPhase && <div className={`chat-glow ${glowPhase}`} aria-hidden />}
       {/* 未贴底时的「回到底部」悬浮按钮 */}
       {!stick && (
         <button
@@ -1128,8 +1157,12 @@ export default function ChatView() {
           <textarea
             ref={textareaRef}
             value={input}
-            onFocus={() => setChatOpen(true)}
+            onFocus={() => {
+              setInputFocused(true);
+              setChatOpen(true);
+            }}
             onBlur={() => {
+              setInputFocused(false);
               // 焦点离开输入框且鼠标也不在会话区：阅读保持期内直接收起
               if (!forceOpenRef.current && holdRef.current && !hoverRef.current) exitHold();
             }}

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+         background: radial-gradient(60% 60% at 50% 40%, #101827, #090c12); font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  .stage { display:flex; gap:40px; flex-wrap:wrap; justify-content:center; padding:30px; }
+  .demo { position:relative; width:420px; border-radius:18px; overflow:hidden;
+          border:1px solid #26304a; background:rgba(15,23,42,.72); backdrop-filter:blur(10px);
+          box-shadow:0 18px 48px rgba(0,0,0,.35); padding:16px 18px; color:#e5e7eb; }
+  h3 { margin:0 0 10px; font-size:14px; color:#94a3b8; font-weight:600; }
+  .bubble { background:#141926; border:1px solid #1e2636; border-radius:12px; padding:10px 14px;
+            font-size:13px; line-height:1.6; margin-bottom:8px; }
+  .bubble.user { background:rgba(56,189,248,.10); border-color:rgba(56,189,248,.25); }
+  .inputbar { display:flex; gap:8px; margin-top:6px; }
+  .inputbar .fake-input { flex:1; background:#0d1220; border:1px solid #1e2636; border-radius:10px;
+            padding:9px 12px; font-size:12.5px; color:#64748b; }
+  .inputbar .send { width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center;
+            background:linear-gradient(135deg,#0ea5e9,#6366f1); color:#fff; font-size:14px; }
+  /* —— 流光边框（与 index.css 中 .chat-glow 同源实现） —— */
+  @property --glow-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  .chat-glow { position:absolute; inset:0; z-index:30; border-radius:inherit; pointer-events:none; opacity:1; }
+  .chat-glow.fade { animation: glow-dim .7s ease forwards; }
+  .chat-glow::before { content:""; position:absolute; inset:0; border-radius:inherit; padding:2px;
+    background: conic-gradient(from var(--glow-angle),
+      transparent 0deg, transparent 290deg,
+      rgba(56,189,248,.85) 325deg, rgba(167,139,250,.95) 348deg, rgba(125,211,252,.9) 360deg);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    animation: glow-spin 1.5s linear infinite; }
+  .chat-glow::after { content:""; position:absolute; inset:-1px; border-radius:inherit;
+    box-shadow: 0 0 22px rgba(56,189,248,.22), inset 0 0 14px rgba(56,189,248,.07);
+    animation: glow-breathe 1.5s ease-in-out infinite; }
+  @keyframes glow-spin { to { --glow-angle: 360deg; } }
+  @keyframes glow-dim { from { opacity:1; } to { opacity:0; } }
+  @keyframes glow-breathe { 0%,100% { opacity:.55; } 50% { opacity:1; } }
+  .note { width:100%; text-align:center; color:#64748b; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="demo">
+    <h3>任务完成 · 流光进行中</h3>
+    <div class="chat-glow"></div>
+    <div class="bubble user">帮我整理今天的热搜并写个摘要</div>
+    <div class="bubble">✓ 已完成：抓取热搜 50 条，摘要已写入文档窗口。热点集中在…</div>
+    <div class="inputbar"><div class="fake-input">输入消息…</div><div class="send">↑</div></div>
+  </div>
+  <div class="demo">
+    <h3>淡出结束 · 恢复常态</h3>
+    <div class="bubble user">帮我整理今天的热搜并写个摘要</div>
+    <div class="bubble">✓ 已完成：抓取热搜 50 条，摘要已写入文档窗口。热点集中在…</div>
+    <div class="inputbar"><div class="fake-input">输入消息…</div><div class="send">↑</div></div>
+  </div>
+  <div class="note">流光时长在 设置 → 通知与音效 → 界面效果 中可选 2s / 3s / 4s / 6s / 10s / 关闭</div>
+</div>
+</body>
+</html>

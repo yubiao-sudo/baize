@@ -1254,6 +1254,93 @@ select option:checked {
   padding-bottom: 0;
 }
 
+/* ============ 任务完成流光边框 ============ */
+/* 任务执行完成的下沿信号：一圈青-紫流光沿边框旋转，按设置时长后整体淡出。
+   实现层是独立 div（.chat 的两个伪元素已被背景装饰占用）：
+   conic-gradient 旋转角度走 @property 注册变量（WebView2/Chromium 支持），
+   配合 mask 环形挖空只留 2px 边缘光带。 */
+@property --glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.chat-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 1;
+}
+.chat-glow.fade {
+  animation: glow-dim 0.7s ease forwards;
+}
+.chat-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0deg,
+    transparent 290deg,
+    rgba(56, 189, 248, 0.85) 325deg,
+    rgba(167, 139, 250, 0.95) 348deg,
+    rgba(125, 211, 252, 0.9) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: glow-spin 1.5s linear infinite;
+}
+/* 外圈柔光：与旋转光带同节律呼吸 */
+.chat-glow::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow:
+    0 0 22px rgba(56, 189, 248, 0.22),
+    inset 0 0 14px rgba(56, 189, 248, 0.07);
+  animation: glow-breathe 1.5s ease-in-out infinite;
+}
+@keyframes glow-spin {
+  to {
+    --glow-angle: 360deg;
+  }
+}
+@keyframes glow-dim {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes glow-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 浅色主题下压暗光带，避免刺眼 */
+[data-theme="light-glass"] .chat-glow::before {
+  background: conic-gradient(
+    from var(--glow-angle),
+    transparent 0deg,
+    transparent 290deg,
+    rgba(2, 132, 199, 0.8) 325deg,
+    rgba(124, 58, 237, 0.9) 348deg,
+    rgba(2, 132, 199, 0.85) 360deg
+  );
+}
+
 /* ============ 银河背景：canvas 粒子旋涡星系（纯观赏，无数据） ============ */
 .galaxy-bg {
   position: absolute;

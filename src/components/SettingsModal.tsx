@@ -308,6 +308,16 @@ export default function SettingsModal({
   const [sfxVol, setSfxVol] = useState(getSfxVolume());
   const [notifyStyle, setNotifyStyleState] = useState<NotifyStyle>(getNotifyStyle());
 
+  // 任务完成流光：整个聊天框边框的流光展示时长（ms），0 = 关闭；存 localStorage
+  const [glowMs, setGlowMs] = useState<number>(() => {
+    const v = Number(localStorage.getItem("baize_glow_ms") ?? "4000");
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  });
+  const pickGlowMs = (ms: number) => {
+    setGlowMs(ms);
+    localStorage.setItem("baize_glow_ms", String(ms));
+  };
+
   const toggleSfx = (on: boolean) => {
     setSfxOn(on);
     setSfxEnabled(on);
@@ -2039,6 +2049,43 @@ export default function SettingsModal({
                   </div>
                 </>
               )}
+            </section>
+
+            {/* ============ 界面效果 ============ */}
+            <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+              <h4 style={{ margin: "4px 0 8px", color: "#38bdf8" }}>界面效果</h4>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>任务完成流光（聊天框边框流光提示）</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(
+                    [
+                      { ms: 0, label: "关闭" },
+                      { ms: 2000, label: "2 秒" },
+                      { ms: 3000, label: "3 秒" },
+                      { ms: 4000, label: "4 秒" },
+                      { ms: 6000, label: "6 秒" },
+                      { ms: 10000, label: "10 秒" },
+                    ] as { ms: number; label: string }[]
+                  ).map(({ ms, label }) => (
+                    <button
+                      key={ms}
+                      className="acui-btn"
+                      style={{
+                        padding: "6px 14px",
+                        borderColor: glowMs === ms ? "var(--accent)" : undefined,
+                        color: glowMs === ms ? "#fff" : undefined,
+                        background: glowMs === ms ? "var(--accent-soft)" : undefined,
+                      }}
+                      onClick={() => pickGlowMs(ms)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                  任务执行完成时，聊天框边框会闪一圈流光提示；时长到达后自动淡出消失。
+                </div>
+              </div>
             </section>
             </div>
 

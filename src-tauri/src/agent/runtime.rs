@@ -377,116 +377,8 @@ impl<'a> AgentLoop<'a> {
 
     /// 经验复盘（反思机制落地）：任务执行中出现过工具失败并最终完成时，
     /// 让模型把「遇到的问题→解决办法」提炼成一条可复用经验，写入记忆库（kind=lesson）。
-    /// 相似经验会被 smart_remember 自动强化而非重复堆积；下次执行同类任务时
-    /// recall_lessons 召回注入提示词，直接采用已验证的解决办法。
-    async fn reflect_lessons(&self, user_task: &str, failures: &[String]) {
-        let failures_text = failures
-            .iter()
-            .take(4)
-            .map(|s| format!("- {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let prompt = format!(
-            "执行任务时遇到了以下工具失败，但最终完成了任务。请把「遇到的问题→最终怎么解决的」\
-             提炼成一条可复用的经验教训：一句话、120 字以内、以「遇到…时：…」句式开头。\
-             只输出经验本身，不要任何解释或前后缀。\n\n用户任务：{user_task}\n\n遇到的失败：\n{failures_text}"
-        );
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-        // 复盘最多等 12 秒：超时/失败静默跳过，绝不阻塞任务收尾
-        let learned = match tokio::time::timeout(
-            Duration::from_secs(12),
-            self.state.model.chat(&msgs, &[]),
-        )
-        .await
-        {
-            Ok(Ok(r)) => r.content.unwrap_or_default(),
-            _ => String::new(),
-        };
-        let lesson = learned
-            .trim()
-            .trim_matches(|c| matches!(c, '"' | '「' | '」' | '“' | '”' | '。'))
-            .trim()
-            .to_string();
-        let len = lesson.chars().count();
-        if !(10..=300).contains(&len) {
-            return; // 模型没给出有效经验，静默放弃
-        }
-        match self.state.store.smart_remember(&lesson, "lesson") {
-            Ok(crate::memory::RememberOutcome::Created) => {
-                self.thought("reflect", "经验沉淀", &format!("{lesson}（已写入经验库）"));
-            }
-            Ok(crate::memory::RememberOutcome::Reinforced) => {
-                self.thought("reflect", "经验强化", &format!("{lesson}（相似经验已存在，权重提升）"));
-            }
-            _ => {}
-        }
-    }
-
-    /// 成功操作配方沉淀：本轮 GUI 操作 ≥3 步且任务顺利完成时，把成功操作链
-    /// 提炼成一条「应用/场景：步骤链」配方写入记忆库（kind=recipe）。
-    /// 下次操作同类应用时召回注入提示词——「记住上次怎么成功的」，规划好就一路跑完。
-    async fn reflect_recipe(&self, user_task: &str) {
-        let ops = self.gui_ops.lock().unwrap().clone();
-        if ops.len() < 3 {
-            return; // 操作太少没有沉淀价值
-        }
-        let target = self
-            .gui_target
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or_else(|| "通用".to_string());
-        let ops_text = ops
-            .iter()
-            .take(14)
-            .map(|s| format!("- {s}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let prompt = format!(
-            "下面是一次成功的 GUI 自动化操作链。请提炼成一条「成功操作配方」：\
-             格式为「应用/场景：步骤1 → 步骤2 → …」，150 字以内，\
-             只保留可复现的关键步骤与坐标/控件技巧，省略截图等观察类调用。只输出配方本身。\n\n\
-             用户任务：{user_task}\n目标应用：{target}\n\n操作链：\n{ops_text}"
-        );
-        let msgs = vec![ChatMessage {
-            role: "user".into(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-        let learned = match tokio::time::timeout(
-            Duration::from_secs(12),
-            self.state.model.chat(&msgs, &[]),
-        )
-        .await
-        {
-            Ok(Ok(r)) => r.content.unwrap_or_default(),
-            _ => String::new(),
-        };
-        let recipe = learned
-            .trim()
-            .trim_matches(|c| matches!(c, '"' | '「' | '」' | '“' | '”'))
-            .trim()
-            .to_string();
-        let len = recipe.chars().count();
-        if !(15..=300).contains(&len) {
-            return;
-        }
-        match self.state.store.smart_remember(&recipe, "recipe") {
-            Ok(crate::memory::RememberOutcome::Created) => {
-                self.thought("reflect", "配方沉淀", &format!("{recipe}（已写入配方库）"));
-            }
-            Ok(crate::memory::RememberOutcome::Reinforced) => {
-                self.thought("reflect", "配方强化", &format!("{recipe}（相似配方已存在，权重提升）"));
-            }
-            _ => {}
-        }
-    }
+    // （经验复盘 / 配方沉淀 / 任务记忆已挪到 background_reflect 后台任务，
+    //   不再阻塞「完成」状态切换——见 run() 尾部的 tokio::spawn）
 
     fn phase(&self, p: AgentPhase) {
         let (label, detail) = match p {
@@ -565,6 +457,27 @@ impl<'a> AgentLoop<'a> {
 
         // 分级注入：CORE 恒定 + 按任务关键词命中的场景段（PROMPT_*/prompt_segments 定义在文件顶部）
         let mut system_content = String::from(PROMPT_CORE);
+
+        // 当前时间感知：模型无内置时钟，「今天/今年/最新」类问题必须以此为准，禁止臆测年份
+        {
+            use chrono::Datelike;
+            let now = chrono::Local::now();
+            let weekday = [
+                "周一", "周二", "周三", "周四", "周五", "周六", "周日",
+            ][now.weekday().num_days_from_monday() as usize];
+            system_content.push_str(&format!(
+                "\n\n【当前时间】{}年{}月{}日 {} {}:{}（本地时区 {}）\n\
+                 （涉及「今天/现在/今年/最新/最近」等时间表述时一律以此为准；\
+                 搜索或回答时效性问题时先对照此时间，不要凭训练数据猜测日期。）",
+                now.year(),
+                now.month(),
+                now.day(),
+                weekday,
+                now.format("%H"),
+                now.format("%M"),
+                now.format("%z"),
+            ));
+        }
         for seg in prompt_segments(message) {
             system_content.push_str(seg);
         }
@@ -741,36 +654,37 @@ impl<'a> AgentLoop<'a> {
                 Err(e) => return Err(e),
             };
 
-            // 模型只回文本 → 反思并结束（content 已流式推送到前端）
+            // 模型只回文本 → 立即切换「完成」状态，收尾沉淀转后台异步执行
+            // （经验/配方/任务记忆的模型调用不再阻塞状态切换，前端即时看到「完成」）
             if resp.tool_calls.is_none() {
-                self.phase(AgentPhase::Reflecting);
-                // 经验复盘（反思机制落地）：本轮发生过工具失败且最终完成 →
-                // 提炼「遇到的问题→解决办法」写入经验库，下次同类任务自动召回复用
-                if !tool_failures.is_empty() {
-                    self.reflect_lessons(message, &tool_failures).await;
-                }
-                // 成功操作配方沉淀：GUI 操作链 ≥3 步的顺利任务 → 提炼「怎么成功的」
-                // 写入配方库，下次操作同类应用直接照用（规划好就一路跑完）
-                self.reflect_recipe(message).await;
-                // 同类任务结果记忆：真正执行过的任务存「任务→结果要点」，
-                // 下次相似指令直接参考上次结果——高频/重复任务越用越快
-                if used_tools {
-                    let task_brief: String = message.chars().take(60).collect();
-                    let digest: String = resp
-                        .content
-                        .clone()
-                        .unwrap_or_default()
-                        .chars()
-                        .take(180)
-                        .collect();
-                    if message.chars().count() >= 6 && !digest.is_empty() {
-                        let _ = self.state.store.smart_remember(
-                            &format!("任务「{task_brief}」的结果要点：{digest}"),
-                            "task",
-                        );
-                    }
-                }
                 self.phase(AgentPhase::Done);
+                let task_digest: String = resp
+                    .content
+                    .clone()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(180)
+                    .collect();
+                let app = self.app.clone();
+                let model = self.state.model.clone();
+                let store = self.state.store.clone();
+                let thought_log = self.state.thought_log.clone();
+                let message = message.to_string();
+                let failures = tool_failures.clone();
+                let ops = self.gui_ops.lock().unwrap().clone();
+                let gui_target = self.gui_target.lock().unwrap().clone();
+                tokio::spawn(background_reflect(
+                    app,
+                    model,
+                    store,
+                    thought_log,
+                    message,
+                    failures,
+                    ops,
+                    gui_target,
+                    used_tools,
+                    task_digest,
+                ));
                 return Ok(append_chat_cards(finalize(resp.content)));
             }
 
@@ -1683,6 +1597,140 @@ async fn wait_cancel(state: &AppState) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+// ───── 后台反思：收尾沉淀不再阻塞「完成」状态 ─────
+// 此前经验复盘/配方沉淀在 Done 之前同步执行（最多 2×12s 模型调用），
+// 用户早已看到完整回答，状态却卡在「反思」迟迟不变——是「状态切换慢」的主根因。
+// 现在这些沉淀由 run() 尾部 tokio::spawn 到后台执行，执行流事件照常推送。
+
+/// 后台任务的思考流事件：emit + 写入本轮执行流日志
+fn bg_thought(app: &AppHandle, log: &Mutex<Vec<Value>>, kind: &str, label: &str, detail: &str) {
+    let _ = app.emit("thought", json!({ "kind": kind, "label": label, "detail": detail }));
+    if let Ok(mut g) = log.lock() {
+        g.push(json!({
+            "ts": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            "kind": kind,
+            "label": label,
+            "detail": detail,
+        }));
+    }
+}
+
+/// 任务收尾的异步沉淀：经验复盘 + 配方沉淀 + 任务记忆（全部静默降级，绝不 panic）
+async fn background_reflect(
+    app: AppHandle,
+    model: std::sync::Arc<ModelRouter>,
+    store: std::sync::Arc<crate::memory::MemoryStore>,
+    thought_log: std::sync::Arc<Mutex<Vec<Value>>>,
+    user_task: String,
+    failures: Vec<String>,
+    ops: Vec<String>,
+    gui_target: Option<String>,
+    used_tools: bool,
+    result_digest: String,
+) {
+    // 1) 经验复盘：本轮发生过工具失败且最终完成 → 提炼「问题→解法」写入经验库
+    if !failures.is_empty() {
+        let failures_text = failures
+            .iter()
+            .take(4)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            "执行任务时遇到了以下工具失败，但最终完成了任务。请把「遇到的问题→最终怎么解决的」\
+             提炼成一条可复用的经验教训：一句话、120 字以内、以「遇到…时：…」句式开头。\
+             只输出经验本身，不要任何解释或前后缀。\n\n用户任务：{user_task}\n\n遇到的失败：\n{failures_text}"
+        );
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: prompt,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let learned = match tokio::time::timeout(Duration::from_secs(12), model.chat(&msgs, &[]))
+            .await
+        {
+            Ok(Ok(r)) => r.content.unwrap_or_default(),
+            _ => String::new(),
+        };
+        let lesson = learned
+            .trim()
+            .trim_matches(|c| matches!(c, '"' | '「' | '」' | '“' | '”' | '。'))
+            .trim()
+            .to_string();
+        let len = lesson.chars().count();
+        if (10..=300).contains(&len) {
+            match store.smart_remember(&lesson, "lesson") {
+                Ok(crate::memory::RememberOutcome::Created) => {
+                    bg_thought(&app, &thought_log, "reflect", "经验沉淀", &format!("{lesson}（已写入经验库）"));
+                }
+                Ok(crate::memory::RememberOutcome::Reinforced) => {
+                    bg_thought(&app, &thought_log, "reflect", "经验强化", &format!("{lesson}（相似经验已存在，权重提升）"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 2) 成功操作配方沉淀：GUI 操作链 ≥3 步的顺利任务 → 提炼「怎么成功的」
+    if ops.len() >= 3 {
+        let target = gui_target.unwrap_or_else(|| "通用".to_string());
+        let ops_text = ops
+            .iter()
+            .take(14)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = format!(
+            "下面是一次成功的 GUI 自动化操作链。请提炼成一条「成功操作配方」：\
+             格式为「应用/场景：步骤1 → 步骤2 → …」，150 字以内，\
+             只保留可复现的关键步骤与坐标/控件技巧，省略截图等观察类调用。只输出配方本身。\n\n\
+             用户任务：{user_task}\n目标应用：{target}\n\n操作链：\n{ops_text}"
+        );
+        let msgs = vec![ChatMessage {
+            role: "user".into(),
+            content: prompt,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let learned = match tokio::time::timeout(Duration::from_secs(12), model.chat(&msgs, &[]))
+            .await
+        {
+            Ok(Ok(r)) => r.content.unwrap_or_default(),
+            _ => String::new(),
+        };
+        let recipe = learned
+            .trim()
+            .trim_matches(|c| matches!(c, '"' | '「' | '」' | '“' | '”'))
+            .trim()
+            .to_string();
+        let len = recipe.chars().count();
+        if (15..=300).contains(&len) {
+            match store.smart_remember(&recipe, "recipe") {
+                Ok(crate::memory::RememberOutcome::Created) => {
+                    bg_thought(&app, &thought_log, "reflect", "配方沉淀", &format!("{recipe}（已写入配方库）"));
+                }
+                Ok(crate::memory::RememberOutcome::Reinforced) => {
+                    bg_thought(&app, &thought_log, "reflect", "配方强化", &format!("{recipe}（相似配方已存在，权重提升）"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 3) 同类任务结果记忆：真正执行过的任务存「任务→结果要点」
+    if used_tools && user_task.chars().count() >= 6 && !result_digest.is_empty() {
+        let task_brief: String = user_task.chars().take(60).collect();
+        let _ = store.smart_remember(
+            &format!("任务「{task_brief}」的结果要点：{result_digest}"),
+            "task",
+        );
     }
 }
 

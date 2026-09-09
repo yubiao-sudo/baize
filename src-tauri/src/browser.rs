@@ -202,35 +202,137 @@ fn parse_duckduckgo(html: &str) -> Vec<SearchResult> {
         .collect()
 }
 
-/// 生成干净的深色主题结果列表 HTML（链接 target=_blank 用系统浏览器打开）
-fn build_results_html(query: &str, results: &[SearchResult]) -> String {
+/// 域名首字母头像的渐变色板（按域名哈希取色，无需联网取 favicon）
+const AVATAR_GRADIENTS: &[(&str, &str)] = &[
+    ("#6366f1", "#8b5cf6"),
+    ("#0ea5e9", "#22d3ee"),
+    ("#10b981", "#34d399"),
+    ("#f59e0b", "#fbbf24"),
+    ("#ef4444", "#f97316"),
+    ("#ec4899", "#f472b6"),
+    ("#8b5cf6", "#a78bfa"),
+    ("#14b8a6", "#2dd4bf"),
+    ("#f97316", "#fb923c"),
+    ("#22c55e", "#84cc16"),
+];
+
+/// 从 URL 提取展示域名（去协议/路径/www.）
+fn display_domain(url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url);
+    host.strip_prefix("www.").unwrap_or(host).to_string()
+}
+
+/// 生成精美的深色主题搜索结果页：
+/// 渐变头部 + 引擎/条数/时间徽章 + 卡片式结果列表（域名头像、交错入场动画、悬停辉光）
+fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> String {
     let mut items = String::new();
     if results.is_empty() {
         items.push_str(
-            "<div class='empty'>未获取到搜索结果（可能被搜索服务限流）。请稍后重试或换个关键词。</div>",
+            "<div class='empty'><div class='ico'>🕸️</div><div class='msg'>未获取到搜索结果</div>\
+             <div class='hint'>可能被搜索服务限流，请稍后重试或换个关键词</div></div>",
         );
     }
-    for r in results {
+    for (i, r) in results.iter().enumerate() {
+        let domain = display_domain(&r.url);
+        let first_char = domain
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase())
+            .unwrap_or('?');
+        let hash: usize = domain.bytes().map(|b| b as usize).sum();
+        let (c1, c2) = AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.len()];
+        let summary_html = if r.summary.is_empty() {
+            String::new()
+        } else {
+            format!("<div class='s'>{}</div>", escape_html(&r.summary))
+        };
         items.push_str(&format!(
-            "<a class='item' href='{}' target='_blank' rel='noopener'><div class='t'>{}</div><div class='u'>{}</div><div class='s'>{}</div></a>",
+            "<a class='item' style='animation-delay:{}ms' href='{}' target='_blank' rel='noopener'>\
+             <span class='num'>{}</span>\
+             <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>{}</span>\
+             <span class='body'><span class='t'>{}</span>\
+             <span class='meta'><span class='dot' style='background:{c1}'></span>{}</span>\
+             {}</span></a>",
+            i * 45,
             escape_html(&r.url),
+            i + 1,
+            first_char,
             escape_html(&r.title),
-            escape_html(&r.url),
-            escape_html(&r.summary),
+            escape_html(&domain),
+            summary_html,
         ));
     }
+
+    let engine_badge = if engine.is_empty() { "多引擎" } else { engine };
+    let now = chrono::Local::now().format("%H:%M").to_string();
+    let count_label = if results.is_empty() {
+        "0 条结果".to_string()
+    } else {
+        format!("{} 条结果", results.len())
+    };
     format!(
-        "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>\
-         <style>body{{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#111;color:#e5e7eb;padding:18px;margin:0}}\
-         h1{{font-size:17px;color:#fff;margin:0 0 14px;font-weight:600}}\
-         .item{{display:block;text-decoration:none;color:inherit;background:#151922;border:1px solid #232c3b;border-radius:10px;padding:12px 14px;margin-bottom:10px}}\
-         .item:hover{{border-color:#2563eb}}\
-         .t{{font-size:14px;color:#60a5fa;margin-bottom:3px;font-weight:600}}\
-         .u{{font-size:11px;color:#6b7280;margin-bottom:6px;word-break:break-all}}\
-         .s{{font-size:12.5px;color:#9ca3af;line-height:1.55}}\
-         .empty{{color:#6b7280;font-size:13px}}</style></head>\
-         <body><h1>搜索：{}</h1>{}</body></html>",
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>\
+         <meta name='viewport' content='width=device-width,initial-scale=1'>\
+         <style>\
+         *{{box-sizing:border-box}}\
+         body{{font-family:system-ui,'Microsoft YaHei',sans-serif;background:#0b0e14;color:#e5e7eb;\
+         padding:0 0 30px;margin:0;min-height:100vh}}\
+         .hero{{padding:26px 24px 18px;background:linear-gradient(135deg,#101827 0%,#0b0e14 60%);\
+         border-bottom:1px solid #1c2434;position:relative;overflow:hidden}}\
+         .hero::before{{content:'';position:absolute;top:-70px;right:-40px;width:220px;height:220px;\
+         border-radius:50%;background:radial-gradient(circle,rgba(56,189,248,.14),transparent 70%);pointer-events:none}}\
+         .q{{font-size:19px;font-weight:700;color:#f8fafc;display:flex;align-items:center;gap:10px;margin-bottom:12px}}\
+         .q .icon{{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;\
+         font-size:16px;background:linear-gradient(135deg,#0ea5e9,#6366f1);box-shadow:0 4px 14px rgba(14,165,233,.35)}}\
+         .chips{{display:flex;gap:8px;flex-wrap:wrap}}\
+         .chip{{font-size:11px;color:#94a3b8;background:#141a26;border:1px solid #232c3b;\
+         border-radius:999px;padding:4px 11px}}\
+         .chip.acc{{color:#7dd3fc;border-color:rgba(56,189,248,.35);background:rgba(56,189,248,.08)}}\
+         .list{{max-width:780px;margin:18px auto 0;padding:0 20px}}\
+         @keyframes rise{{from{{opacity:0;transform:translateY(10px)}}to{{opacity:1;transform:none}}}}\
+         .item{{display:flex;gap:13px;align-items:flex-start;text-decoration:none;color:inherit;\
+         background:linear-gradient(180deg,#141926,#111622);border:1px solid #1e2636;border-radius:14px;\
+         padding:15px 17px;margin-bottom:11px;animation:rise .4s ease both;transition:border-color .18s,\
+         transform .18s,box-shadow .18s}}\
+         .item:hover{{border-color:rgba(56,189,248,.55);transform:translateY(-2px);\
+         box-shadow:0 8px 24px rgba(2,8,20,.5),0 0 0 1px rgba(56,189,248,.12)}}\
+         .num{{flex-shrink:0;width:20px;font-size:11px;color:#475569;font-weight:600;padding-top:5px;\
+         font-variant-numeric:tabular-nums}}\
+         .ava{{flex-shrink:0;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;\
+         justify-content:center;font-size:16px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3)}}\
+         .body{{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}}\
+         .t{{font-size:14.5px;font-weight:600;color:#93c5fd;line-height:1.45;\
+         transition:color .15s;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;\
+         -webkit-box-orient:vertical}}\
+         .item:hover .t{{color:#bfdbfe}}\
+         .meta{{display:flex;align-items:center;gap:6px;font-size:11px;color:#64748b}}\
+         .dot{{width:7px;height:7px;border-radius:50%;flex-shrink:0}}\
+         .s{{font-size:12.5px;color:#9ca3af;line-height:1.65;overflow:hidden;display:-webkit-box;\
+         -webkit-line-clamp:3;-webkit-box-orient:vertical}}\
+         .empty{{max-width:780px;margin:30px auto;padding:46px 20px;text-align:center;\
+         background:#10141f;border:1px dashed #26304a;border-radius:16px}}\
+         .empty .ico{{font-size:38px;margin-bottom:12px}}\
+         .empty .msg{{font-size:15px;color:#cbd5e1;font-weight:600;margin-bottom:6px}}\
+         .empty .hint{{font-size:12.5px;color:#64748b}}\
+         .foot{{max-width:780px;margin:22px auto 0;padding:0 20px;text-align:center;\
+         font-size:11px;color:#475569}}\
+         </style></head><body>\
+         <div class='hero'><div class='q'><span class='icon'>🔍</span>{}</div>\
+         <div class='chips'><span class='chip acc'>🌐 {}</span><span class='chip'>{}</span>\
+         <span class='chip'>🕒 {}</span></div></div>\
+         <div class='list'>{}</div>\
+         <div class='foot'>白泽多引擎聚合搜索 · 点击卡片在新窗口打开来源</div>\
+         </body></html>",
         escape_html(query),
+        escape_html(engine_badge),
+        escape_html(&count_label),
+        escape_html(&now),
         items,
     )
 }
@@ -610,7 +712,7 @@ impl Tool for BrowserSearchTool {
 
         // 多引擎搜索：DuckDuckGo → Bing → 百度，失败/空结果自动降级
         let (engine, results, tried) = search_multi(&query);
-        let html = build_results_html(&query, &results);
+        let html = build_results_html(&query, &engine, &results);
 
         {
             let mut s = self.state.lock().unwrap();

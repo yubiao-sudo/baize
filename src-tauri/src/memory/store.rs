@@ -291,6 +291,9 @@ pub struct AuditQueryRow {
 impl MemoryStore {
     pub fn open(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("打开数据库失败: {e}"))?;
+        // 性能：WAL 日志 + NORMAL 同步——执行流/审计/记忆每轮多次写入，
+        // 默认 DELETE 日志模式每次写都 fsync 全库，工具密集时明显拖慢执行节奏
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         conn.execute_batch(SCHEMA)
             .map_err(|e| format!("初始化表结构失败: {e}"))?;
         // 迁移：给旧库补 embedding 列（已存在则忽略）
