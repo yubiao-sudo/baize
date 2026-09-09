@@ -3308,27 +3308,77 @@ select option:checked {
 
 .acui-btn {
   flex: 1;
-  padding: 7px 10px;
-  border-radius: 8px;
+  padding: 7px 12px;
+  border-radius: 9px;
   border: 1px solid var(--border);
-  background: transparent;
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
-  transition: background var(--dur-fast) var(--ease-in-out);
+  letter-spacing: 0.02em;
+  transition:
+    background var(--dur-fast) var(--ease-in-out),
+    border-color var(--dur-fast) var(--ease-in-out),
+    color var(--dur-fast) var(--ease-in-out),
+    box-shadow var(--dur-fast) var(--ease-in-out),
+    transform var(--dur-fast) var(--ease-in-out);
+}
+
+.acui-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.acui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.acui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .acui-btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 72%, #000));
+  border-color: transparent;
   color: #fff;
+  box-shadow: 0 1px 8px rgba(37, 99, 235, 0.28);
+}
+
+.acui-btn.primary:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.12);
+  box-shadow: 0 2px 14px rgba(37, 99, 235, 0.42);
+}
+
+.acui-btn.primary:active:not(:disabled) {
+  filter: brightness(0.96);
+  transform: scale(0.97);
 }
 
 .acui-btn.danger {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: linear-gradient(135deg, var(--danger), color-mix(in srgb, var(--danger) 72%, #000));
+  border-color: transparent;
   color: #fff;
+  box-shadow: 0 1px 8px rgba(220, 38, 38, 0.26);
+}
+
+.acui-btn.danger:hover:not(:disabled) {
+  color: #fff;
+  filter: brightness(1.1);
+  box-shadow: 0 2px 14px rgba(220, 38, 38, 0.4);
+}
+
+/* 用量柱状图：静息轻量不压数据，悬停提亮 */
+.usage-bar {
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease-in-out);
+}
+
+.usage-bar:hover {
+  opacity: 1;
 }
 
 /* ACUI 受控卡片（render_card 工具） */

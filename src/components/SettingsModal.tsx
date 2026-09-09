@@ -2724,27 +2724,36 @@ function UsagePanel() {
   const totalTokens = rows.reduce((s, r) => s + r.prompt_tokens + r.completion_tokens, 0);
 
   return (
-    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border-soft)" }}>
-      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+    <div
+      style={{
+        marginTop: 14,
+        border: "1px solid var(--border-soft)",
+        borderRadius: 10,
+        background: "var(--panel)",
+        padding: "10px 12px 12px",
+      }}
+    >
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 3, background: "var(--accent)", flexShrink: 0 }} />
         Token 用量（近 7 天，费用按常见价格粗略估算，仅供参考）
       </div>
 
-      {/* 按天趋势柱状图（近 14 天，纯 CSS 无依赖） */}
+      {/* 按天趋势柱状图（近 14 天，纯 CSS 无依赖）：静息降透明度不压数据，悬停提亮 */}
       {daily.length > 0 && (
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 64, marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 56, marginBottom: 10 }}>
           {daily.map((d) => {
             const total = d.prompt_tokens + d.completion_tokens;
-            const h = Math.max(3, Math.round((total / maxDay) * 60));
+            const h = Math.max(3, Math.round((total / maxDay) * 52));
             return (
               <div
                 key={d.day}
+                className="usage-bar"
                 title={d.day + "\n输入 " + fmtTokens(d.prompt_tokens) + " · 输出 " + fmtTokens(d.completion_tokens) + " · " + d.calls + " 次调用"}
                 style={{
                   flex: 1,
                   height: h,
-                  background: "linear-gradient(180deg, var(--accent, #6c7bff), var(--accent-dim, #3b4bdb))",
-                  borderRadius: 3,
-                  opacity: 0.85,
+                  background: "linear-gradient(180deg, var(--accent), var(--accent-soft))",
+                  borderRadius: "4px 4px 2px 2px",
                   cursor: "default",
                 }}
               />
@@ -2756,7 +2765,7 @@ function UsagePanel() {
       {/* 按模型汇总 */}
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {rows.map((r) => (
-          <div key={r.provider + r.model} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+          <div key={r.provider + r.model} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, fontVariantNumeric: "tabular-nums" }}>
             <span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
               {r.model}
             </span>
@@ -2770,7 +2779,7 @@ function UsagePanel() {
       </div>
 
       {rows.length > 0 && (
-        <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+        <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--border-soft)", fontVariantNumeric: "tabular-nums" }}>
           合计 {fmtTokens(totalTokens)} tokens ≈ ¥{totalCost.toFixed(2)}（未收录模型按 ¥2/¥8 每百万 token 估算）
         </div>
       )}
