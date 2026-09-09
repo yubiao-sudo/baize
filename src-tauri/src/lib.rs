@@ -35,6 +35,7 @@ mod proactive;
 mod rag;
 mod rag_watch;
 mod read_document;
+mod office_write;
 mod replay;
 mod jobs;
 mod scheduler;
@@ -362,6 +363,9 @@ impl AppState {
         tools.register(Box::new(spreadsheet::CsvWriteTool));
         tools.register(Box::new(spreadsheet::XlsxReadTool));
         tools.register(Box::new(spreadsheet::XlsxWriteTool));
+        tools.register(Box::new(office_write::DocumentWriteTool));
+        tools.register(Box::new(office_write::PptxWriteTool));
+        tools.register(Box::new(office_write::DocumentConvertTool));
         tools.register(Box::new(grep::GrepTool));
         tools.register(Box::new(browser::WebSearchTool));
 
