@@ -1302,11 +1302,26 @@ export default function ChatView() {
             <div className="chat-input-actions">
               {busy ? (
                 <button className="send-btn stop" onClick={stop} title="停止">
-                  ■
+                  <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+                    <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" />
+                  </svg>
                 </button>
               ) : (
                 <button className="send-btn" onClick={onSubmit} title="发送">
-                  ↑
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="17"
+                    height="17"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 19V5" />
+                    <path d="M5.5 11.5 12 5l6.5 6.5" />
+                  </svg>
                 </button>
               )}
             </div>

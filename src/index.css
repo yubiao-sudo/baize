@@ -2219,8 +2219,6 @@ select option:checked {
   border-radius: 50%;
   color: #fff;
   cursor: pointer;
-  font-size: 17px;
-  line-height: 1;
   padding: 0;
   box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35),
     inset 0 0 0 1px rgba(34, 211, 238, 0.28);
@@ -2228,6 +2226,19 @@ select option:checked {
     box-shadow var(--dur-fast) var(--ease-in-out),
     filter var(--dur-fast) var(--ease-in-out);
 }
+
+/* 矢量箭头：描边圆头，光学居中；悬停轻微上浮呼应「发送向上」的方向感 */
+.send-btn svg {
+  display: block;
+  transition: transform var(--dur-fast) var(--ease-in-out);
+}
+.send-btn:hover svg {
+  transform: translateY(-1.5px);
+}
+.send-btn:active svg {
+  transform: translateY(0.5px);
+}
+
 .send-btn:hover {
   transform: translateY(-1px);
   filter: brightness(1.08);
