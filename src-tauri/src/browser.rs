@@ -255,7 +255,12 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
         items.push_str(&format!(
             "<a class='item' style='animation-delay:{}ms' href='{}' target='_blank' rel='noopener'>\
              <span class='num'>{}</span>\
-             <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>{}</span>\
+             <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>\
+             <img alt='' loading='lazy' data-s='0' data-f='https://api.iowen.cn/favicon/{domain}.png' \
+             src='https://{domain}/favicon.ico' \
+             onload=\"this.style.opacity='1'\" \
+             onerror=\"if(this.dataset.s==='0'){{this.dataset.s='1';this.src=this.dataset.f}}else{{this.style.display='none'}}\">\
+             {first_char}</span>\
              <span class='body'><span class='t'>{}</span>\
              <span class='meta'><span class='dot' style='background:{c1}'></span>{}</span>\
              {}</span></a>",
@@ -305,7 +310,10 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
          .num{{flex-shrink:0;width:20px;font-size:11px;color:#475569;font-weight:600;padding-top:5px;\
          font-variant-numeric:tabular-nums}}\
          .ava{{flex-shrink:0;width:36px;height:36px;border-radius:10px;display:flex;align-items:center;\
-         justify-content:center;font-size:16px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3)}}\
+         justify-content:center;font-size:16px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.3);\
+         box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}}\
+         .ava img{{width:22px;height:22px;border-radius:5px;opacity:0;transition:opacity .25s;\
+         filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}}\
          .body{{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}}\
          .t{{font-size:14.5px;font-weight:600;color:#93c5fd;line-height:1.45;\
          transition:color .15s;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;\
