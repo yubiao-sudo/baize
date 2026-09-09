@@ -1626,6 +1626,97 @@ select option:checked {
   filter: brightness(0.85) saturate(1.1);
 }
 
+/* ============ 消息发送涟漪：发出瞬间从输入框扩散流光光环 ============ */
+/* 挂载在 .chat-input 内（position:relative），两层椭圆光环从卡片中心
+   向外扩散淡出，卡片自身同时闪一圈边框微光。配色跟随设置页流光样式。 */
+.chat-input {
+  position: relative;
+}
+.send-ripple {
+  --g1: rgba(56, 189, 248, 0.85);
+  --g2: rgba(167, 139, 250, 0.95);
+  --g3: rgba(125, 211, 252, 0.9);
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  pointer-events: none;
+  /* 卡片边框闪光：一圈微光沿圆角快速掠过淡出 */
+  animation: send-flash 0.7s ease-out forwards;
+}
+/* 双层椭圆光环（::after 延迟 0.16s 错开，形成涟漪层次） */
+.send-ripple::before,
+.send-ripple::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 130%;
+  height: 300%;
+  border-radius: 50%;
+  border: 1.5px solid var(--g2);
+  box-shadow:
+    0 0 14px var(--g1),
+    inset 0 0 10px var(--g1);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.55);
+  animation: send-ripple-run 0.95s cubic-bezier(0.2, 0.5, 0.3, 1) forwards;
+}
+.send-ripple::after {
+  border-color: var(--g3);
+  animation-delay: 0.16s;
+}
+@keyframes send-ripple-run {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.55);
+  }
+  18% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.9);
+  }
+}
+@keyframes send-flash {
+  0% {
+    box-shadow:
+      0 0 0 1px var(--g2),
+      0 0 18px var(--g1);
+  }
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0),
+      0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+/* 配色跟随设置页流光样式 */
+.send-ripple.g-sunset {
+  --g1: rgba(251, 146, 60, 0.9);
+  --g2: rgba(244, 114, 182, 0.95);
+  --g3: rgba(251, 191, 36, 0.9);
+}
+.send-ripple.g-emerald {
+  --g1: rgba(52, 211, 153, 0.9);
+  --g2: rgba(34, 211, 238, 0.95);
+  --g3: rgba(167, 243, 208, 0.9);
+}
+.send-ripple.g-neon {
+  --g1: rgba(34, 211, 238, 0.9);
+  --g2: rgba(167, 139, 250, 0.95);
+  --g3: rgba(248, 113, 113, 0.85);
+}
+.send-ripple.g-moon {
+  --g1: rgba(226, 232, 240, 0.7);
+  --g2: rgba(241, 245, 249, 0.92);
+  --g3: rgba(203, 213, 225, 0.65);
+}
+/* 浅色主题压暗涟漪 */
+[data-theme="light-glass"] .send-ripple {
+  filter: brightness(0.85) saturate(1.1);
+}
+
 /* ============ 银河背景：canvas 粒子旋涡星系（纯观赏，无数据） ============ */
 .galaxy-bg {
   position: absolute;

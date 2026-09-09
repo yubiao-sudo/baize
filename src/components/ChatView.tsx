@@ -690,6 +690,19 @@ export default function ChatView() {
     };
   }, [busy, comparing]);
 
+  // 消息发送涟漪：按下发送的瞬间，从输入框中心向外扩散一圈流光光环，
+  // 配色跟随「通知与音效」页的流光样式（读取时机 = 触发时机，改完下次发送即生效）
+  const [sendRipple, setSendRipple] = useState<{ id: number; style: string } | null>(null);
+  const sendRippleTimer = useRef<number | null>(null);
+  const fireSendRipple = () => {
+    setSendRipple({
+      id: Date.now(),
+      style: localStorage.getItem("baize_glow_style") || "aurora",
+    });
+    if (sendRippleTimer.current) window.clearTimeout(sendRippleTimer.current);
+    sendRippleTimer.current = window.setTimeout(() => setSendRipple(null), 1200);
+  };
+
   useEffect(() => {
     forceOpenRef.current = forceOpen;
   }, [forceOpen]);
@@ -869,6 +882,7 @@ export default function ChatView() {
   const onSubmit = () => {
     const m = input.trim();
     if (!m && attachments.length === 0) return;
+    fireSendRipple();
     const atts = attachments;
     setInput("");
     setAttachments([]);
@@ -1187,6 +1201,14 @@ export default function ChatView() {
         )}
 
         <div className="chat-input" data-guide="input">
+          {/* 发送涟漪：消息发出瞬间从输入框中心扩散流光光环（配色跟随流光样式） */}
+          {sendRipple && (
+            <div
+              key={sendRipple.id}
+              className={`send-ripple ${sendRipple.style === "aurora" ? "" : `g-${sendRipple.style}`}`}
+              aria-hidden
+            />
+          )}
           <textarea
             ref={textareaRef}
             value={input}
