@@ -161,14 +161,22 @@ function stripHl(text: string) {
 
 // ---------- 消息条目组件（memo 化：流式输出时历史消息不重复解析/渲染） ----------
 
-const UserMessage = memo(function UserMessage({ m, onEdit }: { m: ChatMsg; onEdit?: () => void }) {
+const UserMessage = memo(function UserMessage({
+  m,
+  onEdit,
+  secrete,
+}: {
+  m: ChatMsg;
+  onEdit?: () => void;
+  secrete?: boolean;
+}) {
   const atts = m.attachments ?? [];
   const imgs = atts.filter((p) => IMAGE_EXT.test(p));
   const docs = atts.filter((p) => !IMAGE_EXT.test(p));
   const [hovered, setHovered] = useState(false);
   return (
     <div
-      className="msg user"
+      className={`msg user${secrete ? " secrete" : ""}`}
       style={{ position: "relative" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -415,6 +423,7 @@ export default function ChatView() {
   // 用语音下达指令时自动开启 TTS，形成「说 → 答 → 朗读」闭环
   const voiceConv = useVoiceConversation((t) => {
     setTtsEnabled(true);
+    secretePendingRef.current = Date.now();
     void send(t);
   });
   // 问句交回用的引用（自动朗读 effect 依赖少，避免闭包过期）
@@ -458,6 +467,7 @@ export default function ChatView() {
     if (wasListeningRef.current && !listening && transcript.trim() && !busy) {
       const text = transcript.trim();
       resetTranscript();
+      secretePendingRef.current = Date.now();
       void send(text);
     }
     wasListeningRef.current = listening;
@@ -690,18 +700,21 @@ export default function ChatView() {
     };
   }, [busy, comparing]);
 
-  // 消息发送涟漪：按下发送的瞬间，从输入框中心向外扩散一圈流光光环，
-  // 配色跟随「通知与音效」页的流光样式（读取时机 = 触发时机，改完下次发送即生效）
-  const [sendRipple, setSendRipple] = useState<{ id: number; style: string } | null>(null);
-  const sendRippleTimer = useRef<number | null>(null);
-  const fireSendRipple = () => {
-    setSendRipple({
-      id: Date.now(),
-      style: localStorage.getItem("baize_glow_style") || "aurora",
-    });
-    if (sendRippleTimer.current) window.clearTimeout(sendRippleTimer.current);
-    sendRippleTimer.current = window.setTimeout(() => setSendRipple(null), 1200);
-  };
+  // 消息分泌出场：发送瞬间打时间戳标记，新的用户消息落进对话流时以「细胞分泌」
+  // 姿态从输入框方向被挤出（囊泡拉长→脱离→回弹落位），只对刚发出的这条生效
+  const [secreteIdx, setSecreteIdx] = useState<number | null>(null);
+  const secretePendingRef = useRef(0);
+  const secreteTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    const last = history.length - 1;
+    const pending = secretePendingRef.current;
+    if (!pending || last < 0 || history[last]?.role !== "user") return;
+    secretePendingRef.current = 0;
+    if (Date.now() - pending > 3000) return; // 标记过期（消息未落地），不播
+    setSecreteIdx(last);
+    if (secreteTimerRef.current) window.clearTimeout(secreteTimerRef.current);
+    secreteTimerRef.current = window.setTimeout(() => setSecreteIdx(null), 800);
+  }, [history]);
 
   useEffect(() => {
     forceOpenRef.current = forceOpen;
@@ -882,7 +895,7 @@ export default function ChatView() {
   const onSubmit = () => {
     const m = input.trim();
     if (!m && attachments.length === 0) return;
-    fireSendRipple();
+    secretePendingRef.current = Date.now();
     const atts = attachments;
     setInput("");
     setAttachments([]);
@@ -1030,6 +1043,7 @@ export default function ChatView() {
                 <UserMessage
                   key={i}
                   m={m}
+                  secrete={i === secreteIdx}
                   onEdit={
                     !busy && i === lastUserIdx
                       ? () => {
@@ -1201,14 +1215,6 @@ export default function ChatView() {
         )}
 
         <div className="chat-input" data-guide="input">
-          {/* 发送涟漪：消息发出瞬间从输入框中心扩散流光光环（配色跟随流光样式） */}
-          {sendRipple && (
-            <div
-              key={sendRipple.id}
-              className={`send-ripple ${sendRipple.style === "aurora" ? "" : `g-${sendRipple.style}`}`}
-              aria-hidden
-            />
-          )}
           <textarea
             ref={textareaRef}
             value={input}
