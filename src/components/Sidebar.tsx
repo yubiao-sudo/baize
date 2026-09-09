@@ -14,6 +14,7 @@ import {
 } from "../api";
 import type { Conversation, ModelConfig, WorkModeInfo } from "../types";
 import { derive } from "./AiActivity";
+import BootGlow from "./BootGlow";
 
 /**
  * 生命体征线波形（viewBox 0 0 400 56，中线 y≈29）：
@@ -263,6 +264,8 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar" data-guide="sidebar">
+      {/* 启动流光：进入桌面时从底部向上烧过卡片，顶边汇聚分散后沿两侧边框下行消散（播放一次） */}
+      <BootGlow />
       {/* 白泽状态卡：生命体征线（随状态变色）+ 模式/模型/用量实时信息 */}
       <div
         className={`baize-card tone-${activeHealth === false ? "bad" : activity.tone} ${

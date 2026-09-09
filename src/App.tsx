@@ -26,6 +26,7 @@ const Onboarding = lazy(() => import("./components/Onboarding"));
 import { EnvNotice } from "./components/Onboarding";
 // 新手引导（聚光灯分步导览）
 import GuideTour from "./components/GuideTour";
+import BootGlow from "./components/BootGlow";
 import { JobsToast } from "./components/JobsToast";
 import {
   envGetState,
@@ -758,6 +759,8 @@ export default function App() {
       )}
 
       <aside className={`right-panel ${showRight ? "" : "collapsed"}`} data-guide="rightpanel">
+        {/* 启动流光：与左侧边栏对称的点火动画（仅启动时播放一次） */}
+        <BootGlow />
         <Suspense fallback={null}>
           {activePanel === "settings" ? (
             <SettingsModal key={`settings-${settingsNav}`} onClose={closePanel} initialTab={settingsTab} />

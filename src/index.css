@@ -1425,6 +1425,207 @@ select option:checked {
   opacity: 0.7;
 }
 
+/* ============ 启动流光：侧边卡片自底部向上燃烧 ============ */
+/* 白泽进入桌面时，左右两张侧边卡片各播放一次的点火动画：
+   光幕从卡片底部向上烧过整卡（遮罩式扫过）→ 顶边中央汇聚成亮点 →
+   沿顶边向两端铺开 → 从两个上角沿左右边框下行 → 底部流出消散。
+   宿主（.sidebar / .right-panel）自带 overflow:hidden + 圆角，
+   覆盖层 inset:0 + border-radius:inherit 即被卡片裁剪，无需额外遮罩。
+   时间轴（子层各自 animation-delay 衔接，整体 ~3.9s）：
+   上升 0-1.5s → 汇聚 1.15s 起 → 顶边铺开 1.7s 起 → 两边下行 2.3s 起 → 余晖淡出。 */
+.side-boot-glow {
+  --g1: rgba(56, 189, 248, 0.85);
+  --g2: rgba(167, 139, 250, 0.95);
+  --g3: rgba(125, 211, 252, 0.9);
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+  animation: bootglow-fade 3.9s ease forwards;
+}
+/* 配色跟随设置页流光样式（g-* 类由 BootGlow 组件按 localStorage 附加） */
+.side-boot-glow.g-sunset {
+  --g1: rgba(251, 146, 60, 0.9);
+  --g2: rgba(244, 114, 182, 0.95);
+  --g3: rgba(251, 191, 36, 0.9);
+}
+.side-boot-glow.g-emerald {
+  --g1: rgba(52, 211, 153, 0.9);
+  --g2: rgba(34, 211, 238, 0.95);
+  --g3: rgba(167, 243, 208, 0.9);
+}
+.side-boot-glow.g-neon {
+  --g1: rgba(34, 211, 238, 0.9);
+  --g2: rgba(167, 139, 250, 0.95);
+  --g3: rgba(248, 113, 113, 0.85);
+}
+.side-boot-glow.g-moon {
+  --g1: rgba(226, 232, 240, 0.7);
+  --g2: rgba(241, 245, 249, 0.92);
+  --g3: rgba(203, 213, 225, 0.65);
+}
+
+/* 1) 上升光幕：亮头在上、尾焰拖在下，从卡片底部一路烧到顶部并穿出 */
+.side-boot-glow .bg-rise {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(
+    to top,
+    transparent 0%,
+    rgba(255, 255, 255, 0.02) 30%,
+    color-mix(in srgb, var(--g1) 14%, transparent) 62%,
+    color-mix(in srgb, var(--g2) 30%, transparent) 86%,
+    color-mix(in srgb, var(--g3) 55%, transparent) 97%,
+    rgba(255, 255, 255, 0.55) 100%
+  );
+  transform: translateY(100%);
+  animation: bootglow-rise 1.5s cubic-bezier(0.4, 0.1, 0.25, 1) forwards;
+}
+@keyframes bootglow-rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+/* 2) 顶部汇聚：光头抵达顶边中央时凝成的亮点 */
+.side-boot-glow .top-node {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  width: 140px;
+  height: 30px;
+  opacity: 0;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.85), var(--g2) 45%, transparent 75%);
+  filter: blur(3px);
+  transform: translate(-50%, 0) scale(0.2);
+  animation: bootglow-node 1.3s ease-out 1.15s forwards;
+}
+@keyframes bootglow-node {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.2);
+  }
+  35% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  100% {
+    opacity: 0.95;
+    transform: translate(-50%, 0) scale(1.2);
+  }
+}
+
+/* 3) 顶边分散：亮点沿顶边向两端铺开成光带，止于两个上角 */
+.side-boot-glow .top-spread {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: 50% 50%;
+  background: linear-gradient(90deg, transparent 0%, var(--g1) 14%, var(--g3) 50%, var(--g1) 86%, transparent 100%);
+  box-shadow:
+    0 0 12px var(--g1),
+    0 0 4px var(--g3);
+  animation: bootglow-spread 0.75s cubic-bezier(0.2, 0.6, 0.3, 1) 1.7s forwards;
+}
+@keyframes bootglow-spread {
+  0% {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  25% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+/* 4) 沿边下行：左右边框上的光头 + 上方拖尾，从上角流到底边流出消散 */
+.side-boot-glow .side-l,
+.side-boot-glow .side-r {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  opacity: 0;
+  animation: bootglow-side 1.15s ease-in-out 2.3s forwards;
+}
+.side-boot-glow .side-l {
+  left: -1px;
+}
+.side-boot-glow .side-r {
+  right: -1px;
+}
+.side-boot-glow .side-l::before,
+.side-boot-glow .side-r::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -55%;
+  height: 65%;
+  border-radius: 3px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--g1) 55%,
+    var(--g3) 85%,
+    rgba(255, 255, 255, 0.9) 97%
+  );
+  box-shadow: 0 0 10px var(--g1);
+  animation: bootglow-side-run 1.15s cubic-bezier(0.5, 0.05, 0.7, 0.5) 2.3s forwards;
+}
+@keyframes bootglow-side {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes bootglow-side-run {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(250%);
+  }
+}
+
+/* 总控余晖：全程保持，结尾整体淡出兜底（子层已各自消散） */
+@keyframes bootglow-fade {
+  0%,
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* 浅色主题压暗启动流光，避免刺眼 */
+[data-theme="light-glass"] .side-boot-glow {
+  filter: brightness(0.85) saturate(1.1);
+}
+
 /* ============ 银河背景：canvas 粒子旋涡星系（纯观赏，无数据） ============ */
 .galaxy-bg {
   position: absolute;

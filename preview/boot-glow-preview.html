@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>白泽 · 启动流光预览（侧边卡片点火）</title>
+<style>
+  @property --glow-angle {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    background: radial-gradient(1200px 700px at 30% 20%, #101a2e 0%, #070b16 55%, #05070d 100%);
+    font-family: "Microsoft YaHei", system-ui, sans-serif;
+    color: #cbd5e1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    padding: 28px 20px 40px;
+  }
+  h1 { font-size: 16px; font-weight: 600; color: #e2e8f0; }
+  p.tip { font-size: 12px; color: #64748b; }
+  button.replay {
+    padding: 7px 22px;
+    border-radius: 999px;
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    background: rgba(34, 211, 238, 0.12);
+    color: #a5f3fc;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.replay:hover { background: rgba(34, 211, 238, 0.22); }
+  .stage {
+    display: flex;
+    gap: 24px;
+    align-items: stretch;
+    justify-content: center;
+    width: 100%;
+  }
+  /* 模拟白泽桌面布局：左 280px 侧边栏 + 右 340px 面板，中间主区占位 */
+  .card {
+    position: relative;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015)),
+      rgba(13, 20, 36, 0.82);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+    height: 560px;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 10px;
+    gap: 8px;
+  }
+  .card.left { width: 280px; }
+  .card.right { width: 340px; }
+  .fake-block {
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    background: rgba(148, 163, 184, 0.06);
+    padding: 10px 12px;
+    font-size: 12px;
+    color: #94a3b8;
+  }
+  .fake-block.tall { flex: 1; }
+  .main-hint {
+    align-self: center;
+    font-size: 12px;
+    color: #475569;
+    writing-mode: vertical-lr;
+    letter-spacing: 6px;
+  }
+
+  /* ============ 启动流光（与 baize/src/index.css 同步） ============ */
+  .side-boot-glow {
+    --g1: rgba(56, 189, 248, 0.85);
+    --g2: rgba(167, 139, 250, 0.95);
+    --g3: rgba(125, 211, 252, 0.9);
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+    border-radius: inherit;
+    pointer-events: none;
+    overflow: hidden;
+    animation: bootglow-fade 3.9s ease forwards;
+  }
+  .side-boot-glow.g-sunset { --g1: rgba(251,146,60,.9); --g2: rgba(244,114,182,.95); --g3: rgba(251,191,36,.9); }
+  .side-boot-glow.g-emerald { --g1: rgba(52,211,153,.9); --g2: rgba(34,211,238,.95); --g3: rgba(167,243,208,.9); }
+  .side-boot-glow.g-neon { --g1: rgba(34,211,238,.9); --g2: rgba(167,139,250,.95); --g3: rgba(248,113,113,.85); }
+  .side-boot-glow.g-moon { --g1: rgba(226,232,240,.7); --g2: rgba(241,245,249,.92); --g3: rgba(203,213,225,.65); }
+
+  .side-boot-glow .bg-rise {
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 100%;
+    background: linear-gradient(
+      to top,
+      transparent 0%,
+      rgba(255,255,255,0.02) 30%,
+      color-mix(in srgb, var(--g1) 14%, transparent) 62%,
+      color-mix(in srgb, var(--g2) 30%, transparent) 86%,
+      color-mix(in srgb, var(--g3) 55%, transparent) 97%,
+      rgba(255,255,255,0.55) 100%
+    );
+    transform: translateY(100%);
+    animation: bootglow-rise 1.5s cubic-bezier(0.4, 0.1, 0.25, 1) forwards;
+  }
+  @keyframes bootglow-rise {
+    from { transform: translateY(100%); }
+    to { transform: translateY(-100%); }
+  }
+
+  .side-boot-glow .top-node {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    width: 140px;
+    height: 30px;
+    opacity: 0;
+    background: radial-gradient(closest-side, rgba(255,255,255,0.85), var(--g2) 45%, transparent 75%);
+    filter: blur(3px);
+    transform: translate(-50%, 0) scale(0.2);
+    animation: bootglow-node 1.3s ease-out 1.15s forwards;
+  }
+  @keyframes bootglow-node {
+    0% { opacity: 0; transform: translate(-50%, 0) scale(0.2); }
+    35% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    100% { opacity: 0.95; transform: translate(-50%, 0) scale(1.2); }
+  }
+
+  .side-boot-glow .top-spread {
+    position: absolute;
+    top: -1px; left: 0; right: 0;
+    height: 2px;
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: 50% 50%;
+    background: linear-gradient(90deg, transparent 0%, var(--g1) 14%, var(--g3) 50%, var(--g1) 86%, transparent 100%);
+    box-shadow: 0 0 12px var(--g1), 0 0 4px var(--g3);
+    animation: bootglow-spread 0.75s cubic-bezier(0.2, 0.6, 0.3, 1) 1.7s forwards;
+  }
+  @keyframes bootglow-spread {
+    0% { opacity: 0; transform: scaleX(0); }
+    25% { opacity: 1; }
+    100% { opacity: 1; transform: scaleX(1); }
+  }
+
+  .side-boot-glow .side-l,
+  .side-boot-glow .side-r {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 3px;
+    opacity: 0;
+    animation: bootglow-side 1.15s ease-in-out 2.3s forwards;
+  }
+  .side-boot-glow .side-l { left: -1px; }
+  .side-boot-glow .side-r { right: -1px; }
+  .side-boot-glow .side-l::before,
+  .side-boot-glow .side-r::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0;
+    top: -55%;
+    height: 65%;
+    border-radius: 3px;
+    background: linear-gradient(to bottom, transparent 0%, var(--g1) 55%, var(--g3) 85%, rgba(255,255,255,0.9) 97%);
+    box-shadow: 0 0 10px var(--g1);
+    animation: bootglow-side-run 1.15s cubic-bezier(0.5, 0.05, 0.7, 0.5) 2.3s forwards;
+  }
+  @keyframes bootglow-side {
+    0% { opacity: 0; }
+    10% { opacity: 1; }
+    72% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  @keyframes bootglow-side-run {
+    from { transform: translateY(0); }
+    to { transform: translateY(250%); }
+  }
+
+  @keyframes bootglow-fade {
+    0%, 72% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+  <h1>白泽启动流光 · 侧边卡片点火效果</h1>
+  <p class="tip">光幕自卡片底部向上烧过 → 顶边中央汇聚 → 沿顶边向两端分散 → 沿左右边框下行 → 底部消散（约 3.9s）</p>
+  <div>
+    <button class="replay" onclick="replay('aurora')">重播 · 极光青紫</button>
+    <button class="replay" onclick="replay('sunset')">落日橙粉</button>
+    <button class="replay" onclick="replay('emerald')">翠影青碧</button>
+    <button class="replay" onclick="replay('neon')">霓虹彩虹</button>
+    <button class="replay" onclick="replay('moon')">月白流银</button>
+  </div>
+  <div class="stage">
+    <div class="card left" id="card-left">
+      <div class="fake-block">白泽状态卡 · 生命体征线</div>
+      <div class="fake-block">对话 / 项目</div>
+      <div class="fake-block tall">会话列表占位</div>
+      <div class="fake-block">常驻运行中</div>
+    </div>
+    <div class="main-hint">主对话区（无流光）</div>
+    <div class="card right" id="card-right">
+      <div class="fake-block tall">意识网络 + 思考流占位</div>
+      <div class="fake-block">思考流占位</div>
+    </div>
+  </div>
+  <script>
+    function replay(style) {
+      for (const id of ["card-left", "card-right"]) {
+        const card = document.getElementById(id);
+        const old = card.querySelector(".side-boot-glow");
+        if (old) old.remove();
+        const g = document.createElement("div");
+        g.className = "side-boot-glow" + (style === "aurora" ? "" : " g-" + style);
+        g.innerHTML = '<div class="bg-rise"></div><div class="top-node"></div><div class="top-spread"></div><div class="side-l"></div><div class="side-r"></div>';
+        card.appendChild(g);
+      }
+    }
+    // 页面打开即播放默认极光样式
+    replay("aurora");
+  </script>
+</body>
+</html>
