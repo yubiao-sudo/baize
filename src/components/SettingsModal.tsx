@@ -1498,6 +1498,17 @@ export default function SettingsModal({
             {/* ============ 关于与更新 ============ */}
             <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
               <h4 style={{ margin: "4px 0 8px", color: "var(--text)" }}>关于与更新</h4>
+              <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.8, marginBottom: 10 }}>
+                <div>
+                  <span style={{ color: "var(--text)", fontWeight: 600 }}>白泽 BaiZe</span>
+                  {" "}· 桌面 AI Agent（Tauri 2 + Rust + React）
+                </div>
+                <div>开发者：GitHub <a href="https://github.com/yubiao-sudo" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>@yubiao-sudo</a>（个人独立开发，无所属公司/工作室）</div>
+                <div>
+                  开源地址：<a href="https://github.com/yubiao-sudo/baize" target="_blank" rel="noopener" style={{ color: "var(--accent)" }}>github.com/yubiao-sudo/baize</a>
+                  {" "}· 标识符 com.baize.agent
+                </div>
+              </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
                   当前版本 v{upInfo?.current ?? "…"}

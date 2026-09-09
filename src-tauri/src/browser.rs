@@ -286,7 +286,11 @@ fn random_ua() -> &'static str {
 }
 
 /// 构造带完整浏览器请求头的 HTTP 客户端（模拟真实浏览器，降低反爬拦截）
-fn build_client() -> Result<reqwest::blocking::Client, String> {
+///
+/// `use_env_proxy=false` 时显式禁用系统/环境代理（HTTP_PROXY 等）——
+/// 环境代理进程经常漂移或离线（如本地代理端口变更后未更新），reqwest 默认
+/// 会读取环境代理变量，死代理会让所有引擎全部请求失败，表现为「搜索不到」。
+fn build_client_opts(timeout: Duration, use_env_proxy: bool) -> Result<reqwest::blocking::Client, String> {
     use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, PRAGMA};
 
     let mut headers = HeaderMap::new();
@@ -320,22 +324,34 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
     headers.insert("sec-ch-ua-platform", HeaderValue::from_static("\"Windows\""));
     headers.insert("dnt", HeaderValue::from_static("1"));
 
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(timeout)
         .user_agent(random_ua())
         .default_headers(headers)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+        .redirect(reqwest::redirect::Policy::limited(10));
+    if !use_env_proxy {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
 }
 
 /// 抓取网页（完整浏览器头 + UA 轮换 + 最多 3 次重试退避；gzip/brotli 自动解压）
 fn fetch_html(url: &str) -> Result<String, String> {
+    fetch_html_opts(url, Duration::from_secs(15), 3, true)
+}
+
+/// 可调抓取：超时 / 尝试次数 / 是否走环境代理
+fn fetch_html_opts(
+    url: &str,
+    timeout: Duration,
+    attempts: usize,
+    use_env_proxy: bool,
+) -> Result<String, String> {
     let url = url.to_string();
     std::thread::spawn(move || -> Result<String, String> {
         let mut last_err = String::new();
-        for attempt in 0..3 {
-            let client = match build_client() {
+        for attempt in 0..attempts {
+            let client = match build_client_opts(timeout, use_env_proxy) {
                 Ok(c) => c,
                 Err(e) => {
                     last_err = e;
@@ -349,7 +365,7 @@ fn fetch_html(url: &str) -> Result<String, String> {
                 Ok(resp) => last_err = format!("HTTP {}", resp.status()),
                 Err(e) => last_err = format!("请求失败: {e}"),
             }
-            if attempt < 2 {
+            if attempt + 1 < attempts {
                 std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
             }
         }
@@ -359,16 +375,63 @@ fn fetch_html(url: &str) -> Result<String, String> {
     .map_err(|_| "抓取线程异常退出".to_string())?
 }
 
-/// 多引擎搜索：DuckDuckGo → Bing → 百度，失败/空结果自动降级
-/// 返回 (使用的引擎名, 结果列表, 已尝试的引擎名列表)
-fn search_multi(query: &str) -> (String, Vec<SearchResult>, Vec<String>) {
-    let engines = [Engine::DuckDuckGo, Engine::Bing, Engine::Baidu];
-    let mut tried = Vec::new();
-    for engine in engines {
-        tried.push(engine.name().to_string());
-        if let Ok(html) = fetch_html(&engine.url(query)) {
+/// 是否含中日韩字符（用于选择引擎顺序：CJK 查询对 Bing/百度友好，DDG 中文召回差且国内直连不通）
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(c as u32,
+            0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0x3000..=0x303F)
+    })
+}
+
+/// 单引擎尝试：抓取 + 解析，返回 (结果, 失败原因)
+fn try_engine(engine: Engine, query: &str, use_env_proxy: bool) -> (Vec<SearchResult>, String) {
+    // 搜索页是轻量 HTML，8s 超时 + 2 次尝试足够；避免单引擎拖满 45s+ 才降级
+    match fetch_html_opts(&engine.url(query), Duration::from_secs(8), 2, use_env_proxy) {
+        Err(e) => (Vec::new(), e),
+        Ok(html) => {
             let results = engine.parse(&html);
-            if !results.is_empty() {
+            if results.is_empty() {
+                // HTTP 200 但解析为空：多为反爬验证页（DDG anomaly / 百度安全验证 / Bing 同意页）
+                let hint = if html.contains("anomaly") || html.contains("challenge") {
+                    "反爬验证页"
+                } else if html.contains("wappass") || html.contains("安全验证") {
+                    "百度安全验证"
+                } else if html.len() < 2000 {
+                    "响应内容过短（疑似拦截页）"
+                } else {
+                    "页面布局变化或无匹配结果"
+                };
+                (Vec::new(), format!("解析 0 条（{hint}）"))
+            } else {
+                (results, String::new())
+            }
+        }
+    }
+}
+
+/// 多引擎搜索：失败/空结果自动降级。
+/// 引擎顺序按查询语言自适应——CJK 查询走 Bing → 百度 → DuckDuckGo（DDG 国内直连不通
+/// 且中文召回差），非 CJK 查询走 DuckDuckGo → Bing → 百度。
+/// 全部失败且系统配置了环境代理时，用「禁用环境代理」的直连客户端再兜底一轮——
+/// 环境代理进程离线（端口漂移/未启动）时 reqwest 默认撞死代理，是搜索全军覆没的常见根因。
+/// 返回 (成功引擎名, 结果列表, 已尝试引擎及原因)
+fn search_multi(query: &str) -> (String, Vec<SearchResult>, Vec<String>) {
+    let order: &[Engine] = if has_cjk(query) {
+        &[Engine::Bing, Engine::Baidu, Engine::DuckDuckGo]
+    } else {
+        &[Engine::DuckDuckGo, Engine::Bing, Engine::Baidu]
+    };
+
+    let mut tried: Vec<String> = Vec::new();
+    // 第一轮走系统默认（含环境代理）；全败后第二轮禁用环境代理直连重试
+    for (round, use_env_proxy) in [(0usize, true), (1, false)] {
+        let tag = if round == 1 { "[直连]" } else { "" };
+        for engine in order {
+            let (results, err) = try_engine(*engine, query, use_env_proxy);
+            if results.is_empty() {
+                tried.push(format!("{}{}: {}", tag, engine.name(), err));
+            } else {
+                tried.push(format!("{}{}: 成功", tag, engine.name()));
                 return (engine.name().to_string(), results, tried);
             }
         }
@@ -376,35 +439,69 @@ fn search_multi(query: &str) -> (String, Vec<SearchResult>, Vec<String>) {
     (String::new(), Vec::new(), tried)
 }
 
-/// 解析 Bing 结果
+/// 解析 Bing 结果：按 b_algo 结果块切分，块内标题与摘要天然对齐；
+/// 布局无 b_algo 时回退到全页扫描
 fn parse_bing(html: &str) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+
+    // 主路径：每个 <li class="b_algo"> 是一条完整结果
+    let re_block = Regex::new(r#"(?s)<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>(.*?)</li>"#).unwrap();
+    for cap in re_block.captures_iter(html) {
+        let block = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        if let Some(r) = parse_bing_block(block) {
+            results.push(r);
+            if results.len() >= 10 {
+                break;
+            }
+        }
+    }
+    if !results.is_empty() {
+        return results;
+    }
+
+    // 回退：无 b_algo（布局变体）时全页扫描 h2 链接
     let re_link = Regex::new(r#"<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
-    let re_snip = Regex::new(r#"<p[^>]*>(.*?)</p>"#).unwrap();
-    let mut links = Vec::new();
     for cap in re_link.captures_iter(html) {
         let url = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
         let title = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         if url.starts_with("http") {
-            links.push((url, strip_tags(title)));
+            results.push(SearchResult {
+                title: strip_tags(title),
+                url,
+                summary: String::new(),
+            });
+            if results.len() >= 10 {
+                break;
+            }
         }
     }
-    let snips: Vec<String> = re_snip
-        .captures_iter(html)
-        .map(|c| strip_tags(c.get(1).map(|m| m.as_str()).unwrap_or("")))
-        .collect();
-    links
-        .into_iter()
-        .zip(snips.into_iter().chain(std::iter::repeat(String::new())))
-        .take(10)
-        .map(|((url, title), summary)| SearchResult { title, url, summary })
-        .collect()
+    results
 }
 
-/// 解析百度结果
+/// 从单个 b_algo 块中提取标题/链接/摘要
+fn parse_bing_block(block: &str) -> Option<SearchResult> {
+    let re_link = Regex::new(r#"(?s)<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
+    let cap = re_link.captures(block)?;
+    let url = cap.get(1)?.as_str().to_string();
+    if !url.starts_with("http") {
+        return None;
+    }
+    let title = strip_tags(cap.get(2).map(|m| m.as_str()).unwrap_or(""));
+    // 摘要取块内第一段 <p>（b_algo 块内的 <p> 就是本条结果的摘要，不再全页错位）
+    let re_p = Regex::new(r#"(?s)<p[^>]*>(.*?)</p>"#).unwrap();
+    let summary = re_p
+        .captures(block)
+        .map(|c| strip_tags(c.get(1).map(|m| m.as_str()).unwrap_or("")))
+        .unwrap_or_default();
+    Some(SearchResult { title, url, summary })
+}
+
+/// 解析百度结果：h3 不再强制要求 class 属性；摘要多选择器兜底 + (?s) 跨行匹配
+/// （百度页面摘要常含换行，旧正则 `.` 不匹配换行导致摘要全部丢失）
 fn parse_baidu(html: &str) -> Vec<SearchResult> {
-    let re_link =
-        Regex::new(r#"<h3[^>]*class="[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
-    let re_snip = Regex::new(r#"class="c-abstract"[^>]*>(.*?)</"#).unwrap();
+    let re_link = Regex::new(r#"(?s)<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
+    let re_snip_a = Regex::new(r#"(?s)class="c-abstract[^"]*"[^>]*>(.*?)</div>"#).unwrap();
+    let re_snip_b = Regex::new(r#"(?s)<span[^>]*class="content-right_[^"]*"[^>]*>(.*?)</span>"#).unwrap();
     let mut links = Vec::new();
     for cap in re_link.captures_iter(html) {
         let url = cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
@@ -413,10 +510,18 @@ fn parse_baidu(html: &str) -> Vec<SearchResult> {
             links.push((url, strip_tags(title)));
         }
     }
-    let snips: Vec<String> = re_snip
+    let mut snips: Vec<String> = re_snip_a
         .captures_iter(html)
         .map(|c| strip_tags(c.get(1).map(|m| m.as_str()).unwrap_or("")))
+        .filter(|s| !s.is_empty())
         .collect();
+    if snips.is_empty() {
+        snips = re_snip_b
+            .captures_iter(html)
+            .map(|c| strip_tags(c.get(1).map(|m| m.as_str()).unwrap_or("")))
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
     links
         .into_iter()
         .zip(snips.into_iter().chain(std::iter::repeat(String::new())))
@@ -516,8 +621,8 @@ impl Tool for BrowserSearchTool {
 
         let note = if results.is_empty() {
             Some(format!(
-                "已尝试 {} 等搜索引擎，均未获取到结果（可能网络受限）。请基于你已有的知识继续完成任务，不要再重试搜索。",
-                tried.join("、")
+                "已尝试各搜索引擎，均未获取到结果。详情：{}。请基于你已有的知识继续完成任务，不要立即重试同一关键词。",
+                tried.join("；")
             ))
         } else {
             None
@@ -543,7 +648,7 @@ impl Tool for WebSearchTool {
         "web_search"
     }
     fn description(&self) -> &str {
-        "联网搜索并返回结构化结果（标题/链接/摘要），供你直接用结果回答实时/时效性问题并在答案里标注来源链接。多引擎自动降级（DuckDuckGo→Bing→百度）。用于知识库里没有的、需要最新信息的问题"
+        "联网搜索并返回结构化结果（标题/链接/摘要），供你直接用结果回答实时/时效性问题并在答案里标注来源链接。多引擎按语言自适应降级（中文查询走 Bing→百度→DuckDuckGo，英文查询走 DuckDuckGo→Bing→百度），全部失败会附各引擎失败原因。用于知识库里没有的、需要最新信息的问题"
     }
     fn schema(&self) -> Value {
         json!({
@@ -564,8 +669,8 @@ impl Tool for WebSearchTool {
         let (engine, results, tried) = search_multi(&query);
         if results.is_empty() {
             return Err(format!(
-                "搜索失败或未获取到结果（已尝试：{}）。请基于已有知识继续，不要再重试搜索。",
-                tried.join("、")
+                "搜索失败或未获取到结果。各引擎详情：{}。请基于已有知识继续，或换个更具体的关键词，不要立即重试同一关键词。",
+                tried.join("；")
             ));
         }
         let items: Vec<Value> = results
@@ -1811,6 +1916,33 @@ mod tests {
         assert_eq!(results[0].url, "https://example.com/");
         assert_eq!(results[0].title, "Example Title");
         assert_eq!(results[0].summary, "This is snippet text");
+    }
+
+    #[test]
+    fn parse_bing_b_algo_blocks_align_summary() {
+        let html = r#"<ul><li class="b_algo"><h2><a href="https://a.com">标题甲</a></h2><p>摘要甲</p></li><li class="b_algo"><h2><a href="https://b.com">标题乙</a></h2><p>摘要乙</p></li></ul>"#;
+        let results = parse_bing(html);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://a.com");
+        assert_eq!(results[0].summary, "摘要甲");
+        assert_eq!(results[1].summary, "摘要乙");
+    }
+
+    #[test]
+    fn parse_baidu_multiline_abstract() {
+        // 摘要跨行：旧正则无 (?s) 会匹配失败
+        let html = "<h3 class=\"t\"><a href=\"https://x.com\">标题</a></h3>\n<div class=\"c-abstract\">\n跨行摘要内容\n</div>";
+        let results = parse_baidu(html);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://x.com");
+        assert_eq!(results[0].summary, "跨行摘要内容");
+    }
+
+    #[test]
+    fn has_cjk_detects_language() {
+        assert!(has_cjk("最新 AI 新闻"));
+        assert!(has_cjk("テスト"));
+        assert!(!has_cjk("rust async runtime"));
     }
 
     #[test]
