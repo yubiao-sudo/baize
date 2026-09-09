@@ -100,6 +100,10 @@ interface ChatState {
   forkFrom: (count: number) => Promise<void>;
 }
 
+// 会话列表加载的在途去重：StrictMode 双挂载/组件重复触发时共用同一次加载，
+// 否则两个并发调用都会在对方落库前判定「没有空会话」而各自新建 → 会话成对出现
+let convLoadTask: Promise<void> | null = null;
+
 export const useChat = create<ChatState>((set, get) => ({
   history: [],
   busy: false,
@@ -143,7 +147,13 @@ export const useChat = create<ChatState>((set, get) => ({
       });
     }
     const history = get().history;
-    const convId = get().currentConvId;
+    // 会话未就绪（启动加载尚未完成）时先等加载结束，避免向后端传空 conv_id
+    let convId = get().currentConvId;
+    if (!convId) {
+      await get().loadConversations();
+      convId = get().currentConvId;
+      if (!convId) return;
+    }
     // 首条消息即会话话题：会话还是默认标题时立即用该消息命名（与后端规则一致，取前 20 字），侧栏即时生效
     const topic = Array.from(msg.split(/\s+/).filter(Boolean).join(" ")).slice(0, 20).join("");
     if (topic && convId) {
@@ -276,33 +286,57 @@ export const useChat = create<ChatState>((set, get) => ({
   resetStream: () => set({ streaming: "" }),
 
   loadConversations: async () => {
-    // 项目列表先于首次会话切换加载：启动续接项目会话时工作空间联动才能命中
-    const [list] = await Promise.all([listConversations(), get().loadProjects()]);
-    set({ conversations: list });
-    if (list.length === 0) {
-      await get().newConversation();
-      return;
-    }
-    if (get().currentConvId) return;
-    // 启动/刷新复用策略：优先复用最近的一个空「新会话」（不限于列表第一位），
-    // 没有空会话才新建——否则每次重启/刷新都会多出一个空会话堆积在列表里
-    // （会话没有改名逻辑，空会话一定保留默认标题，按标题筛候选再逐个验证消息数）
-    const candidates = list
-      .filter((c) => c.title === "新会话")
-      .sort((a, b) => (a.project_id ? 1 : 0) - (b.project_id ? 1 : 0)) // 未归组空会话优先
-      .slice(0, 5);
-    for (const c of candidates) {
-      try {
-        const msgs = await getMessages(c.id);
-        if (msgs.length === 0) {
-          await get().switchConversation(c.id);
-          return;
-        }
-      } catch {
-        // 查询失败的会话不复用，继续找下一个候选
+    if (convLoadTask) return convLoadTask;
+    convLoadTask = (async () => {
+      // 项目列表先于首次会话切换加载：启动续接项目会话时工作空间联动才能命中
+      const [list] = await Promise.all([listConversations(), get().loadProjects()]);
+      set({ conversations: list });
+      if (list.length === 0) {
+        await get().newConversation();
+        return;
       }
+      if (get().currentConvId) return;
+      // 启动/刷新复用策略：优先复用最近的一个空默认标题会话（含历史版本遗留的
+      // 「默认会话」/空标题），没有空会话才新建——否则每次重启/刷新都会多出一个
+      // 空会话堆积在列表里（逐个验证消息数，只认 0 条消息的会话）
+      const isDefaultTitle = (t?: string) =>
+        !t || !t.trim() || t === "新会话" || t === "默认会话";
+      const candidates = list
+        .filter((c) => isDefaultTitle(c.title))
+        .sort((a, b) => (a.project_id ? 1 : 0) - (b.project_id ? 1 : 0)) // 未归组空会话优先
+        .slice(0, 5);
+      for (const c of candidates) {
+        try {
+          const msgs = await getMessages(c.id);
+          if (msgs.length === 0) {
+            await get().switchConversation(c.id);
+            break;
+          }
+        } catch {
+          // 查询失败的会话不复用，继续找下一个候选
+        }
+      }
+      if (!get().currentConvId) await get().newConversation();
+      // 清理历史堆积的空默认会话（0 条消息且仍为默认标题），只保留当前使用的一个
+      const junk = list.filter(
+        (c) => isDefaultTitle(c.title) && c.id !== get().currentConvId
+      );
+      let cleaned = false;
+      for (const c of junk.slice(0, 10)) {
+        try {
+          const msgs = await getMessages(c.id);
+          if (msgs.length === 0 && (await deleteConversation(c.id))) cleaned = true;
+        } catch {
+          // 清理失败不影响主流程
+        }
+      }
+      if (cleaned) set({ conversations: await listConversations() });
+    })();
+    try {
+      await convLoadTask;
+    } finally {
+      convLoadTask = null;
     }
-    await get().newConversation();
   },
 
   switchConversation: async (id) => {
