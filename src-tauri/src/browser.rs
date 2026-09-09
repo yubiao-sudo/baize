@@ -2028,8 +2028,10 @@ pub fn act(args: Value) -> Result<Value, String> {
 
 /// 前端命令：在白泽内置浏览器中打开一个网页标签页（搜索结果页点击卡片 → 内置浏览器内跳转）。
 /// 结果页自身保留为独立标签页，切回即「返回搜索结果」，不会丢失搜索上下文。
+/// 必须为 async：Tauri v2 同步命令运行在主线程上，emit_update → ensure_browser_window
+/// 需要在主线程创建窗口，同步命令会死锁（全应用无响应）。
 #[tauri::command]
-pub fn browser_open_url_tab(
+pub async fn browser_open_url_tab(
     app: AppHandle,
     state: tauri::State<'_, crate::AppState>,
     url: String,

@@ -141,8 +141,10 @@ pub fn ensure_terminal_window(app: &AppHandle, terminal: Arc<crate::terminal::Te
 /// 打开一个外部网页（原生 WebView 窗口，规避 iframe 内嵌的 X-Frame-Options 限制）。
 /// 每次导航新建一个独立网页窗口（标签递增，避免复用窗口需要 navigate 的复杂状态）。
 /// 白泽文档窗口的外链也走这里：文档本体不被导航替换，用户随时可以回到原文。
+/// 必须为 async：Tauri v2 同步命令运行在主线程上，主线程内创建窗口会死锁
+/// （表现为全应用无响应、新窗口白屏加载不出来）。
 #[tauri::command]
-pub fn open_webview_window(app: AppHandle, url: String) -> Result<(), String> {
+pub async fn open_webview_window(app: AppHandle, url: String) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(format!("非法 URL: {url}"));
     }
