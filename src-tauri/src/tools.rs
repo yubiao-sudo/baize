@@ -975,20 +975,22 @@ impl Tool for PsExecTool {
             .spawn()
             .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
 
-        // 后台线程读取 stdout/stderr，避免输出量大时死锁
+        // 后台线程读取 stdout/stderr，避免输出量大时死锁。
+        // 读原始字节而非 read_to_string：GBK 输出会在第一个非法 UTF-8 字节处
+        // 中断读取且错误被忽略，整段输出从那里被吞掉
         let stdout_reader = child.stdout.take().map(|mut s| {
             std::thread::spawn(move || {
                 use std::io::Read;
-                let mut buf = String::new();
-                let _ = s.read_to_string(&mut buf);
+                let mut buf = Vec::new();
+                let _ = s.read_to_end(&mut buf);
                 buf
             })
         });
         let stderr_reader = child.stderr.take().map(|mut s| {
             std::thread::spawn(move || {
                 use std::io::Read;
-                let mut buf = String::new();
-                let _ = s.read_to_string(&mut buf);
+                let mut buf = Vec::new();
+                let _ = s.read_to_end(&mut buf);
                 buf
             })
         });
@@ -1012,8 +1014,10 @@ impl Tool for PsExecTool {
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
 
-        let stdout = stdout_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-        let stderr = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+        let stdout_bytes = stdout_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+        let stderr_bytes = stderr_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+        let stdout = decode_console_output(&stdout_bytes);
+        let stderr = decode_console_output(&stderr_bytes);
         let exit_code = status.code().unwrap_or(-1);
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -1073,8 +1077,8 @@ fn run_in_docker(cmd: &str) -> Result<String, String> {
     let mut cmd = silent_command("docker");
     cmd.args(&args);
     let output = run_child_cancellable(cmd)?;
-    let mut result = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut result = decode_console_output(&output.stdout);
+    let stderr = decode_console_output(&output.stderr);
     if !stderr.is_empty() {
         result.push_str("\n[stderr]\n");
         result.push_str(&stderr);
@@ -1102,8 +1106,8 @@ fn run_on_host(cmd: &str) -> Result<String, String> {
     proc.args(["-c", cmd]);
 
     let output = run_child_cancellable(proc).map_err(|e| format!("执行失败: {e}"))?;
-    let mut result = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut result = decode_console_output(&output.stdout);
+    let stderr = decode_console_output(&output.stderr);
     if !stderr.is_empty() {
         result.push_str("\n[stderr]\n");
         result.push_str(&stderr);
@@ -1141,11 +1145,32 @@ fn docker_mount_path(p: &str) -> String {
 }
 
 fn truncate_output(mut s: String) -> String {
-    if s.chars().count() > 4000 {
-        s = s.chars().take(4000).collect();
-        s.push_str("\n...(已截断)");
+    const MAX: usize = 4000;
+    if s.chars().count() > MAX {
+        // 头尾保留：命令输出的关键结论常在尾部（报错/统计/结果），
+        // 只留头部会把这些"最有用"的信息直接吞掉
+        let head: String = s.chars().take(2500).collect();
+        let tail: String = s.chars().skip(s.chars().count() - 1200).collect();
+        s = format!("{head}\n…[中间输出已省略]…\n{tail}");
     }
     s
+}
+
+/// Windows 控制台输出解码：优先按 UTF-8；含无效字节时按 GBK 兜底重解。
+/// 中文 Windows 控制台默认代码页 936（GBK），cmd/ping/ipconfig 等原生命令的
+/// 中文输出直接 from_utf8_lossy 会整段变乱码，看起来像输出被吞。
+fn decode_console_output(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            let (decoded, _, had_errors) = encoding_rs::GBK.decode(bytes);
+            if had_errors {
+                String::from_utf8_lossy(bytes).into_owned()
+            } else {
+                decoded.into_owned()
+            }
+        }
+    }
 }
 
 // ---------------- P1「网」：HTTP 客户端 + 多渠道推送 ----------------

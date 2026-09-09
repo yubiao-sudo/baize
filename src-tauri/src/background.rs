@@ -20,6 +20,8 @@ pub struct BackgroundTask {
     /// pending | running | retrying | done | failed | cancelled
     pub status: String,
     pub error: Option<String>,
+    /// 任务完成后的完整回复（此前只发 200 字符预览、结果整体丢失）
+    pub result: Option<String>,
     pub retries: usize,
     pub max_retries: usize,
 }
@@ -70,6 +72,7 @@ pub fn submit_task(app: AppHandle, description: String) -> String {
         description: description.clone(),
         status: "pending".into(),
         error: None,
+        result: None,
         retries: 0,
         max_retries: MAX_RETRIES,
     });
@@ -89,7 +92,12 @@ pub fn submit_task(app: AppHandle, description: String) -> String {
 
             match run_once(&app, &description).await {
                 Ok(answer) => {
-                    set_status(&cell, "done", None);
+                    {
+                        let mut t = cell.lock().unwrap();
+                        t.status = "done".into();
+                        t.error = None;
+                        t.result = Some(answer.clone());
+                    }
                     let _ = app.emit(
                         "task-update",
                         json!({
@@ -98,9 +106,15 @@ pub fn submit_task(app: AppHandle, description: String) -> String {
                             "result_preview": answer.chars().take(200).collect::<String>(),
                         }),
                     );
+                    // 完成摘要进执行流：带回复头部内容，前端 kind=phase 可渲染
+                    let excerpt: String = answer.chars().take(600).collect();
                     let _ = app.emit(
                         "thought",
-                        json!({ "kind": "task", "label": format!("后台任务完成 · {task_id}"), "detail": &description }),
+                        json!({
+                            "kind": "phase",
+                            "label": "后台任务完成",
+                            "detail": format!("{description}\n{excerpt}"),
+                        }),
                     );
                     return;
                 }

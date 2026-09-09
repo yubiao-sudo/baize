@@ -91,11 +91,35 @@ impl TerminalState {
         let reader = std::thread::spawn(move || {
             let mut r = reader;
             let mut buf = [0u8; 8192];
+            // 跨块 UTF-8 拼接缓冲：中文等多字节字符被 8KB 读块切开时，
+            // 直接对单块 lossy 解码会把残尾变成乱码——残尾留到下一块拼接
+            let mut pending: Vec<u8> = Vec::new();
             while !stop_reader.load(Ordering::Relaxed) {
                 match r.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                        pending.extend_from_slice(&buf[..n]);
+                        // 按最长合法 UTF-8 前缀解码
+                        let text = match std::str::from_utf8(&pending) {
+                            Ok(s) => {
+                                let t = s.to_string();
+                                pending.clear();
+                                t
+                            }
+                            Err(e) => {
+                                if e.valid_up_to() > 0 {
+                                    let t =
+                                        String::from_utf8_lossy(&pending[..e.valid_up_to()])
+                                            .into_owned();
+                                    pending.drain(..e.valid_up_to());
+                                    t
+                                } else {
+                                    // 开头即非法字节：丢弃 1 字节避免卡死
+                                    let b = pending.remove(0);
+                                    String::from_utf8_lossy(&[b]).into_owned()
+                                }
+                            }
+                        };
                         // 推送到前端渲染
                         let _ = app_reader.emit("term-data", text.clone());
                         // 同时写入共享缓冲区（供 terminal_send 捕获输出）
@@ -103,7 +127,12 @@ impl TerminalState {
                             out.push_str(&text);
                             // 限制最大 200KB，避免无限增长
                             if out.len() > 200_000 {
-                                let keep = out.len().saturating_sub(100_000);
+                                let mut keep = out.len().saturating_sub(100_000);
+                                // 裁剪点必须落在字符边界上，否则切片 panic
+                                // 会杀死读取线程——终端从此永久静默
+                                while keep < out.len() && !out.is_char_boundary(keep) {
+                                    keep += 1;
+                                }
                                 *out = out[keep..].to_string();
                             }
                         }
@@ -156,35 +185,72 @@ impl TerminalState {
             .unwrap_or_default()
     }
 
-    /// 发送命令并等待捕获输出：写入命令 → 轮询输出缓冲区直到稳定或超时 → 返回输出
+    /// 发送命令并等待捕获输出：等残留输出稳定 → 记录起点 → 写入命令 →
+    /// 轮询输出缓冲区直到稳定或超时 → 返回起点之后的输出。
+    /// 用「起点偏移」而非清空缓冲捕获：上一条命令的迟到输出不会被清掉，
+    /// 也不会混进本条命令的捕获窗口。
     pub fn send_and_capture(&self, cmd: &str, timeout_ms: u64) -> Result<String, String> {
-        self.clear_output_buf();
+        // 先等上一条命令的残留输出稳定（最多 1s），避免起点切在半截输出中间
+        let drain_deadline = Instant::now() + Duration::from_millis(1000);
+        let mut last_len = self.read_output_buf().len();
+        let mut stable_ms = 0u64;
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let now_len = self.read_output_buf().len();
+            if now_len == last_len {
+                stable_ms += 100;
+                if stable_ms >= 300 || Instant::now() >= drain_deadline {
+                    break;
+                }
+            } else {
+                stable_ms = 0;
+                last_len = now_len;
+            }
+            if Instant::now() >= drain_deadline {
+                break;
+            }
+        }
+
+        let start = self.read_output_buf().len();
         self.write(&format!("{}\r", cmd))?;
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut last_len = 0usize;
         let mut stable_ms = 0u64;
+        let mut timed_out = false;
 
         loop {
             std::thread::sleep(Duration::from_millis(200));
             let current = self.read_output_buf();
+            let grown = current.len().saturating_sub(start);
             let now = Instant::now();
 
-            if current.len() == last_len {
+            if grown == last_len {
                 stable_ms += 200;
                 // 输出连续 800ms 不变，认为命令已执行完毕
                 if stable_ms >= 800 {
-                    return Ok(current);
+                    break;
                 }
             } else {
                 stable_ms = 0;
-                last_len = current.len();
+                last_len = grown;
             }
 
             if now >= deadline {
-                return Ok(current);
+                timed_out = true;
+                break;
             }
         }
+
+        let buf = self.read_output_buf();
+        let end = buf.len().min(start);
+        // 起点须落在字符边界上；缓冲发生过前裁剪时偏移失效，退回全量
+        let start = if buf.is_char_boundary(end) { end } else { 0 };
+        let mut captured = buf[start..].to_string();
+        if timed_out {
+            captured.push_str("\n[终端] 等待超时，以上为截至超时时刻的输出，命令可能仍在运行");
+        }
+        Ok(truncate_capture(captured))
     }
 
     /// 调整终端行列尺寸
@@ -231,6 +297,19 @@ fn shell() -> &'static str {
     {
         "bash"
     }
+}
+
+/// 终端捕获输出的工具级截断：头尾保留（尾部常是结论/报错），
+/// 避免大输出原样塞进模型上下文
+fn truncate_capture(s: String) -> String {
+    const MAX: usize = 6000;
+    let total = s.chars().count();
+    if total <= MAX {
+        return s;
+    }
+    let head: String = s.chars().take(2200).collect();
+    let tail: String = s.chars().skip(total - 3500).collect();
+    format!("{head}\n…[中间 {} 字符已省略]…\n{tail}", total - 2200 - 3500)
 }
 
 // ---------------- 工具：打开终端窗口 ----------------
