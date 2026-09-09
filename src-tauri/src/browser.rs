@@ -13,6 +13,9 @@ pub struct SearchResult {
     pub title: String,
     pub url: String,
     pub summary: String,
+    /// 网站图标：优先来自搜索引擎结果页原生解析（Bing wr_fav），空则前端直接加载站点 /favicon.ico
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 /// 浏览器标签页
@@ -198,11 +201,11 @@ fn parse_duckduckgo(html: &str) -> Vec<SearchResult> {
         .into_iter()
         .zip(summaries.into_iter().chain(std::iter::repeat(String::new())))
         .take(10)
-        .map(|((url, title), summary)| SearchResult { title, url, summary })
+        .map(|((url, title), summary)| SearchResult { title, url, summary, icon: None })
         .collect()
 }
 
-/// 域名首字母头像的渐变色板（按域名哈希取色，无需联网取 favicon）
+/// 域名首字母头像的渐变色板（按域名哈希取色，作为 favicon 加载失败时的最终兜底）
 const AVATAR_GRADIENTS: &[(&str, &str)] = &[
     ("#6366f1", "#8b5cf6"),
     ("#0ea5e9", "#22d3ee"),
@@ -240,11 +243,14 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
     }
     for (i, r) in results.iter().enumerate() {
         let domain = display_domain(&r.url);
-        let first_char = domain
-            .chars()
+        // 图标加载失败时的文字兜底：显示站点主域名（如 baidu.com → baidu），最多 7 字符
+        let site_name: String = domain
+            .split('.')
             .next()
-            .map(|c| c.to_ascii_uppercase())
-            .unwrap_or('?');
+            .unwrap_or("?")
+            .chars()
+            .take(7)
+            .collect();
         let hash: usize = domain.bytes().map(|b| b as usize).sum();
         let (c1, c2) = AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.len()];
         let summary_html = if r.summary.is_empty() {
@@ -252,22 +258,25 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
         } else {
             format!("<div class='s'>{}</div>", escape_html(&r.summary))
         };
+        // 图标来源：搜索引擎结果页原生解析 → 站点自身 /favicon.ico（WebView 加载，走系统网络与缓存）
+        let img_src = r
+            .icon
+            .clone()
+            .unwrap_or_else(|| format!("https://{domain}/favicon.ico"));
         items.push_str(&format!(
             "<a class='item' style='animation-delay:{}ms' href='{}' target='_blank' rel='noopener'>\
              <span class='num'>{}</span>\
              <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>\
-             <img alt='' loading='lazy' data-s='0' data-f='https://api.iowen.cn/favicon/{domain}.png' \
-             src='https://{domain}/favicon.ico' \
-             onload=\"this.style.opacity='1'\" \
-             onerror=\"if(this.dataset.s==='0'){{this.dataset.s='1';this.src=this.dataset.f}}else{{this.style.display='none'}}\">\
-             {first_char}</span>\
+             <img alt='' loading='lazy' src='{}' \
+             onload=\"this.style.opacity='1'\" onerror=\"this.style.display='none'\">\
+             <span class='an'>{site_name}</span></span>\
              <span class='body'><span class='t'>{}</span>\
              <span class='meta'><span class='dot' style='background:{c1}'></span>{}</span>\
              {}</span></a>",
             i * 45,
             escape_html(&r.url),
             i + 1,
-            first_char,
+            escape_html(&img_src),
             escape_html(&r.title),
             escape_html(&domain),
             summary_html,
@@ -314,6 +323,8 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
          box-shadow:inset 0 0 0 1px rgba(255,255,255,.07)}}\
          .ava img{{width:22px;height:22px;border-radius:5px;opacity:0;transition:opacity .25s;\
          filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}}\
+         .ava .an{{font-size:9px;font-weight:700;letter-spacing:.2px;color:#fff;max-width:30px;\
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.35);\
          .body{{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}}\
          .t{{font-size:14.5px;font-weight:600;color:#93c5fd;line-height:1.45;\
          transition:color .15s;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;\
@@ -579,6 +590,7 @@ fn parse_bing(html: &str) -> Vec<SearchResult> {
                 title: strip_tags(title),
                 url,
                 summary: String::new(),
+                icon: None,
             });
             if results.len() >= 10 {
                 break;
@@ -588,7 +600,7 @@ fn parse_bing(html: &str) -> Vec<SearchResult> {
     results
 }
 
-/// 从单个 b_algo 块中提取标题/链接/摘要
+/// 从单个 b_algo 块中提取标题/链接/摘要/原生网站图标
 fn parse_bing_block(block: &str) -> Option<SearchResult> {
     let re_link = Regex::new(r#"(?s)<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
     let cap = re_link.captures(block)?;
@@ -603,7 +615,13 @@ fn parse_bing_block(block: &str) -> Option<SearchResult> {
         .captures(block)
         .map(|c| strip_tags(c.get(1).map(|m| m.as_str()).unwrap_or("")))
         .unwrap_or_default();
-    Some(SearchResult { title, url, summary })
+    // 网站图标：Bing 在每条结果的 wr_fav 区域内嵌了目标站点 favicon 的缩略图，
+    // 直接取用（与搜索结果同源，无需第三方 favicon 服务）
+    let re_fav = Regex::new(r#"(?s)wr_fav.*?<img[^>]*src="([^"]+)""#).unwrap();
+    let icon = re_fav
+        .captures(block)
+        .map(|c| c.get(1).map(|m| m.as_str()).unwrap_or("").to_string());
+    Some(SearchResult { title, url, summary, icon })
 }
 
 /// 解析百度结果：h3 不再强制要求 class 属性；摘要多选择器兜底 + (?s) 跨行匹配
@@ -636,7 +654,7 @@ fn parse_baidu(html: &str) -> Vec<SearchResult> {
         .into_iter()
         .zip(snips.into_iter().chain(std::iter::repeat(String::new())))
         .take(10)
-        .map(|((url, title), summary)| SearchResult { title, url, summary })
+        .map(|((url, title), summary)| SearchResult { title, url, summary, icon: None })
         .collect()
 }
 
