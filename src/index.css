@@ -1629,9 +1629,11 @@ select option:checked {
 /* ============ 消息分泌出场：刚发出的用户消息从输入框方向被「挤」出来 ============ */
 /* 细胞分泌意象：气泡以小囊泡形态在输入框顶边诞生 → 被挤出拉长 → 脱离母体
    → 果冻式回缩回弹 → 落位成正常气泡。只挂在刚发送的这一条上（.secrete），
-   transform-origin 钉在底部（朝向输入框），位移从输入框方向起跳。 */
+   transform-origin 钉在底部（朝向输入框），位移从输入框方向起跳。
+   丝滑要点：单一 ease-out 曲线贯穿全程（各段间无速度突变）、关键帧加密让
+   形变梯度均匀、过冲收敛到 ±2% 内、模糊只在诞生瞬间且快速清零。 */
 .msg.user.secrete {
-  animation: msg-secrete 0.72s cubic-bezier(0.3, 1.25, 0.45, 1) both;
+  animation: msg-secrete 0.85s cubic-bezier(0.3, 0.9, 0.35, 1) both;
   transform-origin: 50% 100%;
   will-change: transform, opacity, border-radius;
 }
@@ -1639,26 +1641,31 @@ select option:checked {
   0% {
     opacity: 0;
     /* 诞生：贴着输入框的小圆囊泡，压得很扁还带着膜的模糊感 */
-    transform: translateY(30px) scale(0.5, 0.16);
+    transform: translateY(34px) scale(0.55, 0.14);
     border-radius: 999px;
-    filter: blur(1.5px);
+    filter: blur(2px);
   }
-  38% {
+  20% {
+    opacity: 0.9;
+    /* 缓起：囊泡刚被顶出母体 */
+    transform: translateY(21px) scale(0.72, 0.46);
+    filter: blur(1px);
+  }
+  42% {
     opacity: 1;
-    /* 挤出：被拉长成竖椭圆，膜变清晰 */
-    transform: translateY(10px) scale(0.9, 1.28);
+    /* 挤出：拉长成竖椭圆，膜变清晰 */
+    transform: translateY(7px) scale(0.93, 1.22);
     border-radius: 999px;
-    filter: blur(0.5px);
-  }
-  62% {
-    /* 脱离：冲过落点，身体横向摊开 */
-    transform: translateY(-3px) scale(1.08, 0.86);
-    border-radius: 16px 16px 16px 6px;
     filter: blur(0);
   }
+  64% {
+    /* 脱离：滑过落点，身体轻轻摊开 */
+    transform: translateY(-2px) scale(1.04, 0.94);
+    border-radius: 14px 14px 14px 6px;
+  }
   82% {
-    /* 回弹：反向果冻抖一下 */
-    transform: translateY(1px) scale(0.97, 1.05);
+    /* 回落：反向微抖收尾 */
+    transform: translateY(0.5px) scale(0.99, 1.02);
   }
   100% {
     opacity: 1;
