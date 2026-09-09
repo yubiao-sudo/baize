@@ -7,6 +7,7 @@ import {
   closeBrowserTab,
   getBrowserState,
   onBrowserUpdate,
+  openUrlTab,
   switchBrowserTab,
 } from "../api";
 import type { Tab } from "../types";
@@ -28,6 +29,19 @@ export default function BrowserWindow() {
     return () => {
       un.then((f) => f());
     };
+  }, []);
+
+  // 搜索结果页（html 标签 iframe）点击卡片 → 在内置浏览器中打开新标签页；
+  // 结果页自身保留为独立标签，切回即返回搜索结果
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      const d = e.data as { type?: string; url?: string } | null;
+      if (!d || d.type !== "baize-open-url" || typeof d.url !== "string") return;
+      if (!/^https?:\/\//i.test(d.url)) return;
+      void openUrlTab(d.url).catch(() => {});
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
   }, []);
 
   const applyTabs = (ts: Tab[]) => {

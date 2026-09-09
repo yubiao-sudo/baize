@@ -770,6 +770,9 @@ pub fn run() {
                     handle.clone(),
                     state.browser.clone(),
                 )));
+                state.tools.register(Box::new(browser::BrowserWindowCloseTool::new(
+                    handle.clone(),
+                )));
                 state.tools.register(Box::new(browser::BrowserRenderHtmlTool::new(
                     handle.clone(),
                     state.browser.clone(),
@@ -1138,6 +1141,8 @@ pub fn run() {
             commands::get_browser_state,
             commands::switch_browser_tab,
             commands::close_browser_tab,
+            browser::browser_open_url_tab,
+            windows::open_webview_window,
             commands::browser_act,
             commands::browser_get_path,
             commands::browser_set_path,

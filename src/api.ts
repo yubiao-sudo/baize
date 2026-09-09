@@ -756,6 +756,16 @@ export async function closeBrowserTab(id: string): Promise<boolean> {
   return invoke<boolean>("close_browser_tab", { id });
 }
 
+/** 在白泽内置浏览器中打开一个网页标签页（搜索结果页点击卡片 → 内跳，结果页保留可切回） */
+export async function openUrlTab(url: string): Promise<unknown> {
+  return invoke("browser_open_url_tab", { url });
+}
+
+/** 在独立 WebView 窗口打开网页（白泽文档外链用，文档本体不被导航替换） */
+export async function openWebviewWindow(url: string): Promise<void> {
+  return invoke("open_webview_window", { url });
+}
+
 /** 前端「预览」按钮：把完整 HTML 页面代码打开到内置浏览器窗口 */
 export async function previewHtml(html: string, title?: string): Promise<string> {
   return invoke<string>("preview_html", { html, title: title ?? "HTML 预览" });

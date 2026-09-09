@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
   closeMarkdownTab,
   getMarkdownState,
   onMarkdownUpdate,
+  openWebviewWindow,
   saveMarkdown,
   switchMarkdownTab,
 } from "../api";
@@ -196,6 +197,18 @@ export default function MarkdownWindow() {
     setShowToc(false);
   };
 
+  // 外链拦截：文档内点击 http(s) 链接 → 独立 WebView 窗口打开，文档本体不被导航替换——
+  // 避免「点了链接整个文档窗口被外部页面顶掉，原文档回不来」
+  const onBodyClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const a = (e.target as HTMLElement).closest?.("a");
+    if (!a) return;
+    const href = a.getAttribute("href") || "";
+    if (/^https?:\/\//i.test(href)) {
+      e.preventDefault();
+      void openWebviewWindow(href).catch(() => {});
+    }
+  };
+
   return (
     <div className="side-window">
       <div className="browser-tabbar">
@@ -222,6 +235,13 @@ export default function MarkdownWindow() {
       </div>
 
       <div className="side-toolbar">
+        <button
+          className="side-btn"
+          title="返回上一页（文档内导航）"
+          onClick={() => window.history.back()}
+        >
+          ← 返回
+        </button>
         <span className="side-title">📄 {activeDoc?.title || "白泽文档"}</span>
         <span className="side-tag">
           {done ? `${target.length} 字` : `${shown}/${target.length}`}
@@ -262,7 +282,7 @@ export default function MarkdownWindow() {
         </div>
       )}
 
-      <div className="side-content markdown-body" ref={bodyRef} onScroll={onScroll}>
+      <div className="side-content markdown-body" ref={bodyRef} onScroll={onScroll} onClick={onBodyClick}>
         {docs.length === 0 ? (
           <div className="browser-empty">
             让白泽在这里写文档吧

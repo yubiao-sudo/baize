@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use regex::Regex;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::tools::{PermissionClass, Tool};
 
@@ -268,7 +268,7 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
             .clone()
             .unwrap_or_else(|| format!("https://{domain}/favicon.ico"));
         items.push_str(&format!(
-            "<a class='item' style='animation-delay:{}ms' href='{}' target='_blank' rel='noopener'>\
+            "<a class='item' style='animation-delay:{}ms' href='{}'>\
              <span class='num'>{}</span>\
              <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>\
              <img alt='' loading='lazy' src='{}' \
@@ -329,7 +329,7 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
          .ava img{{width:22px;height:22px;border-radius:5px;opacity:0;transition:opacity .25s;\
          filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}}\
          .ava .an{{font-size:9px;font-weight:700;letter-spacing:.2px;color:#fff;max-width:30px;\
-         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.35);\
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 2px rgba(0,0,0,.35)}}\
          .body{{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}}\
          .t{{font-size:14.5px;font-weight:600;color:#93c5fd;line-height:1.45;\
          transition:color .15s;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;\
@@ -351,7 +351,10 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
          <div class='chips'><span class='chip acc'>🌐 {}</span><span class='chip'>{}</span>\
          <span class='chip'>🕒 {}</span></div></div>\
          <div class='list'>{}</div>\
-         <div class='foot'>白泽多引擎聚合搜索 · 点击卡片在新窗口打开来源</div>\
+         <div class='foot'>白泽多引擎聚合搜索 · 点击卡片在白泽浏览器内打开来源，切回本页即返回</div>\
+         <script>document.addEventListener('click',function(e){{\
+         var a=e.target&&e.target.closest?e.target.closest('a.item'):null;if(!a)return;\
+         e.preventDefault();parent.postMessage({{type:'baize-open-url',url:a.getAttribute('href')}},'*');}});</script>\
          </body></html>",
         escape_html(query),
         escape_html(engine_badge),
@@ -724,7 +727,7 @@ impl Tool for BrowserSearchTool {
         "browser_search"
     }
     fn description(&self) -> &str {
-        "在内置浏览器窗口中进行内容搜索（抓取 DuckDuckGo 结果并解析成清晰的结果列表展示）"
+        "在内置浏览器窗口中进行内容搜索（多引擎聚合，结果以可视化列表展示）。结果卡片可点击在浏览器内打开来源网页；信息取回后如不再需要浏览器，可用 browser_close_window 收起窗口"
     }
     fn schema(&self) -> Value {
         json!({
@@ -2021,6 +2024,79 @@ static ACT_LOCK: Mutex<()> = Mutex::new(());
 pub fn act(args: Value) -> Result<Value, String> {
     let _guard = ACT_LOCK.lock().map_err(|_| "浏览器操控正忙，请稍后重试".to_string())?;
     BrowserActTool.run(args)
+}
+
+/// 前端命令：在白泽内置浏览器中打开一个网页标签页（搜索结果页点击卡片 → 内置浏览器内跳转）。
+/// 结果页自身保留为独立标签页，切回即「返回搜索结果」，不会丢失搜索上下文。
+#[tauri::command]
+pub fn browser_open_url_tab(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    url: String,
+) -> Result<Value, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("非法 URL: {url}"));
+    }
+    let title = {
+        // 取域名做标签页标题，加载完成后用户可从页面自行辨识
+        url.split("://")
+            .nth(1)
+            .unwrap_or(&url)
+            .split('/')
+            .next()
+            .unwrap_or("网页")
+            .to_string()
+    };
+    {
+        let mut s = state.browser.lock().unwrap();
+        s.open_tab("url", &title, &url);
+    }
+    emit_update(&app, &state.browser.clone());
+    Ok(json!({ "ok": true, "url": url }))
+}
+
+// ───────────────────────── browser_close_window（由白泽自行决定关闭浏览器窗口） ─────────────────────────
+
+/// browser_close_window 工具：关闭内置浏览器窗口（整个窗口，而非单个标签页；
+/// 关标签页用 browser_close，清空标签用 browser_close_all）。
+/// 典型场景：browser_search / 网页浏览完成后，信息已取回，由白泽判断不再需要浏览器时
+/// 主动收起窗口，保持用户桌面清爽——要不要关、何时关，由白泽根据任务进展自行决定。
+pub struct BrowserWindowCloseTool {
+    app: AppHandle,
+}
+
+impl BrowserWindowCloseTool {
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl Tool for BrowserWindowCloseTool {
+    fn name(&self) -> &str {
+        "browser_close_window"
+    }
+    fn description(&self) -> &str {
+        "关闭内置浏览器窗口（整个窗口）。在完成搜索或网页查阅、信息已取回且用户大概率不再需要查看浏览器内容时调用；若用户正在浏览或可能还要看页面，则不要调用"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {}
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, _args: Value) -> Result<Value, String> {
+        let closed = match self.app.get_webview_window("browser") {
+            Some(win) => {
+                win.close().map_err(|e| format!("关闭浏览器窗口失败: {e}"))?;
+                true
+            }
+            None => false, // 本来就没开，视为已关
+        };
+        Ok(json!({ "ok": true, "closed": closed }))
+    }
 }
 
 #[cfg(test)]
