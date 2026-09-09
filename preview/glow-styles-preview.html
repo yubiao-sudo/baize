@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>白泽 · 任务完成流光样式预览</title>
+<style>
+@property --glow-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+* { box-sizing: border-box; }
+body { font-family: system-ui, "Microsoft YaHei", sans-serif; background: #0b0e14; color: #e5e7eb; margin: 0; padding: 26px 20px 50px; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+p.sub { font-size: 12px; color: #64748b; margin: 0 0 22px; }
+h2 { font-size: 14.5px; color: #38bdf8; margin: 26px 0 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+.demo { position: relative; border-radius: 14px; background: #131926; padding: 16px; min-height: 96px; }
+.demo .t { font-size: 13px; font-weight: 600; }
+.demo .d { font-size: 11px; color: #64748b; margin-top: 5px; line-height: 1.55; }
+/* —— 与白泽实现同一套 CSS —— */
+.chat-glow {
+  --g1: rgba(56,189,248,.85); --g2: rgba(167,139,250,.95); --g3: rgba(125,211,252,.9);
+  --halo: rgba(56,189,248,.22);
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 1;
+}
+.chat-glow::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 2px;
+  background: conic-gradient(from var(--glow-angle), transparent 0deg, transparent 290deg,
+    var(--g1) 325deg, var(--g2) 348deg, var(--g3) 360deg);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: glow-spin 1.5s linear infinite;
+}
+.chat-glow::after {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit;
+  box-shadow: 0 0 22px var(--halo), inset 0 0 14px var(--halo);
+  animation: glow-breathe 1.5s ease-in-out infinite;
+}
+@keyframes glow-spin { to { --glow-angle: 360deg; } }
+@keyframes glow-breathe { 0%,100% { opacity: .55 } 50% { opacity: 1 } }
+.chat-glow.d-ccw::before { animation-direction: reverse; }
+.chat-glow.d-bounce::before { animation-name: glow-bounce; animation-direction: alternate; animation-timing-function: ease-in-out; }
+@keyframes glow-bounce { from { --glow-angle: -130deg } to { --glow-angle: 130deg } }
+.chat-glow.d-pulse::before {
+  background: conic-gradient(var(--g3), var(--g1), var(--g2), var(--g3));
+  animation: glow-pulse-ring 1.5s ease-in-out infinite;
+}
+@keyframes glow-pulse-ring { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+.chat-glow.g-sunset { --g1: rgba(251,146,60,.9); --g2: rgba(244,114,182,.95); --g3: rgba(251,191,36,.9); --halo: rgba(251,146,60,.22); }
+.chat-glow.g-emerald { --g1: rgba(52,211,153,.9); --g2: rgba(34,211,238,.95); --g3: rgba(167,243,208,.9); --halo: rgba(52,211,153,.2); }
+.chat-glow.g-neon::before {
+  background: conic-gradient(from var(--glow-angle), transparent 0deg, transparent 235deg,
+    rgba(248,113,113,.9) 262deg, rgba(251,191,36,.9) 288deg, rgba(74,222,128,.9) 314deg,
+    rgba(34,211,238,.92) 338deg, rgba(167,139,250,.95) 360deg);
+}
+.chat-glow.g-neon { --halo: rgba(139,92,246,.2); }
+.chat-glow.g-moon { --g1: rgba(226,232,240,.7); --g2: rgba(241,245,249,.92); --g3: rgba(203,213,225,.65); --halo: rgba(226,232,240,.16); }
+.chat-glow.g-neon.d-pulse::before {
+  background: conic-gradient(rgba(248,113,113,.85), rgba(251,191,36,.85), rgba(74,222,128,.85),
+    rgba(34,211,238,.85), rgba(167,139,250,.9), rgba(248,113,113,.85));
+}
+</style>
+</head>
+<body>
+<h1>任务完成流光 · 样式与方向预览</h1>
+<p class="sub">与白泽实现同一套 CSS。设置 → 通知与音效 → 界面效果 中选择，下一次任务完成时生效。</p>
+
+<h2>流光样式（默认方向：顺时针）</h2>
+<div class="grid">
+  <div class="demo"><div class="chat-glow"></div><div class="t">极光</div><div class="d">青紫蓝渐变（默认）</div></div>
+  <div class="demo"><div class="chat-glow g-sunset"></div><div class="t">落日</div><div class="d">橙粉金暖色系</div></div>
+  <div class="demo"><div class="chat-glow g-emerald"></div><div class="t">翠影</div><div class="d">青碧薄荷色系</div></div>
+  <div class="demo"><div class="chat-glow g-neon"></div><div class="t">霓虹</div><div class="d">红黄绿青紫五段彩虹光带</div></div>
+  <div class="demo"><div class="chat-glow g-moon"></div><div class="t">月白</div><div class="d">银白微光，克制优雅</div></div>
+</div>
+
+<h2>流光方向（默认样式：极光）</h2>
+<div class="grid">
+  <div class="demo"><div class="chat-glow d-cw"></div><div class="t">↻ 顺时针</div><div class="d">光带沿边框顺时针巡游</div></div>
+  <div class="demo"><div class="chat-glow d-ccw"></div><div class="t">↺ 逆时针</div><div class="d">与顺时针相反方向</div></div>
+  <div class="demo"><div class="chat-glow d-bounce"></div><div class="t">⇄ 往返摆动</div><div class="d">光带在左下↔右上之间来回</div></div>
+  <div class="demo"><div class="chat-glow d-pulse"></div><div class="t">◎ 全框呼吸</div><div class="d">不旋转，整圈均匀亮起—呼吸</div></div>
+</div>
+
+<h2>组合彩蛋：霓虹 × 往返摆动</h2>
+<div class="grid">
+  <div class="demo"><div class="chat-glow g-neon d-bounce"></div><div class="t">霓虹 · 往返摆动</div><div class="d">彩虹光带来回扫</div></div>
+  <div class="demo"><div class="chat-glow g-sunset d-pulse"></div><div class="t">落日 · 全框呼吸</div><div class="d">暖色整圈呼吸</div></div>
+</div>
+</body>
+</html>

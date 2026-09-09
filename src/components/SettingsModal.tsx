@@ -317,6 +317,22 @@ export default function SettingsModal({
     setGlowMs(ms);
     localStorage.setItem("baize_glow_ms", String(ms));
   };
+  // 流光方向：顺时针 / 逆时针 / 往返摆动 / 全框呼吸
+  const [glowDir, setGlowDir] = useState<string>(
+    () => localStorage.getItem("baize_glow_dir") || "cw",
+  );
+  const pickGlowDir = (dir: string) => {
+    setGlowDir(dir);
+    localStorage.setItem("baize_glow_dir", dir);
+  };
+  // 流光样式：极光 / 落日 / 翠影 / 霓虹 / 月白
+  const [glowStyle, setGlowStyle] = useState<string>(
+    () => localStorage.getItem("baize_glow_style") || "aurora",
+  );
+  const pickGlowStyle = (style: string) => {
+    setGlowStyle(style);
+    localStorage.setItem("baize_glow_style", style);
+  };
 
   const toggleSfx = (on: boolean) => {
     setSfxOn(on);
@@ -2084,6 +2100,82 @@ export default function SettingsModal({
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
                   任务执行完成时，聊天框边框会闪一圈流光提示；时长到达后自动淡出消失。
+                </div>
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>流光方向</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(
+                    [
+                      { dir: "cw", label: "↻ 顺时针" },
+                      { dir: "ccw", label: "↺ 逆时针" },
+                      { dir: "bounce", label: "⇄ 往返摆动" },
+                      { dir: "pulse", label: "◎ 全框呼吸" },
+                    ] as { dir: string; label: string }[]
+                  ).map(({ dir, label }) => (
+                    <button
+                      key={dir}
+                      className="acui-btn"
+                      style={{
+                        padding: "6px 14px",
+                        borderColor: glowDir === dir ? "var(--accent)" : undefined,
+                        color: glowDir === dir ? "#fff" : undefined,
+                        background: glowDir === dir ? "var(--accent-soft)" : undefined,
+                      }}
+                      onClick={() => pickGlowDir(dir)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>流光样式</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(
+                    [
+                      { style: "aurora", label: "极光", grad: "linear-gradient(135deg,#38bdf8,#a78bfa,#7dd3fc)" },
+                      { style: "sunset", label: "落日", grad: "linear-gradient(135deg,#fb923c,#f472b6,#fbbf24)" },
+                      { style: "emerald", label: "翠影", grad: "linear-gradient(135deg,#34d399,#22d3ee,#a7f3d0)" },
+                      {
+                        style: "neon",
+                        label: "霓虹",
+                        grad: "linear-gradient(135deg,#f87171,#fbbf24,#4ade80,#22d3ee,#a78bfa)",
+                      },
+                      { style: "moon", label: "月白", grad: "linear-gradient(135deg,#e2e8f0,#f8fafc,#cbd5e1)" },
+                    ] as { style: string; label: string; grad: string }[]
+                  ).map(({ style, label, grad }) => (
+                    <button
+                      key={style}
+                      className="acui-btn"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 7,
+                        padding: "6px 13px",
+                        borderColor: glowStyle === style ? "var(--accent)" : undefined,
+                        color: glowStyle === style ? "#fff" : undefined,
+                        background: glowStyle === style ? "var(--accent-soft)" : undefined,
+                      }}
+                      onClick={() => pickGlowStyle(style)}
+                    >
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 13,
+                          height: 13,
+                          borderRadius: "50%",
+                          background: grad,
+                          boxShadow: "0 0 6px rgba(255,255,255,.25)",
+                          flexShrink: 0,
+                        }}
+                      />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+                  下一次任务完成时生效；点击样式色卡可预览配色。
                 </div>
               </div>
             </section>

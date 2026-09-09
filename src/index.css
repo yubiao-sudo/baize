@@ -1264,7 +1264,12 @@ select option:checked {
   inherits: false;
   initial-value: 0deg;
 }
+/* 流光调色板：默认极光青紫，样式类整体覆盖三个色标 + 柔光色 */
 .chat-glow {
+  --g1: rgba(56, 189, 248, 0.85);
+  --g2: rgba(167, 139, 250, 0.95);
+  --g3: rgba(125, 211, 252, 0.9);
+  --halo: rgba(56, 189, 248, 0.22);
   position: absolute;
   inset: 0;
   z-index: 30;
@@ -1285,9 +1290,9 @@ select option:checked {
     from var(--glow-angle),
     transparent 0deg,
     transparent 290deg,
-    rgba(56, 189, 248, 0.85) 325deg,
-    rgba(167, 139, 250, 0.95) 348deg,
-    rgba(125, 211, 252, 0.9) 360deg
+    var(--g1) 325deg,
+    var(--g2) 348deg,
+    var(--g3) 360deg
   );
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
@@ -1303,8 +1308,8 @@ select option:checked {
   inset: -1px;
   border-radius: inherit;
   box-shadow:
-    0 0 22px rgba(56, 189, 248, 0.22),
-    inset 0 0 14px rgba(56, 189, 248, 0.07);
+    0 0 22px var(--halo),
+    inset 0 0 14px var(--halo);
   animation: glow-breathe 1.5s ease-in-out infinite;
 }
 @keyframes glow-spin {
@@ -1329,16 +1334,95 @@ select option:checked {
     opacity: 1;
   }
 }
-/* 浅色主题下压暗光带，避免刺眼 */
-[data-theme="light-glass"] .chat-glow::before {
+
+/* ---- 方向：逆时针 ---- */
+.chat-glow.d-ccw::before {
+  animation-direction: reverse;
+}
+/* ---- 方向：往返摆动（光带在左下↔右上之间来回） ---- */
+.chat-glow.d-bounce::before {
+  animation-name: glow-bounce;
+  animation-direction: alternate;
+  animation-timing-function: ease-in-out;
+}
+@keyframes glow-bounce {
+  from {
+    --glow-angle: -130deg;
+  }
+  to {
+    --glow-angle: 130deg;
+  }
+}
+/* ---- 方向：全框呼吸（不旋转，整圈均匀亮起—呼吸） ---- */
+.chat-glow.d-pulse::before {
+  background: conic-gradient(var(--g3), var(--g1), var(--g2), var(--g3));
+  animation: glow-pulse-ring 1.5s ease-in-out infinite;
+}
+@keyframes glow-pulse-ring {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- 样式：落日橙粉 ---- */
+.chat-glow.g-sunset {
+  --g1: rgba(251, 146, 60, 0.9);
+  --g2: rgba(244, 114, 182, 0.95);
+  --g3: rgba(251, 191, 36, 0.9);
+  --halo: rgba(251, 146, 60, 0.22);
+}
+/* ---- 样式：翠影青碧 ---- */
+.chat-glow.g-emerald {
+  --g1: rgba(52, 211, 153, 0.9);
+  --g2: rgba(34, 211, 238, 0.95);
+  --g3: rgba(167, 243, 208, 0.9);
+  --halo: rgba(52, 211, 153, 0.2);
+}
+/* ---- 样式：霓虹彩虹（多色段光带） ---- */
+.chat-glow.g-neon::before {
   background: conic-gradient(
     from var(--glow-angle),
     transparent 0deg,
-    transparent 290deg,
-    rgba(2, 132, 199, 0.8) 325deg,
-    rgba(124, 58, 237, 0.9) 348deg,
-    rgba(2, 132, 199, 0.85) 360deg
+    transparent 235deg,
+    rgba(248, 113, 113, 0.9) 262deg,
+    rgba(251, 191, 36, 0.9) 288deg,
+    rgba(74, 222, 128, 0.9) 314deg,
+    rgba(34, 211, 238, 0.92) 338deg,
+    rgba(167, 139, 250, 0.95) 360deg
   );
+}
+.chat-glow.g-neon {
+  --halo: rgba(139, 92, 246, 0.2);
+}
+/* ---- 样式：月白流银 ---- */
+.chat-glow.g-moon {
+  --g1: rgba(226, 232, 240, 0.7);
+  --g2: rgba(241, 245, 249, 0.92);
+  --g3: rgba(203, 213, 225, 0.65);
+  --halo: rgba(226, 232, 240, 0.16);
+}
+/* 呼吸方向下彩虹样式整圈铺色 */
+.chat-glow.g-neon.d-pulse::before {
+  background: conic-gradient(
+    rgba(248, 113, 113, 0.85),
+    rgba(251, 191, 36, 0.85),
+    rgba(74, 222, 128, 0.85),
+    rgba(34, 211, 238, 0.85),
+    rgba(167, 139, 250, 0.9),
+    rgba(248, 113, 113, 0.85)
+  );
+}
+
+/* 浅色主题下压暗光带，避免刺眼（兼容全部样式/方向组合） */
+[data-theme="light-glass"] .chat-glow::before {
+  filter: brightness(0.82) saturate(1.15);
+}
+[data-theme="light-glass"] .chat-glow::after {
+  opacity: 0.7;
 }
 
 /* ============ 银河背景：canvas 粒子旋涡星系（纯观赏，无数据） ============ */

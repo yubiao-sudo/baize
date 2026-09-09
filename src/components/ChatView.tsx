@@ -661,8 +661,12 @@ export default function ChatView() {
 
   // 任务完成流光：执行/对比从「进行中」转「空闲」的下降沿触发，
   // 整个聊天框边框闪一圈流光，按「通知与音效」页配置的时长后淡出。
-  // 时长存 localStorage（baize_glow_ms），0 = 关闭流光
+  // 时长/方向/样式存 localStorage（baize_glow_ms / baize_glow_dir / baize_glow_style），0 = 关闭流光
   const [glowPhase, setGlowPhase] = useState<"on" | "fade" | null>(null);
+  const [glowCfg, setGlowCfg] = useState<{ dir: string; style: string }>({
+    dir: "cw",
+    style: "aurora",
+  });
   const prevRunRef = useRef(false);
   useEffect(() => {
     const running = busy || comparing;
@@ -671,6 +675,11 @@ export default function ChatView() {
     if (!was || running) return;
     const cfg = Number(localStorage.getItem("baize_glow_ms") ?? "4000");
     if (!Number.isFinite(cfg) || cfg <= 0) return;
+    // 触发时读取方向/样式，设置页改完下一次任务完成即生效
+    setGlowCfg({
+      dir: localStorage.getItem("baize_glow_dir") || "cw",
+      style: localStorage.getItem("baize_glow_style") || "aurora",
+    });
     setGlowPhase("on");
     const fadeAt = Math.max(500, cfg - 700);
     const t1 = window.setTimeout(() => setGlowPhase("fade"), fadeAt);
@@ -934,7 +943,12 @@ export default function ChatView() {
       }}
     >
       {/* 任务完成流光边框（纯装饰层，不挡交互） */}
-      {glowPhase && <div className={`chat-glow ${glowPhase}`} aria-hidden />}
+      {glowPhase && (
+        <div
+          className={`chat-glow ${glowPhase} g-${glowCfg.style} d-${glowCfg.dir}`}
+          aria-hidden
+        />
+      )}
       {/* 未贴底时的「回到底部」悬浮按钮 */}
       {!stick && (
         <button
