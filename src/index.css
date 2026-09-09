@@ -832,6 +832,112 @@ select option:checked {
   font-weight: 500;
   color: var(--text);
   z-index: 0;
+  /* 居中会话标题做成胶囊章：让中段不再是一片空白，也强化「当前上下文」的锚点感 */
+  padding: 3px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+
+/* ---- 左侧身份区：品牌名 + 版本徽章 ---- */
+.tb-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  z-index: 1;
+  margin-left: 2px;
+}
+
+.tb-brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text);
+}
+
+.tb-version {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-dim);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(255, 255, 255, 0.03);
+  letter-spacing: 0.3px;
+}
+
+/* 品牌区与状态区之间的细分隔线 */
+.tb-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-soft);
+  margin: 0 10px;
+  flex: none;
+}
+
+/* ---- 左侧状态灯：复用心跳线五态配色（--ecg），实时反映白泽活动 ---- */
+.tb-status {
+  --ecg: 56, 189, 248; /* idle：静息蓝 */
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  max-width: 32vw;
+  z-index: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.tb-status.tone-active {
+  --ecg: 34, 211, 238;
+}
+.tb-status.tone-phase {
+  --ecg: 167, 139, 250;
+}
+.tb-status.tone-tool {
+  --ecg: 251, 146, 60;
+}
+.tb-status.tone-bad {
+  --ecg: 248, 113, 113;
+}
+
+.tb-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: rgb(var(--ecg));
+  box-shadow: 0 0 6px rgba(var(--ecg), 0.8);
+}
+
+/* 非空闲态呼吸脉冲；空闲静息不闪 */
+.tb-status:not(.tone-idle) .tb-status-dot {
+  animation: tb-status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tb-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 4px rgba(var(--ecg), 0.5);
+    opacity: 0.75;
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(var(--ecg), 0.95);
+    opacity: 1;
+  }
+}
+
+.tb-status-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 浅色主题：白色微底在浅色顶栏上不可见，换成深色微底 */
+[data-theme="light-glass"] .tb-title,
+[data-theme="light-glass"] .tb-version {
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .tb-right {

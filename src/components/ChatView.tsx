@@ -512,16 +512,32 @@ export default function ChatView() {
     });
     return () => off?.();
   }, []);
-  // 新的用户消息到来说明进入新一轮：文档朗读抑制解除
+  // 新的用户消息到来说明进入新一轮：文档朗读抑制解除，并武装本轮朗读
+  const ttsRoundArmedRef = useRef(false);
   useEffect(() => {
     const last = history[history.length - 1];
-    if (last?.role === "user") suppressReplyReadRef.current = false;
+    if (last?.role === "user") {
+      suppressReplyReadRef.current = false;
+      ttsRoundArmedRef.current = true;
+    }
   }, [history]);
+  // TTS 开启瞬间：以当前最后一条 assistant 消息为基线——恢复的历史 / 切换会话
+  // 带来的旧回复一律不朗读，只读「开启之后用户新发出消息」得到的回复
+  useEffect(() => {
+    if (!ttsEnabled || !ttsSupported) return;
+    const last = history[history.length - 1];
+    if (last?.role === "assistant") {
+      lastSpokenRef.current = last.content;
+      ttsRoundArmedRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsEnabled, ttsSupported]);
   useEffect(() => {
     const last = history[history.length - 1];
     if (
       ttsEnabled &&
       ttsSupported &&
+      ttsRoundArmedRef.current &&
       last &&
       last.role === "assistant" &&
       last.content &&
@@ -529,6 +545,7 @@ export default function ChatView() {
       last.content !== lastSpokenRef.current
     ) {
       lastSpokenRef.current = last.content;
+      ttsRoundArmedRef.current = false;
       // 文档出现时已经朗读过本轮内容：落定的回复只作展示，不再重复朗读。
       // 但若这条被抑制的回复以提问收尾，仍要把话筒交回（挂到进行中朗读的收尾上）
       if (suppressReplyReadRef.current) {
@@ -702,17 +719,22 @@ export default function ChatView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [narrating]);
 
-  // 兜底校准：生成期间逐帧强制钉底（rAF）。事件驱动的钉底（token/step/RO）
+  // 兜底校准：生成期间逐帧贴底（rAF）。事件驱动的钉底（token/step/RO）
   // 依赖「事件 → 渲染 → 观察」的时序链，任何一环错过（clamp 抖动、deferred
   // 渲染晚帧、300ms 定时档的窗口期）都会让新增长的内容在折叠线下被截断——
   // 用户实测流式期间最新一行被输入框上方一小块挡住即此窗口期。
   // rAF 每帧校准：内容增长的同一帧就贴底，浏览器合并同一帧内的滚动与绘制，
-  // 不产生可见的截断帧；成本仅每帧一次 scrollTop 写入。会话结束后恢复自由滚动。
+  // 不产生可见的截断帧；成本仅每帧一次 scrollTop 写入。校准尊重 stick：
+  // 用户向上翻页即停止，滚回底部自动恢复；会话结束后恢复自由滚动。
   useEffect(() => {
     if (!busy) return;
     let raf = 0;
     const tick = () => {
-      scrollToBottom(true);
+      // 只在贴底跟随（stick）时逐帧校准：用户向上翻页（stick=false）期间完全
+      // 停止钉底，滚轮/拖动自由查看历史；重新滚回底部附近（nearBottom）
+      // onScroll 会把 stick 翻回 true，跟随自动恢复——生成不中断
+      const el = scrollRef.current;
+      if (el && stickRef.current) el.scrollTop = el.scrollHeight;
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

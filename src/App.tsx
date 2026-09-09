@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import pkg from "../package.json";
 import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import ConsciousnessNetwork from "./components/ConsciousnessNetwork";
@@ -596,6 +597,19 @@ export default function App() {
         <span className="brand-mark tb-logo" aria-hidden="true">
           泽
         </span>
+        {/* 左侧身份区：品牌名 + 版本徽章 + 状态灯，填补左侧空旷 */}
+        <div className="tb-brand" data-tauri-drag-region>
+          <span className="tb-brand-name">白泽</span>
+          <span className="tb-version">v{pkg.version}</span>
+        </div>
+        <div className="tb-divider" aria-hidden="true" />
+        <div className={`tb-status tone-${activity.tone}`} data-tauri-drag-region>
+          <span className="tb-status-dot" aria-hidden="true" />
+          <span className="tb-status-text">
+            {activity.label}
+            {activity.detail ? ` · ${activity.detail}` : ""}
+          </span>
+        </div>
         <div className="tb-title" data-tauri-drag-region title={convTitle}>
           {convTitle}
         </div>
