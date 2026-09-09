@@ -24,6 +24,8 @@ const Galaxy = lazy(() => import("./components/Galaxy"));
 // 首次启动环境自检（全屏引导层）+ 非首次启动提示卡
 const Onboarding = lazy(() => import("./components/Onboarding"));
 import { EnvNotice } from "./components/Onboarding";
+// 新手引导（聚光灯分步导览）
+import GuideTour from "./components/GuideTour";
 import { JobsToast } from "./components/JobsToast";
 import {
   envGetState,
@@ -214,6 +216,14 @@ export default function App() {
       .then((st) => setOnboarding(!st.onboarding_done))
       .catch(() => setOnboarding(false));
   }, []);
+  // 新手引导：首次进入主界面（环境自检通过/完成后）自动播放一次，顶栏 ？ 可随时重放
+  const [guideOpen, setGuideOpen] = useState(false);
+  useEffect(() => {
+    if (onboarding === false && !localStorage.getItem("baize_guide_done")) {
+      const t = window.setTimeout(() => setGuideOpen(true), 600);
+      return () => clearTimeout(t);
+    }
+  }, [onboarding]);
   useEffect(() => {
     const win = getCurrentWindow();
     let disposed = false;
@@ -603,7 +613,7 @@ export default function App() {
           <span className="tb-version">v{pkg.version}</span>
         </div>
         <div className="tb-divider" aria-hidden="true" />
-        <div className={`tb-status tone-${activity.tone}`} data-tauri-drag-region>
+        <div className={`tb-status tone-${activity.tone}`} data-tauri-drag-region data-guide="status">
           <span className="tb-status-dot" aria-hidden="true" />
           <span className="tb-status-text">
             {activity.label}
@@ -614,7 +624,15 @@ export default function App() {
           {convTitle}
         </div>
         <div className="tb-right">
-          <div className="tb-menu-wrap">
+          <button
+            className="tb-icon-btn"
+            title="新手引导"
+            aria-label="新手引导"
+            onClick={() => setGuideOpen(true)}
+          >
+            <span className="tb-q" aria-hidden="true">?</span>
+          </button>
+          <div className="tb-menu-wrap" data-guide="menu">
             <button
               className={`tb-icon-btn ${menuOpen ? "open" : ""}`}
               title="功能菜单"
@@ -718,6 +736,17 @@ export default function App() {
       {/* 非首次启动：必需环境仍缺失时的非阻塞提示卡（自查缓存报告，通过则不渲染） */}
       {onboarding === false && <EnvNotice />}
 
+      {/* 新手引导：首次进入自动播放，顶栏 ？ 随时重放 */}
+      {guideOpen && (
+        <GuideTour
+          open
+          onClose={() => setGuideOpen(false)}
+          setMenuOpen={setMenuOpen}
+          setShowRight={setShowRight}
+          showRight={showRight}
+        />
+      )}
+
       {/* 后台任务浮层：RAG 索引等长操作进度实时显示 */}
       <JobsToast />
 
@@ -728,7 +757,7 @@ export default function App() {
         </Suspense>
       )}
 
-      <aside className={`right-panel ${showRight ? "" : "collapsed"}`}>
+      <aside className={`right-panel ${showRight ? "" : "collapsed"}`} data-guide="rightpanel">
         <Suspense fallback={null}>
           {activePanel === "settings" ? (
             <SettingsModal key={`settings-${settingsNav}`} onClose={closePanel} initialTab={settingsTab} />

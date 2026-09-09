@@ -6875,3 +6875,218 @@ select option:checked {
   --flow-bg: rgba(26, 19, 13, 0.6);
   --acui-bg: linear-gradient(160deg, #241c12, #1d160e);
 }
+
+/* ============ 新手引导（Spotlight Tour） ============ */
+.guide-root {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  pointer-events: none;
+}
+/* 挖洞层：透明洞口 + box-shadow 无限扩散形成遮罩；点击洞口前进 */
+.guide-hole {
+  position: fixed;
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px var(--overlay-mask-strong), 0 0 0 3px var(--accent-border-strong),
+    0 0 24px rgba(34, 211, 238, 0.25);
+  transition: all 0.32s var(--ease-out);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.guide-hole.center {
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px var(--overlay-mask-strong);
+  cursor: default;
+}
+/* 说明卡 */
+.guide-card {
+  position: fixed;
+  width: 340px;
+  background: var(--surface-glass-strong);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--accent-border);
+  border-radius: 14px;
+  padding: 16px 18px 12px;
+  box-shadow: 0 12px 40px var(--deep-shadow), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  color: var(--text);
+  animation: guideCardIn 0.3s var(--ease-out);
+  pointer-events: auto;
+  z-index: 9001;
+}
+.guide-card.center {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 400px;
+  text-align: center;
+  padding: 26px 26px 16px;
+}
+@keyframes guideCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.guide-card.center {
+  animation: guideCardCenterIn 0.34s var(--ease-out);
+}
+@keyframes guideCardCenterIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 10px)) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+.guide-card h3 {
+  margin: 0 0 8px;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: #fff;
+}
+.guide-card.center h3 {
+  font-size: 18px;
+}
+.guide-card p {
+  margin: 0;
+  font-size: 12.8px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+/* 欢迎页品牌章 */
+.guide-brand {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 12px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #0891b2, #2563eb 55%, #818cf8);
+  box-shadow: 0 4px 18px rgba(34, 211, 238, 0.35);
+}
+/* 典型用法示例 */
+.guide-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+  text-align: left;
+}
+.guide-examples button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-input);
+  color: var(--text);
+  font-size: 12.3px;
+  cursor: pointer;
+  transition: all 0.18s var(--ease-in-out);
+  text-align: left;
+}
+.guide-examples button:hover {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-soft);
+  transform: translateX(3px);
+}
+.guide-examples .ex-icon {
+  color: var(--cyan);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* 导航按钮 */
+.guide-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 15px;
+}
+.guide-card.center .guide-nav {
+  justify-content: center;
+}
+.g-btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-input);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.18s var(--ease-in-out);
+}
+.g-btn:hover {
+  border-color: var(--accent-border-strong);
+  background: var(--accent-soft);
+}
+.g-btn:active {
+  transform: scale(0.96);
+}
+.g-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-faint);
+}
+.g-btn.ghost:hover {
+  color: var(--text-dim);
+  background: var(--surface-input);
+}
+.g-btn.primary {
+  background: linear-gradient(135deg, #0891b2, #2563eb);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.g-btn.primary:hover {
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
+  background: linear-gradient(135deg, #0aa4c9, #2b6ff0);
+}
+/* 步骤计数与进度点 */
+.guide-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.guide-progress {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+}
+.guide-progress span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: all 0.25s var(--ease-out);
+}
+.guide-progress span.on {
+  background: var(--cyan);
+  width: 16px;
+  border-radius: 3px;
+}
+/* 顶栏 ？ 按钮 */
+.tb-q {
+  font-size: 15px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  color: var(--cyan);
+  line-height: 1;
+}

@@ -634,8 +634,26 @@ export default function ChatView() {
   const inputActive = inputFocused || input.trim().length > 0;
   const forceOpen =
     busy || comparing || !!streaming || listening || ttsSpeaking || inputActive;
+  // 新手引导期间强制展开（引导事件控制），结束后恢复悬浮卡片逻辑
+  const [guideHold, setGuideHold] = useState(false);
+  useEffect(() => {
+    const onG = (e: Event) =>
+      setGuideHold(!!(e as CustomEvent<{ active: boolean }>).detail?.active);
+    const onFill = (e: Event) => {
+      const t = (e as CustomEvent<{ text: string }>).detail?.text ?? "";
+      setInput(t);
+      setChatOpen(true);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener("baize:guide-expand", onG);
+    window.addEventListener("baize:guide-fill", onFill);
+    return () => {
+      window.removeEventListener("baize:guide-expand", onG);
+      window.removeEventListener("baize:guide-fill", onFill);
+    };
+  }, []);
   const [holdOpen, setHoldOpen] = useState(false); // 阅读保持期
-  const chatExpanded = chatOpen || forceOpen || holdOpen;
+  const chatExpanded = chatOpen || forceOpen || holdOpen || guideHold;
   const hoverRef = useRef(false);
   const forceOpenRef = useRef(forceOpen);
   const holdRef = useRef(false);
@@ -903,6 +921,7 @@ export default function ChatView() {
   return (
     <div
       className={`chat ${chatExpanded ? "open" : "collapsed"}`}
+      data-guide="chat"
       onMouseEnter={() => {
         hoverRef.current = true;
         setChatOpen(true);
@@ -1153,7 +1172,7 @@ export default function ChatView() {
           </div>
         )}
 
-        <div className="chat-input">
+        <div className="chat-input" data-guide="input">
           <textarea
             ref={textareaRef}
             value={input}

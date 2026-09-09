@@ -262,7 +262,7 @@ export default function Sidebar() {
         : String(n);
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" data-guide="sidebar">
       {/* 白泽状态卡：生命体征线（随状态变色）+ 模式/模型/用量实时信息 */}
       <div
         className={`baize-card tone-${activeHealth === false ? "bad" : activity.tone} ${
