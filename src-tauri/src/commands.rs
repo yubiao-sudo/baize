@@ -435,6 +435,85 @@ pub async fn check_document_deps() -> Result<Value, String> {
         .map_err(|e| format!("文档依赖检测失败: {e}"))
 }
 
+/// 一键安装文档解析缺失的 Python 库（pip）。
+/// 流程：pip 缺失先 ensurepip 引导 → 官方源安装 → 失败自动回退清华镜像（国内网络常态）。
+/// 完成后重新探测并返回最新依赖报告，供前端直接刷新展示。
+#[tauri::command]
+pub async fn install_document_deps() -> Result<Value, String> {
+    tokio::task::spawn_blocking(|| {
+        const PKGS: &str = "pdfplumber python-docx openpyxl python-pptx pypdf";
+        let mut output = String::new();
+
+        // 1) pip 自身缺失（embeddable/精简发行版常见）→ ensurepip 引导
+        let pip_ready = crate::tools::silent_command("python")
+            .args(["-m", "pip", "--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !pip_ready {
+            let _ = crate::tools::silent_command("python")
+                .args(["-m", "ensurepip", "--upgrade"])
+                .output();
+        }
+
+        let run_pip = |extra: &[&str]| -> (bool, String) {
+            let mut args: Vec<&str> = vec![
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-input",
+            ];
+            args.extend_from_slice(extra);
+            args.extend_from_slice(PKGS.split_whitespace().collect::<Vec<_>>().as_slice());
+            match crate::tools::silent_command("python").args(&args).output() {
+                Ok(out) => {
+                    let text = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    // 成功但全部已满足时 status 也为 success；失败时取尾部输出供前端展示
+                    let tail: String = {
+                        let t = text.trim();
+                        if t.chars().count() > 1200 {
+                            t.chars().skip(t.chars().count() - 1200).collect()
+                        } else {
+                            t.to_string()
+                        }
+                    };
+                    (out.status.success(), tail)
+                }
+                Err(e) => (false, format!("pip 启动失败: {e}")),
+            }
+        };
+
+        // 2) 官方源
+        let (mut ok, tail) = run_pip(&[]);
+        output.push_str(&tail);
+
+        // 3) 官方源失败 → 清华镜像重试
+        let mut used_mirror = false;
+        if !ok {
+            used_mirror = true;
+            let (ok2, tail2) = run_pip(&["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]);
+            ok = ok2;
+            output.push_str("\n--- 镜像重试 ---\n");
+            output.push_str(&tail2);
+        }
+
+        let report = crate::read_document::deps_report();
+        Ok(json!({
+            "ok": ok,
+            "used_mirror": used_mirror,
+            "output_tail": output,
+            "report": report,
+        }))
+    })
+    .await
+    .map_err(|e| format!("依赖安装任务失败: {e}"))?
+}
+
 #[tauri::command]
 pub fn get_pending_permissions(state: State<'_, AppState>) -> Vec<PermissionRequest> {
     state.security.pending()

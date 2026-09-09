@@ -662,6 +662,15 @@ pub fn run() {
             takeover::init(app.handle().clone());
             panel::init_handle(app.handle().clone());
 
+            // 注册内嵌 Python（pyoffice）：Office 读写/解析工具优先用安装包内置的
+            // Python 3.11 embeddable + 预装解析库，普通用户零配置；dev/缺失时回退系统 python
+            {
+                use tauri::Manager;
+                if let Ok(rd) = app.path().resource_dir() {
+                    crate::tools::init_pyoffice(rd.join("resources").join("pyoffice"));
+                }
+            }
+
             // 流式降级重置：某提供方输出到一半失败、路由切换下一个时，
             // 通知前端清空半截回复，避免两个提供方的内容拼接/重复显示
             {
@@ -1088,6 +1097,7 @@ pub fn run() {
             commands::read_file,
             commands::read_document,
             commands::check_document_deps,
+            commands::install_document_deps,
             commands::get_pending_permissions,
             commands::resolve_permission,
             commands::get_model_config,

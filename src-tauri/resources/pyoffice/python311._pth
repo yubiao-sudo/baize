@@ -1,0 +1,6 @@
+python311.zip
+.
+Lib/site-packages
+
+# Enable site.main() so site-packages works in isolated path config
+import site

@@ -34,7 +34,7 @@ fn run_python(request: &Value) -> Result<Value, String> {
     std::fs::write(&script, OFFICE_PY).map_err(|e| format!("写入生成脚本失败: {e}"))?;
 
     use std::process::Stdio;
-    let mut child = crate::tools::silent_command("python")
+    let mut child = crate::tools::python_program()
         .arg(&script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -42,7 +42,7 @@ fn run_python(request: &Value) -> Result<Value, String> {
         .spawn()
         .map_err(|e| {
             format!(
-                "启动 Python 失败（请确认已安装 Python 并执行 pip install python-docx python-pptx pypdf openpyxl）: {e}"
+                "启动 Python 失败（安装包内置 pyoffice 缺失且系统未装 Python；可尝试 pip install python-docx python-pptx pypdf openpyxl）: {e}"
             )
         })?;
 

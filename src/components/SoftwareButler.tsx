@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { checkDocumentDeps, diskInfo, envCheck, softwareList, softwareSearch, systemGet } from "../api";
+import { checkDocumentDeps, diskInfo, envCheck, installDocumentDeps, softwareList, softwareSearch, systemGet } from "../api";
 import type { DiskInfo, DocumentDepsReport, EnvCheckResult, SoftwarePackage, SoftwareSearchResult, SystemConfig } from "../types";
 import { useChat } from "../stores/chat";
 
@@ -292,10 +292,16 @@ function EnvPanel({
 // ─────────── 文档解析依赖（read_document 的 Python 运行环境） ───────────
 function DocDepsBlock({ deps }: { deps: DocumentDepsReport }) {
   const [copied, setCopied] = useState(false);
+  // 安装过程中的本地状态：report 会被一键安装返回的最新探测结果覆盖
+  const [report, setReport] = useState(deps);
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; used_mirror: boolean; tail: string } | null>(null);
+  // 外层「重新探测」刷新 deps 时，同步覆盖本地报告
+  useEffect(() => setReport(deps), [deps]);
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(deps.install_command);
+      await navigator.clipboard.writeText(report.install_command);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -303,36 +309,69 @@ function DocDepsBlock({ deps }: { deps: DocumentDepsReport }) {
     }
   };
 
+  /** 一键 pip 安装缺失库（后端自动：ensurepip → 官方源 → 清华镜像），完成后用返回报告刷新 */
+  const install = async () => {
+    if (installing || !report.python) return;
+    setInstalling(true);
+    setResult(null);
+    try {
+      const r = await installDocumentDeps();
+      setReport(r.report);
+      setResult({ ok: r.ok, used_mirror: r.used_mirror, tail: r.output_tail });
+    } catch (e) {
+      setResult({ ok: false, used_mirror: false, tail: String(e) });
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   return (
     <div className="software-col">
       <div className="software-row">
         <span className="software-kv">Python</span>
-        <span className="software-val monotone">{deps.python ?? "未检测到"}</span>
-        <span className={`software-badge ${deps.ready ? "ok" : "warn"}`}>
-          {deps.ready ? "已就绪" : deps.python ? "缺解析库" : "未安装"}
+        <span className="software-val monotone">{report.python ?? "未检测到"}</span>
+        <span className={`software-badge ${report.ready ? "ok" : "warn"}`}>
+          {report.ready ? "已就绪" : report.python ? "缺解析库" : "未安装"}
         </span>
       </div>
 
-      {deps.missing.length > 0 && (
+      {report.missing.length > 0 && (
         <div className="software-row">
           <span className="software-kv">缺失库</span>
-          <span className="software-val monotone">{deps.missing.join(" · ")}</span>
+          <span className="software-val monotone">{report.missing.join(" · ")}</span>
         </div>
       )}
 
-      {!deps.ready && (
+      {!report.ready && (
         <>
+          {report.python ? (
+            <button className="software-refresh" onClick={() => void install()} disabled={installing}>
+              {installing ? "安装中…（约需 1~3 分钟，请勿关闭）" : "⚡ 一键安装缺失库（pip）"}
+            </button>
+          ) : (
+            <div className="software-hint">
+              未检测到 Python，请先安装 Python 3.10+（winget install -e --id Python.Python.3.11）后再一键安装解析库。
+            </div>
+          )}
           <div className="software-row">
             <span className="software-kv">安装命令</span>
             <span className="software-action" onClick={copy} role="button">
               {copied ? "已复制" : "复制"}
             </span>
           </div>
-          <code className="software-cmd">{deps.install_command}</code>
+          <code className="software-cmd">{report.install_command}</code>
           <div className="software-hint">
             文档解析（read_document）依赖 Python 与上述库；安装后即可读取 PDF / Word / Excel / PPT 并导出表格与图片。
           </div>
         </>
+      )}
+
+      {result && (
+        <div className="software-hint" style={{ color: result.ok ? "#34d399" : "#f87171" }}>
+          {result.ok
+            ? `✅ 安装完成${result.used_mirror ? "（已自动切换清华镜像）" : ""}，依赖已就绪。`
+            : `❌ 安装未成功${result.used_mirror ? "（镜像重试后仍失败）" : ""}。详情：${result.tail.slice(-300)}`}
+        </div>
       )}
     </div>
   );

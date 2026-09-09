@@ -702,6 +702,31 @@ pub fn silent_command(program: &str) -> std::process::Command {
     c
 }
 
+// ───────────────── 内嵌 Python（pyoffice） ─────────────────
+// 安装包 resources/pyoffice/ 内嵌 Python 3.11 embeddable + 预装文档解析库
+// （pdfplumber/python-docx/openpyxl/python-pptx/pypdf），Office 读写/解析
+// 优先用它——普通用户零配置开箱即用；目录缺失（如 dev 环境）时回退系统 python。
+static PYOFFICE_DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+
+/// 注册内嵌 Python 目录（lib.rs setup 时以 resource_dir/resources/pyoffice 调用）
+pub fn init_pyoffice(dir: std::path::PathBuf) {
+    let _ = PYOFFICE_DIR.set(dir.exists().then_some(dir));
+}
+
+/// Python 命令构造器：内嵌 pyoffice 优先，其次系统 PATH 上的 python。
+/// 两处使用点（office_write / read_document）统一走这里。
+pub fn python_program() -> std::process::Command {
+    let bundled = PYOFFICE_DIR
+        .get()
+        .and_then(|o| o.as_ref())
+        .map(|d| d.join("python.exe"))
+        .filter(|p| p.exists());
+    match bundled {
+        Some(p) => silent_command(&p.display().to_string()),
+        None => silent_command("python"),
+    }
+}
+
 // ───────────────── launch_app 快捷启动应用 ─────────────────
 // 开始菜单索引（用户 + 常用，含子目录 .lnk）一次性缓存；未命中再查 UWP（Get-StartApps）。
 // 启动后轮询等待目标窗口出现并返回窗口信息——把「找图标→点开始菜单→搜索→点开→等窗口」

@@ -10,18 +10,45 @@ import { useEffect, useState } from "react";
  *  4. 沿边下行（2.25 → 3.35s）：光从两个上角出发，沿左右边框向下流淌；
  *  5. 底部消散（3.35 → 3.9s）：光头流出底边，整体余晖淡出。
  *
+ * 起播时机：主窗口以 visible=false 创建、首帧上屏后才 show，且 index.html 的
+ * #splash 启动遮罩（打字 + 水球交接）还要停留 2~3s——CSS 动画在元素挂载瞬间
+ * 就开始计时，安装版上等遮罩揭幕时 3.9s 早已播完（症状：启动看不到流光）。
+ * 因此这里轮询等待「窗口可见 + 遮罩已移除」再挂载动画元素，12s 兜底强制起播。
+ *
  * 配色跟随设置页的流光样式（localStorage baize_glow_style → g-* 类）。
  * 播放完毕后组件自卸载，不留任何常驻开销；StrictMode 双挂载只是重播一遍，无副作用。
  */
 export default function BootGlow() {
+  const [started, setStarted] = useState(false);
   const [alive, setAlive] = useState(true);
 
+  // 等待「真正可见」：窗口 show 完成 + splash 遮罩移除
   useEffect(() => {
-    const t = window.setTimeout(() => setAlive(false), 4300);
-    return () => window.clearTimeout(t);
+    let t1 = 0;
+    const iv = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !document.getElementById("splash")) {
+        window.clearInterval(iv);
+        t1 = window.setTimeout(() => setStarted(true), 500); // 留出水球交接动画的缓冲
+      }
+    }, 120);
+    const cap = window.setTimeout(() => {
+      window.clearInterval(iv);
+      setStarted(true);
+    }, 12000);
+    return () => {
+      window.clearInterval(iv);
+      window.clearTimeout(t1);
+      window.clearTimeout(cap);
+    };
   }, []);
 
-  if (!alive) return null;
+  useEffect(() => {
+    if (!started) return;
+    const t = window.setTimeout(() => setAlive(false), 4300);
+    return () => window.clearTimeout(t);
+  }, [started]);
+
+  if (!started || !alive) return null;
   const style = localStorage.getItem("baize_glow_style") || "aurora";
   const cls = style === "aurora" ? "" : ` g-${style}`;
 

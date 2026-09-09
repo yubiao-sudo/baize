@@ -420,6 +420,16 @@ export async function checkDocumentDeps(): Promise<DocumentDepsReport> {
   return invoke<DocumentDepsReport>("check_document_deps");
 }
 
+/** 一键安装文档解析缺失的 Python 库（官方源失败自动回退清华镜像），返回最新依赖报告 */
+export async function installDocumentDeps(): Promise<{
+  ok: boolean;
+  used_mirror: boolean;
+  output_tail: string;
+  report: DocumentDepsReport;
+}> {
+  return invoke("install_document_deps");
+}
+
 export async function getPendingPermissions(): Promise<PermissionRequest[]> {
   return invoke<PermissionRequest[]>("get_pending_permissions");
 }
