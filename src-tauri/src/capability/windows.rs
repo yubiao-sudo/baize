@@ -23,6 +23,41 @@ use ::windows::Win32::System::Threading::GetCurrentProcessId;
 // keydown 标志位值为 0，windows crate 未导出该常量，这里自行定义
 const KEYEVENTF_KEYDOWN: KEYBD_EVENT_FLAGS = KEYBD_EVENT_FLAGS(0);
 
+/// UIA 元素搜索深度：现代应用无障碍树层级普遍较深（列表→行→单元格→文本），
+/// 6 层曾漏掉深层控件；8 层兼顾覆盖率与遍历耗时。
+const GUI_FIND_DEPTH: usize = 8;
+
+/// 组合键注入（虚拟键码路径）：keys 按 + 分割，全部部件可解析为虚拟键码时，
+/// 用 keybd_event 注入（修饰键按下 → 末键敲击 → 修饰键逆序抬起），返回 Some(())。
+/// uiautomation crate 的 send_keys 虚拟键表不含小键盘(numpad*)/媒体键(volume_up 等)，
+/// 传给它的 {NUMPAD0} 会报 "Error Input Format"，normalize_keys 对表外键也只透传原文
+/// （"numpad1" 会被当 7 个字符打进输入框）。因此 key_press 优先走本路径，
+/// 任一部件无法解析（如 "+" 号键）时返回 None 交回 send_keys 通道。
+fn send_keys_via_vk(keys: &str) -> Option<()> {
+    let parts: Vec<&str> = keys
+        .split('+')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let vks: Vec<VIRTUAL_KEY> = parts.iter().map(|p| str_to_vk(p)).collect::<Option<Vec<_>>>()?;
+    unsafe {
+        for vk in &vks[..vks.len() - 1] {
+            keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYDOWN, 0);
+        }
+        let last = vks.last().unwrap();
+        keybd_event(last.0 as u8, 0, KEYEVENTF_KEYDOWN, 0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        keybd_event(last.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        for vk in vks[..vks.len() - 1].iter().rev() {
+            keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        }
+    }
+    Some(())
+}
+
 pub struct WindowsCapability {
     /// setup 阶段经 capability::init_capability_app 注入（光圈事件需要）
     app: Option<AppHandle>,
@@ -265,14 +300,23 @@ impl Capability for WindowsCapability {
                 })
             }
             Action::KeyPress { keys } => {
-                let normalized = normalize_keys(keys);
-                Keyboard::new()
-                    .send_keys(&normalized)
-                    .map_err(|e| CapError::InvalidState(format!("按键失败: {e}")))?;
-                Ok(ActionResult {
-                    ok: true,
-                    description: format!("按键: {keys}"),
-                })
+                // 优先虚拟键码注入：覆盖小键盘/媒体键等 send_keys 虚拟键表外的键，
+                // 任意部件无法解析（如 "+" 字符键）再回退 send_keys 混合通道
+                if send_keys_via_vk(keys).is_some() {
+                    Ok(ActionResult {
+                        ok: true,
+                        description: format!("按键: {keys}"),
+                    })
+                } else {
+                    let normalized = normalize_keys(keys);
+                    Keyboard::new()
+                        .send_keys(&normalized)
+                        .map_err(|e| CapError::InvalidState(format!("按键失败: {e}")))?;
+                    Ok(ActionResult {
+                        ok: true,
+                        description: format!("按键: {keys}"),
+                    })
+                }
             }
             Action::KeyDown { key } => {
                 let vk = str_to_vk(key)
@@ -534,7 +578,7 @@ impl Capability for WindowsCapability {
             .map_err(|e| CapError::InvalidState(e.to_string()))?;
         let mut matches = Vec::new();
         for c in children {
-            collect_matches(&c, target, &condition, 0, 6, &mut matches);
+            collect_matches(&c, target, &condition, 0, GUI_FIND_DEPTH, &mut matches);
         }
         matches.sort_by(|a, b| b.score.cmp(&a.score));
         Ok(matches)
@@ -547,12 +591,12 @@ impl Capability for WindowsCapability {
         // 评分选优：先收集全部候选取最高分，再回树上按「名称+矩形」双条件定位点击。
         // 旧的「首个 name.contains 即点」会点中同名容器/父级文本，导致点空。
         let mut candidates = Vec::new();
-        collect_matches(&root, target, &condition, 0, 6, &mut candidates);
+        collect_matches(&root, target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
         candidates.sort_by(|a, b| b.score.cmp(&a.score));
         if let Some(best) = candidates.first() {
             let (name, bbox, score) = (best.name.clone(), best.bbox, best.score);
             let mut clicked = false;
-            click_by_ident(&root, &condition, 0, 6, &name, bbox, &mut clicked)?;
+            click_by_ident(&root, &condition, 0, GUI_FIND_DEPTH, &name, bbox, &mut clicked)?;
             if clicked {
                 let note = if score < 72 {
                     format!("（模糊匹配 score={score}，请核验是否点中预期控件）")
@@ -566,33 +610,18 @@ impl Capability for WindowsCapability {
             }
         }
         // 回退：OCR / Set-of-Marks / 视觉接地 → 坐标点击，并附操作后界面变化验证。
-        // 截图复用：ground_on_screenshot 直接用本图，点击后再截一次做 diff（共 2 次截图）。
+        // 截图复用：ground_on_screenshot 直接用本图作为 before 基线，验证/微偏移重试
+        // 逻辑统一走 click_verify_reclick（与 click_at / mouse_click 同一实现）。
         let info = self.capture_screen()?;
         let rect = super::ground_on_screenshot(self, target, &info)?;
         let cx = rect.x + rect.width / 2.0;
         let cy = rect.y + rect.height / 2.0;
         let _res = self.act(&Action::ClickAt { x: cx, y: cy })?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let after = self.capture_screen().ok();
-        let mut diff = after
-            .as_ref()
-            .map(|a| crate::som::image_diff_pct(&info.path, &a.path))
-            .unwrap_or(100.0); // 截屏失败视为有变化，不触发重试
-        // 微偏移重试：中心点击后界面几乎无变化时，向右下偏 3px 再点一次——
-        // 消除「目标中心恰好在控件缝隙/禁用区」造成的贴边未命中
-        let mut retried = false;
-        if diff < 1.0 {
-            let (jx, jy) = (cx + 3.0, cy + 3.0);
-            let _ = self.act(&Action::ClickAt { x: jx, y: jy });
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            if let Ok(after2) = self.capture_screen() {
-                let diff2 = crate::som::image_diff_pct(&info.path, &after2.path);
-                if diff2 > diff {
-                    diff = diff2;
-                    retried = true;
-                }
-            }
-        }
+        let (diff, retried) = super::click_verify_reclick(self, &info.path, cx, cy, |rx, ry| {
+            self.act(&Action::ClickAt { x: rx, y: ry })
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        });
         let note = if diff < 1.0 {
             format!("坐标点击已执行（含微偏移重试），但界面几乎无变化（{diff:.1}%），可能未命中目标")
         } else if retried {
@@ -1132,6 +1161,39 @@ fn str_to_vk(name: &str) -> Option<VIRTUAL_KEY> {
     Some(vk)
 }
 
+#[cfg(test)]
+mod key_tests {
+    use super::send_keys_via_vk;
+    use super::str_to_vk;
+
+    /// send_keys 的虚拟键表不含小键盘/媒体键——这些键名必须全部能被
+    /// str_to_vk 解析（key_press 才能走虚拟键码路径，而不是把键名当文本打出去）
+    #[test]
+    fn str_to_vk_covers_numpad_and_media() {
+        for key in [
+            "numpad0", "numpad5", "numpad9", "numpad_add", "numpad_subtract",
+            "numpad_multiply", "numpad_divide", "numpad_decimal",
+            "volume_up", "volume_down", "volume_mute", "media_play_pause",
+            "media_next", "media_prev", "media_stop",
+        ] {
+            assert!(str_to_vk(key).is_some(), "str_to_vk 缺少键名: {key}");
+        }
+    }
+
+    /// 组合键解析：全部件可解析 → 走虚拟键码路径；含未注册符号 → 回退 send_keys
+    #[test]
+    fn combo_and_fallback_paths() {
+        assert!(send_keys_via_vk("ctrl+shift+esc").is_some());
+        assert!(send_keys_via_vk("alt+tab").is_some());
+        assert!(send_keys_via_vk("numpad1").is_some());
+        assert!(send_keys_via_vk("volume_mute").is_some());
+        assert!(send_keys_via_vk("ctrl+f5").is_some());
+        // "+" 键不在 str_to_vk 表中 → 返回 None 交回 normalize_keys+send_keys 通道
+        assert!(send_keys_via_vk("ctrl++").is_none());
+        assert!(send_keys_via_vk("").is_none());
+    }
+}
+
 /// 剪贴板 + Ctrl+V 粘贴文本（保存并恢复原剪贴板内容，避免副作用）
 fn paste_via_clipboard(text: &str) -> Result<(), String> {
     use std::time::Duration;
@@ -1427,9 +1489,12 @@ pub fn macro_impl(steps: &Value) -> Result<Value, String> {
                 let keys = s["keys"]
                     .as_str()
                     .ok_or_else(|| format!("第 {} 步缺少 keys", i + 1))?;
-                Keyboard::new()
-                    .send_keys(&normalize_keys(keys))
-                    .map_err(|e| format!("第 {} 步按键失败: {e}", i + 1))?;
+                // 与 act(KeyPress) 一致：优先虚拟键码注入（小键盘/媒体键可用的前提）
+                if send_keys_via_vk(keys).is_none() {
+                    Keyboard::new()
+                        .send_keys(&normalize_keys(keys))
+                        .map_err(|e| format!("第 {} 步按键失败: {e}", i + 1))?;
+                }
                 executed.push(format!("key:{keys}"));
             }
             "click" | "double_click" | "right_click" => {

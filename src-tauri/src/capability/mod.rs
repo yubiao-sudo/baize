@@ -374,8 +374,52 @@ pub fn ground_on_screenshot(
     Err(CapError::NotFound(format!("未找到目标: {target}")))
 }
 
+/// 坐标点击后验证 + 微偏移重试（写操作闭环，click_at / mouse_click / click_element 共用）。
+/// 点击后等 300ms 截屏与 before 对比；界面几乎无变化（<1%，中心恰好落在控件缝隙/
+/// 禁用区/贴边热区）时向右下 +3px 用 `retry` 闭包再点一次并复测。
+/// 返回 (界面变化百分比, 是否触发过微偏移重试)。after 截屏失败按「有变化」处理，不误触发重试。
+pub fn click_verify_reclick(
+    capability: &dyn Capability,
+    before_path: &str,
+    cx: f64,
+    cy: f64,
+    retry: impl Fn(f64, f64) -> Result<(), String>,
+) -> (f64, bool) {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let after = capability.capture_screen().ok();
+    let mut diff = after
+        .as_ref()
+        .map(|a| crate::som::image_diff_pct(before_path, &a.path))
+        .unwrap_or(100.0);
+    let mut retried = false;
+    if diff < 1.0 {
+        if retry(cx + 3.0, cy + 3.0).is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            if let Ok(after2) = capability.capture_screen() {
+                let diff2 = crate::som::image_diff_pct(before_path, &after2.path);
+                if diff2 > diff {
+                    diff = diff2;
+                    retried = true;
+                }
+            }
+        }
+    }
+    (diff, retried)
+}
+
+/// 把 click_verify_reclick 的结果转成给模型看的提示语（ok 语义不变：动作本身已执行，
+/// 变化率仅作命中参考，小变化控件如复选框可能天然低于 1%）
+pub fn click_verify_note(diff: f64, retried: bool) -> String {
+    if diff < 1.0 {
+        format!("点击后界面几乎无变化（{diff:.1}%），可能未命中目标，建议重新定位或换语义点击")
+    } else if retried {
+        format!("中心点击无变化，微偏移重试后界面变化 {diff:.1}%（已命中）")
+    } else {
+        format!("界面变化 {diff:.1}%")
+    }
+}
+
 // ───────────── 语义目标 ↔ 候选文本 匹配评分（GUI 定位准确性核心） ─────────────
-//
 // 设计目标：把「目标描述 vs 控件名/OCR 词」从朴素 contains 升级为可比较的分数：
 //   - 归一化：忽略大小写、空白、下划线、连字符（英文按钮常见「Search »」「OK_2」等形态）
 //   - 类型后缀剥离：「搜索按钮/输入框」剥掉类型词后与「搜索」精确相等（OCR 词通常不带类型词）
@@ -1231,14 +1275,17 @@ impl Tool for ClickAtTool {
         "click_at"
     }
     fn description(&self) -> &str {
-        "在屏幕坐标 (x,y) 处点击鼠标左键（写操作，会请求授权）"
+        "在屏幕坐标 (x,y) 处点击鼠标左键（写操作，会请求授权）。\
+         verify 默认 true：点击后自动截屏对比，几乎无变化（<1%）时向右下 +3px 微偏移重试一次，\
+         结果返回 changed_pct 供判断是否命中；点击无副作用的特殊场景可传 verify=false 跳过验证提速"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "x": { "type": "number", "description": "屏幕 X 坐标" },
-                "y": { "type": "number", "description": "屏幕 Y 坐标" }
+                "y": { "type": "number", "description": "屏幕 Y 坐标" },
+                "verify": { "type": "boolean", "description": "点击后是否验证界面变化并做微偏移重试（默认 true）" }
             },
             "required": ["x", "y"]
         })
@@ -1249,6 +1296,34 @@ impl Tool for ClickAtTool {
     fn run(&self, args: Value) -> Result<Value, String> {
         let x = args["x"].as_f64().ok_or("缺少参数 x")?;
         let y = args["y"].as_f64().ok_or("缺少参数 y")?;
+        let verify = args["verify"].as_bool().unwrap_or(true);
+        if verify {
+            // 点击前先截一张基线图用于 diff；基线拿不到则退化为无验证的裸点击
+            if let Ok(before) = self.capability.capture_screen() {
+                let res = self
+                    .capability
+                    .act(&Action::ClickAt { x, y })
+                    .map_err(|e| e.to_string())?;
+                let (diff, retried) = click_verify_reclick(
+                    self.capability.as_ref(),
+                    &before.path,
+                    x,
+                    y,
+                    |rx, ry| {
+                        self.capability
+                            .act(&Action::ClickAt { x: rx, y: ry })
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                return Ok(json!({
+                    "ok": res.ok,
+                    "description": format!("{}；{}", res.description, click_verify_note(diff, retried)),
+                    "changed_pct": (diff * 100.0).round() / 100.0,
+                    "micro_retry": retried,
+                }));
+            }
+        }
         let res = self
             .capability
             .act(&Action::ClickAt { x, y })
@@ -1273,7 +1348,8 @@ impl Tool for TypeTextTool {
         "type_text"
     }
     fn description(&self) -> &str {
-        "向当前焦点输入文本（写操作，会请求授权）"
+        "向当前焦点输入文本（写操作，会请求授权）。中文/emoji 走系统 UNICODE 注入通道，\
+         大多数输入框可用；个别自绘/游戏输入框会忽略注入，此时请改用 paste_text（剪贴板通道，兼容性更强）"
     }
     fn schema(&self) -> Value {
         json!({
@@ -1445,7 +1521,9 @@ impl Tool for MouseClickTool {
         "mouse_click"
     }
     fn description(&self) -> &str {
-        "在屏幕坐标 (x,y) 处点击鼠标（button: left/middle/right，count: 1 单击 / 2 双击；写操作，会请求授权）"
+        "在屏幕坐标 (x,y) 处点击鼠标（button: left/middle/right，count: 1 单击 / 2 双击；写操作，会请求授权）。\
+         verify 默认 true：点击后自动截屏对比，几乎无变化（<1%）时按同动作 +3px 微偏移重试一次，\
+         结果返回 changed_pct 供判断是否命中；特殊场景可传 verify=false 跳过验证提速"
     }
     fn schema(&self) -> Value {
         json!({
@@ -1454,7 +1532,8 @@ impl Tool for MouseClickTool {
                 "x": { "type": "number", "description": "屏幕 X 坐标" },
                 "y": { "type": "number", "description": "屏幕 Y 坐标" },
                 "button": { "type": "string", "enum": ["left", "middle", "right"], "description": "鼠标按键：left 单击/双击，middle 关闭标签页/新标签打开链接，right 上下文菜单，默认 left" },
-                "count": { "type": "integer", "enum": [1, 2], "description": "点击次数（1 单击 / 2 双击，仅 left 有效），默认 1" }
+                "count": { "type": "integer", "enum": [1, 2], "description": "点击次数（1 单击 / 2 双击，仅 left 有效），默认 1" },
+                "verify": { "type": "boolean", "description": "点击后是否验证界面变化并做微偏移重试（默认 true）" }
             },
             "required": ["x", "y"]
         })
@@ -1467,6 +1546,7 @@ impl Tool for MouseClickTool {
         let y = args["y"].as_f64().ok_or("缺少参数 y")?;
         let button = args["button"].as_str().unwrap_or("left");
         let count = args["count"].as_u64().unwrap_or(1);
+        let verify = args["verify"].as_bool().unwrap_or(true);
 
         let action = match (button, count) {
             ("left", 1) => Action::ClickAt { x, y },
@@ -1479,6 +1559,36 @@ impl Tool for MouseClickTool {
                 )
             }
         };
+        if verify {
+            if let Ok(before) = self.capability.capture_screen() {
+                let res = self.capability.act(&action).map_err(|e| e.to_string())?;
+                // 微偏移重试保持同动作语义（双击重试仍为双击、右键仍为右键）
+                let (diff, retried) = click_verify_reclick(
+                    self.capability.as_ref(),
+                    &before.path,
+                    x,
+                    y,
+                    |rx, ry| {
+                        let retry_action = match (button, count) {
+                            ("left", 2) => Action::DoubleClick { x: rx, y: ry },
+                            ("right", _) => Action::RightClick { x: rx, y: ry },
+                            ("middle", _) => Action::MiddleClick { x: rx, y: ry },
+                            _ => Action::ClickAt { x: rx, y: ry },
+                        };
+                        self.capability
+                            .act(&retry_action)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string())
+                    },
+                );
+                return Ok(json!({
+                    "ok": res.ok,
+                    "description": format!("{}；{}", res.description, click_verify_note(diff, retried)),
+                    "changed_pct": (diff * 100.0).round() / 100.0,
+                    "micro_retry": retried,
+                }));
+            }
+        }
         let res = self.capability.act(&action).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": res.ok, "description": res.description }))
     }

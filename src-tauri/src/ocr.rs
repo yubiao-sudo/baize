@@ -101,7 +101,69 @@ pub fn ocr_detect_gui(path: &str) -> Result<(String, Vec<Value>), String> {
 
 /// Windows.Media.Ocr 系统引擎：PNG 路径 → (全文, 词级坐标框)。
 /// 词框坐标与 Tesseract 同为图片物理像素空间，调用方的显示器偏移逻辑不变。
+///
+/// 系统引擎有最大边长限制（典型 2600px）：4K/高分屏截图必然超限。
+/// 旧逻辑超限直接 Err → 整体回退 Tesseract（8-11s），是高分屏 GUI 任务卡顿的最大单点。
+/// 现改为等比缩放到限内识别，词坐标再按缩放比线性映射回原图像素（±1px 级误差，
+/// 对点击定位无感）；缩放后识别仍为空则返回 Err，走 Tesseract 预处理路径兜底。
 fn windows_ocr(path: &str) -> Result<(String, Vec<Value>), String> {
+    use windows::Media::Ocr::OcrEngine;
+
+    let max_dim = OcrEngine::MaxImageDimension()
+        .map_err(|e| e.to_string())? as u64;
+    let (work_path, _tmp, scale_back) = match image::image_dimensions(path) {
+        // 快速读 PNG 头拿尺寸（不整图解码），超限才整图缩放
+        Ok((w, h)) if (w.max(h) as u64) > max_dim => {
+            let long = w.max(h) as f64;
+            let s = max_dim as f64 / long;
+            let img = image::open(path).map_err(|e| format!("读取截图失败: {e}"))?.to_rgb8();
+            let small = image::imageops::resize(
+                &img,
+                ((w as f64 * s) as u32).max(1),
+                ((h as f64 * s) as u32).max(1),
+                image::imageops::FilterType::Triangle,
+            );
+            let tmp = std::env::temp_dir().join(format!(
+                "baize-ocr-scaled-{}.png",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            ));
+            small
+                .save(&tmp)
+                .map_err(|e| format!("写入缩放图失败: {e}"))?;
+            let scaled_long = small.width().max(small.height()) as f64;
+            let p = tmp.to_string_lossy().to_string();
+            (p, Some(tmp), long / scaled_long)
+        }
+        _ => (path.to_string(), None, 1.0),
+    };
+
+    let result = windows_ocr_inner(&work_path);
+    if let Some(tmp) = _tmp {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    let (text, words) = result?;
+    // 缩放识别无结果视为失败：外层 ocr_detect_gui 会回退 Tesseract 预处理路径
+    if words.is_empty() && scale_back > 1.0 {
+        return Err("缩放识别无结果".to_string());
+    }
+    if scale_back > 1.0 {
+        let mut mapped = words;
+        for w in mapped.iter_mut() {
+            for k in ["x", "y", "w", "h"] {
+                let v = w[k].as_f64().unwrap_or(0.0) * scale_back;
+                w[k] = json!(v);
+            }
+        }
+        return Ok((text, mapped));
+    }
+    Ok((text, words))
+}
+
+/// 系统引擎本体（输入图须已在 MaxImageDimension 限内）
+fn windows_ocr_inner(path: &str) -> Result<(String, Vec<Value>), String> {
     use windows::Globalization::Language;
     use windows::Graphics::Imaging::BitmapDecoder;
     use windows::Media::Ocr::OcrEngine;

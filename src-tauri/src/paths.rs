@@ -61,7 +61,7 @@ fn localappdata_baize() -> Option<PathBuf> {
         .map(|lad| PathBuf::from(lad).join("baize"))
 }
 
-/// 启动最早时机调用：解析 + 创建 + 迁移。幂等，可安全重复调用。
+/// 启动最早时机调用：解析 + 创建 + 迁移 + 缓存清理。幂等，可安全重复调用。
 pub fn init() {
     let candidate = default_root();
     let root = match std::fs::create_dir_all(&candidate) {
@@ -77,6 +77,49 @@ pub fn init() {
     };
     let _ = DATA_ROOT.set(root);
     migrate_legacy();
+    cleanup_screens();
+}
+
+/// 启动清理：screens 截图缓存只保留最近 7 天。
+/// GUI 自动化每次任务都会产生数张 PNG（截图/关键帧/SOM 标注/diff 高亮图），
+/// 不清理会在长期使用后堆积上 GB。仅限 data\screens 目录内、修改时间超 7 天的
+/// .png 缓存文件，其他数据（数据库/浏览器登录态）不受影响。
+fn cleanup_screens() {
+    const KEEP_SECS: u64 = 7 * 24 * 3600;
+    let dir = screens_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut removed = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        let is_png = path
+            .extension()
+            .map(|x| x.eq_ignore_ascii_case("png"))
+            .unwrap_or(false);
+        if !is_png {
+            continue;
+        }
+        let modified_secs = e
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(now);
+        if now.saturating_sub(modified_secs) > KEEP_SECS {
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        println!("[清理] 已清理 {removed} 张 7 天前的截图缓存（{dir:?}）");
+    }
 }
 
 fn fallback_root() -> PathBuf {
