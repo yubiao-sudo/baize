@@ -231,6 +231,17 @@ fn display_domain(url: &str) -> String {
     host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 
+/// 图标兜底文字：取站点主域名段（baidu.com→baidu，m.baidu.com→baidu，36kr.com→36kr），最多 7 字符
+fn site_label(domain: &str) -> String {
+    let parts: Vec<&str> = domain.split('.').collect();
+    const PREFIX: [&str; 9] = ["www", "m", "wap", "mobile", "news", "so", "search", "blog", "shop"];
+    let mut idx = 0;
+    if parts.len() > 1 && PREFIX.contains(&parts[0].to_ascii_lowercase().as_str()) {
+        idx = 1;
+    }
+    parts[idx].chars().take(7).collect()
+}
+
 /// 生成精美的深色主题搜索结果页：
 /// 渐变头部 + 引擎/条数/时间徽章 + 卡片式结果列表（域名头像、交错入场动画、悬停辉光）
 fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> String {
@@ -243,14 +254,7 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
     }
     for (i, r) in results.iter().enumerate() {
         let domain = display_domain(&r.url);
-        // 图标加载失败时的文字兜底：显示站点主域名（如 baidu.com → baidu），最多 7 字符
-        let site_name: String = domain
-            .split('.')
-            .next()
-            .unwrap_or("?")
-            .chars()
-            .take(7)
-            .collect();
+        let site_name = site_label(&domain);
         let hash: usize = domain.bytes().map(|b| b as usize).sum();
         let (c1, c2) = AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.len()];
         let summary_html = if r.summary.is_empty() {
@@ -268,7 +272,8 @@ fn build_results_html(query: &str, engine: &str, results: &[SearchResult]) -> St
              <span class='num'>{}</span>\
              <span class='ava' style='background:linear-gradient(135deg,{c1},{c2})'>\
              <img alt='' loading='lazy' src='{}' \
-             onload=\"this.style.opacity='1'\" onerror=\"this.style.display='none'\">\
+             onload=\"this.style.opacity='1';if(this.nextElementSibling)this.nextElementSibling.style.display='none'\" \
+             onerror=\"this.style.display='none'\">\
              <span class='an'>{site_name}</span></span>\
              <span class='body'><span class='t'>{}</span>\
              <span class='meta'><span class='dot' style='background:{c1}'></span>{}</span>\
