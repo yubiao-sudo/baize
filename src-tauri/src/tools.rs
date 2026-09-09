@@ -1159,7 +1159,7 @@ fn truncate_output(mut s: String) -> String {
 /// Windows 控制台输出解码：优先按 UTF-8；含无效字节时按 GBK 兜底重解。
 /// 中文 Windows 控制台默认代码页 936（GBK），cmd/ping/ipconfig 等原生命令的
 /// 中文输出直接 from_utf8_lossy 会整段变乱码，看起来像输出被吞。
-fn decode_console_output(bytes: &[u8]) -> String {
+pub(crate) fn decode_console_output(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
         Err(_) => {
@@ -1241,12 +1241,20 @@ impl Tool for HttpRequestTool {
             .to_string();
         let text = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
         let json_value = serde_json::from_str::<Value>(&text).ok();
+        // json 字段曾整体不截断，大响应会把数万字符塞进模型上下文（audit_log
+        // 实证 30KB+）；超限改为占位说明，引导 agent 用 body 截断文本或换查询参数
+        let json_len = json_value.as_ref().map(|v| v.to_string().chars().count()).unwrap_or(0);
+        let json_field = if json_len > 8000 {
+            json!({ "note": "JSON 响应过大已省略，请依据 body 截断文本，或改用分页/字段过滤参数缩小响应" })
+        } else {
+            json_value.into()
+        };
 
         Ok(json!({
             "status": status,
             "content_type": content_type,
-            "body": text.chars().take(4000).collect::<String>(),
-            "json": json_value,
+            "body": truncate_output(text),
+            "json": json_field,
         }))
     }
 }

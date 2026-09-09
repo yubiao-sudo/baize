@@ -179,7 +179,35 @@ pub fn build_cloud_client(proxy: &ProxySetting) -> reqwest::Client {
                 Err(e) => eprintln!("[模型] 自定义代理地址无效({})，回退环境代理: {e}", proxy.url),
             }
         }
-        _ => {} // env：reqwest 默认读环境变量
+        _ => {
+            // env 模式：默认读环境变量，但国内 API 域名强制直连——国内端点本不需要
+            // 代理，系统代理进程离线/漂移时反而把整条请求撞死（audit_log 实证：
+            // GLM 因 HTTP_PROXY 失联而失败）。其余域名继续跟随环境变量。
+            b = b.proxy(reqwest::Proxy::custom(|url| {
+                const DOMESTIC_DIRECT: &[&str] = &[
+                    "open.bigmodel.cn",      // 智谱 GLM
+                    "api.deepseek.com",      // DeepSeek
+                    "dashscope.aliyuncs.com", // 通义
+                    "open.aiproxy.net",
+                    "api.moonshot.cn",       // Kimi
+                    "ark.cn-beijing.volces.com", // 豆包
+                ];
+                if let Some(host) = url.host_str() {
+                    if DOMESTIC_DIRECT
+                        .iter()
+                        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+                    {
+                        return None::<reqwest::Url>;
+                    }
+                }
+                let env_url = std::env::var("HTTPS_PROXY")
+                    .or_else(|_| std::env::var("https_proxy"))
+                    .or_else(|_| std::env::var("HTTP_PROXY"))
+                    .or_else(|_| std::env::var("http_proxy"))
+                    .ok();
+                env_url.and_then(|u| reqwest::Url::parse(&u).ok())
+            }));
+        }
     }
     b.build().expect("构建 HTTP 客户端失败")
 }
@@ -1035,6 +1063,31 @@ impl OllamaProvider {
     }
 }
 
+/// 探测 Ollama 端口是否有监听，失败时给出可执行的诊断信息而不是让用户猜
+fn ollama_unreachable(base_url: &str, e: reqwest::Error) -> String {
+    let addr = reqwest::Url::parse(base_url).ok().map(|u| {
+        format!(
+            "{}:{}",
+            u.host_str().unwrap_or("127.0.0.1"),
+            u.port().unwrap_or(11434)
+        )
+    });
+    let live = addr
+        .as_deref()
+        .and_then(|s| s.parse::<std::net::SocketAddr>().ok())
+        .map(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
+        .unwrap_or(false);
+    if live {
+        // 服务在监听但请求失败：网络/模型层问题，保留原始错误
+        format!("请求失败: {e}")
+    } else {
+        format!(
+            "请求失败：Ollama 服务未运行（{} 无监听）。请启动 Ollama 应用或执行 `ollama serve` 后重试；若未安装模型，另需 `ollama pull <模型名>`",
+            addr.as_deref().unwrap_or(base_url)
+        )
+    }
+}
+
 #[async_trait]
 impl ModelProvider for OllamaProvider {
     fn name(&self) -> &str {
@@ -1062,7 +1115,7 @@ impl ModelProvider for OllamaProvider {
             .timeout(Duration::from_secs(300))
             .send()
             .await
-            .map_err(|e| format!("请求失败（请确认已 ollama serve）: {e}"))?;
+            .map_err(|e| ollama_unreachable(&self.base_url, e))?;
         let status = resp.status();
         let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
         if !status.is_success() {
@@ -1102,7 +1155,7 @@ impl ModelProvider for OllamaProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("请求失败（请确认已 ollama serve）: {e}"))?;
+            .map_err(|e| ollama_unreachable(&self.base_url, e))?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;

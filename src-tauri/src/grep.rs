@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::tools::{resolve_path, PermissionClass, Tool};
+use crate::tools::{decode_console_output, resolve_path, PermissionClass, Tool};
 
 pub struct GrepTool;
 
@@ -98,11 +98,18 @@ fn search_file(path: &std::path::Path, re: &regex::Regex, max_results: usize, re
     if results.len() >= max_results {
         return;
     }
-    // 非 UTF-8 / 二进制文件直接跳过
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+    // 读原始字节后统一解码：GBK 文本文件（Windows 记事本 ANSI 编码的 .txt/.c/.log
+    // 等）在旧实现的 read_to_string 下直接被静默跳过——文件里明明有目标信息却
+    // 「搜不到」。解码后替换符占比过高仍按二进制跳过，避免垃圾误报。
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
         Err(_) => return,
     };
+    let content = decode_console_output(&bytes);
+    let total_chars = content.chars().count().max(1);
+    if content.matches('\u{FFFD}').count() * 10 > total_chars {
+        return; // 二进制文件
+    }
     for (idx, line) in content.lines().enumerate() {
         if results.len() >= max_results {
             break;

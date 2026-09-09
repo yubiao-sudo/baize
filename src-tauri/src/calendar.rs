@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 
-use crate::tools::{PermissionClass, Tool};
+use crate::tools::{decode_console_output, PermissionClass, Tool};
 
 /// 读取日历的 PowerShell 脚本（写到临时文件再用 -File 执行，避免命令行引号转义问题）
 const CAL_SCRIPT: &str = r#"
@@ -93,10 +93,10 @@ fn run_calendar_script(days: u64) -> Result<String, String> {
 
     let out = out.map_err(|e| format!("启动 {shell} 失败: {e}"))?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let err = decode_console_output(&out.stderr).trim().to_string();
         return Err(format!("读取日历失败: {err}"));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(decode_console_output(&out.stdout))
 }
 
 /// 日历事件工具（本地 Outlook/系统日历，只读）

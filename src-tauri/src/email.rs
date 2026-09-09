@@ -9,7 +9,7 @@
 
 use serde_json::{json, Value};
 
-use crate::tools::{PermissionClass, Tool};
+use crate::tools::{decode_console_output, PermissionClass, Tool};
 
 /// 读取收件箱的 PowerShell 脚本（-Count 为简单整数，安全走 -File 参数）
 const LIST_MAIL_SCRIPT: &str = r#"
@@ -108,10 +108,10 @@ fn run_powershell(script: &str, script_args: &[String]) -> Result<String, String
 
     let out = out.map_err(|e| format!("启动 {shell} 失败: {e}"))?;
     if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let err = decode_console_output(&out.stderr).trim().to_string();
         return Err(format!("邮件操作失败: {err}"));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(decode_console_output(&out.stdout))
 }
 
 /// 读取收件箱工具（只读）
