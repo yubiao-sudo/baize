@@ -27,6 +27,16 @@ const KEYEVENTF_KEYDOWN: KEYBD_EVENT_FLAGS = KEYBD_EVENT_FLAGS(0);
 /// 6 层曾漏掉深层控件；8 层兼顾覆盖率与遍历耗时。
 const GUI_FIND_DEPTH: usize = 8;
 
+/// UIA 感知超时（interactive_map）：跨进程 COM 调用（find_all/get_name）在目标窗口
+/// 无响应时会无限阻塞——实测汽水音乐（Electron）刚启动、首次被 UIA 访问、正在构建
+/// 辅助功能树时，find_all 挂死 6 分钟无返回。因此所有 UIA 树遍历统一放工作线程执行，
+/// 主线程限时等待；超时即放弃 UIA 返回 Err，调用方（screen_elements 的 `if let Ok`）
+/// 自动降级走 OCR 路线。超时后工作线程可能仍在阻塞，但持有的是独立 COM 实例，
+/// 目标恢复后会自行结束释放，不影响主流程。
+const UIA_WALK_TIMEOUT_MS: u64 = 8000;
+/// observe（read_screen 全树构建）遍历比 interactive_map 更重，超时放宽到 12s
+const OBSERVE_TIMEOUT_MS: u64 = 12000;
+
 /// 组合键注入（虚拟键码路径）：keys 按 + 分割，全部部件可解析为虚拟键码时，
 /// 用 keybd_event 注入（修饰键按下 → 末键敲击 → 修饰键逆序抬起），返回 Some(())。
 /// uiautomation crate 的 send_keys 虚拟键表不含小键盘(numpad*)/媒体键(volume_up 等)，
@@ -68,14 +78,6 @@ impl WindowsCapability {
         Self { app }
     }
 
-    fn connect(&self) -> Result<(UIAutomation, UICondition), CapError> {
-        let automation = UIAutomation::new().map_err(|e| CapError::InvalidState(e.to_string()))?;
-        let condition = automation
-            .create_true_condition()
-            .map_err(|e| CapError::InvalidState(e.to_string()))?;
-        Ok((automation, condition))
-    }
-
     fn to_rect(r: uiautomation::types::Rect) -> Rect {
         Rect {
             x: r.get_left() as f64,
@@ -84,44 +86,255 @@ impl WindowsCapability {
             height: (r.get_bottom() - r.get_top()).max(0) as f64,
         }
     }
+}
 
-    /// 解析根元素：None=前台窗口，Some=指定窗口名
-    fn resolve_root(
-        &self,
-        automation: &UIAutomation,
-        condition: &UICondition,
-        req: &ObserveReq,
-    ) -> Result<UIElement, CapError> {
-        match &req.window {
-            None => {
-                let focused = automation
-                    .get_focused_element()
-                    .map_err(|e| CapError::InvalidState(format!("无法获取焦点元素: {e}")))?;
-                let mut root = focused;
-                if let Ok(ancestors) = root.find_all(TreeScope::Ancestors, condition) {
-                    if let Some(win) = ancestors
-                        .into_iter()
-                        .find(|a| matches!(a.get_control_type(), Ok(ControlType::Window)))
-                    {
-                        root = win;
-                    }
-                }
-                Ok(root)
-            }
-            Some(WindowTarget::ByName(name)) => {
-                let desktop = automation
-                    .get_root_element()
-                    .map_err(|e| CapError::InvalidState(e.to_string()))?;
-                let children = desktop
-                    .find_all(TreeScope::Children, condition)
-                    .map_err(|e| CapError::InvalidState(e.to_string()))?;
-                children
+/// 解析 UIA 根元素：None=前台窗口（焦点元素的 Window 祖先），Some=按名匹配桌面顶层窗口。
+/// 自由函数：observe/interactive_map 的工作线程内直接调用（不经过 &self）。
+fn resolve_root_element(
+    automation: &UIAutomation,
+    condition: &UICondition,
+    req: &ObserveReq,
+) -> Result<UIElement, CapError> {
+    match &req.window {
+        None => {
+            let focused = automation
+                .get_focused_element()
+                .map_err(|e| CapError::InvalidState(format!("无法获取焦点元素: {e}")))?;
+            let mut root = focused;
+            if let Ok(ancestors) = root.find_all(TreeScope::Ancestors, condition) {
+                if let Some(win) = ancestors
                     .into_iter()
-                    .find(|c| c.get_name().unwrap_or_default().contains(name))
-                    .ok_or_else(|| CapError::NotFound(format!("未找到窗口: {name}")))
+                    .find(|a| matches!(a.get_control_type(), Ok(ControlType::Window)))
+                {
+                    root = win;
+                }
             }
+            Ok(root)
+        }
+        Some(WindowTarget::ByName(name)) => {
+            let desktop = automation
+                .get_root_element()
+                .map_err(|e| CapError::InvalidState(e.to_string()))?;
+            let children = desktop
+                .find_all(TreeScope::Children, condition)
+                .map_err(|e| CapError::InvalidState(e.to_string()))?;
+            if let Some(el) = children
+                .into_iter()
+                .find(|c| c.get_name().unwrap_or_default().contains(name))
+            {
+                return Ok(el);
+            }
+            // 兜底：UIA 标题匹配失败时经 Win32 句柄精确取元素——语义与 find_window_by_name
+            // 一致（标题或进程 exe 名含关键词），自绘应用（如汽水音乐）标题不含产品名时靠进程名命中
+            find_window_by_name(name)
+                .and_then(|hwnd| {
+                    let handle = uiautomation::types::Handle::from(hwnd);
+                    automation.element_from_handle(handle).ok()
+                })
+                .ok_or_else(|| CapError::NotFound(format!("未找到窗口: {name}")))
         }
     }
+}
+
+/// observe 的工作线程本体：自建 UIA 实例 + 解析根 + 全树构建（含 Chromium 空树重试）。
+/// 自由函数：工作线程内自包含执行，全部 COM 对象都在本线程创建。
+fn observe_impl(req: ObserveReq) -> Result<Observation, CapError> {
+    let automation = UIAutomation::new().map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let condition = automation
+        .create_true_condition()
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let root = resolve_root_element(&automation, &condition, &req)?;
+
+    let mut count = 0usize;
+    let mut truncated = false;
+    let root_node = build(&root, 0, &req, &condition, &mut count, &mut truncated)?;
+
+    // Chromium 系窗口（浏览器/Electron）首次被 UIA 访问时才构建辅助功能树，
+    // 首次读取常见空树/近空树：等待约 1s 后重建一次，避免模型在空观察上空转。
+    let root_node = if count <= 3
+        && root
+            .get_classname()
+            .map(|c| c == "Chrome_WidgetWin_1")
+            .unwrap_or(false)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        count = 0;
+        truncated = false;
+        build(&root, 0, &req, &condition, &mut count, &mut truncated)?
+    } else {
+        root_node
+    };
+
+    Ok(Observation {
+        source: "windows_uia".to_string(),
+        tree: Some(A11yTree {
+            root: root_node,
+            node_count: count,
+            truncated,
+        }),
+    })
+}
+
+/// interactive_map 的工作线程本体：自建 UIA 实例 + 解析根 + 可交互元素遍历
+/// （含 Chromium 空树 900ms 重试）。全部 COM 对象都在本线程创建。
+fn interactive_map_impl(window: Option<String>) -> Result<Value, CapError> {
+    let automation = UIAutomation::new().map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let condition = automation
+        .create_true_condition()
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    // 根元素：指定窗口名 → 按名解析；否则取当前焦点应用的顶层窗口
+    let req = ObserveReq {
+        mode: crate::capability::ObserveMode::TreeOnly,
+        max_depth: 0,
+        max_nodes: 0,
+        window: window.map(crate::capability::WindowTarget::ByName),
+    };
+    let root = resolve_root_element(&automation, &condition, &req)?;
+
+    let mut out: Vec<Value> = Vec::new();
+
+    fn walk(
+        el: &UIElement,
+        condition: &UICondition,
+        depth: usize,
+        out: &mut Vec<Value>,
+    ) -> Result<(), CapError> {
+        if depth > 14 || out.len() >= 120 {
+            return Ok(());
+        }
+        let ct = el
+            .get_control_type()
+            .map(|c| format!("{:?}", c))
+            .unwrap_or_default();
+        let bbox = el.get_bounding_rectangle().ok();
+        // Image 控件单独收录：音乐/视频类自渲染应用的「播放按钮」是行内小图标（无文字、
+        // 不可交互类型），但它正是点击播放的目标——只收图标尺寸（8-64px），避免大封面图刷屏
+        let icon_image = ct == "Image"
+            && bbox
+                .as_ref()
+                .map(|r| {
+                    let w = r.get_right() - r.get_left();
+                    let h = r.get_bottom() - r.get_top();
+                    (8..=64).contains(&w) && (8..=64).contains(&h)
+                })
+                .unwrap_or(false);
+        if interactive_ctl(&ct) || icon_image {
+            if let Ok(name) = el.get_name() {
+                let name = name.trim().to_string();
+                if !name.is_empty() || icon_image {
+                    let (cx, cy) = bbox
+                        .map(|r| {
+                            (
+                                (r.get_left() + r.get_right()) as f64 / 2.0,
+                                (r.get_top() + r.get_bottom()) as f64 / 2.0,
+                            )
+                        })
+                        .unwrap_or((0.0, 0.0));
+                    out.push(json!({
+                        "name": if name.is_empty() { format!("{ct}图标") } else { name },
+                        "type": ct,
+                        "x": cx as i32,
+                        "y": cy as i32,
+                    }));
+                }
+            }
+        }
+        if let Ok(children) = el.find_all(TreeScope::Children, condition) {
+            for c in children {
+                walk(&c, condition, depth + 1, out)?;
+            }
+        }
+        Ok(())
+    }
+    walk(&root, &condition, 0, &mut out)?;
+
+    // Chromium 系窗口首调常空树（辅助功能树首次访问才构建）：等待约 1s 换新根元素重走一遍
+    let mut note = String::new();
+    if out.len() <= 3
+        && root
+            .get_classname()
+            .map(|c| c == "Chrome_WidgetWin_1")
+            .unwrap_or(false)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        let root2 = resolve_root_element(&automation, &condition, &req)?;
+        out.clear();
+        walk(&root2, &condition, 0, &mut out)?;
+        if out.len() > 3 {
+            note = "首次读取为空（Chromium 首次访问需构建辅助功能树），已等待约 1s 重读"
+                .to_string();
+        }
+    }
+
+    let mut result = json!({ "elements": out, "count": out.len() });
+    if !note.is_empty() {
+        result["note"] = json!(note);
+    }
+    Ok(result)
+}
+
+/// find（前台窗口内搜索）的工作线程本体
+fn find_in_window_impl(req: ObserveReq, target: &str) -> Result<Vec<ElementMatch>, CapError> {
+    let automation = UIAutomation::new().map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let condition = automation
+        .create_true_condition()
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let root = resolve_root_element(&automation, &condition, &req)?;
+    let mut matches = Vec::new();
+    collect_matches(&root, target, &condition, 0, 6, &mut matches);
+    Ok(matches)
+}
+
+/// find_anywhere（跨所有顶层窗口搜索）的工作线程本体
+fn find_anywhere_impl(target: &str) -> Result<Vec<ElementMatch>, CapError> {
+    // 跨所有顶层窗口搜索（而非仅前台窗口）：遍历 desktop 的每棵子树，
+    // 使弹出对话框（确认/卸载/错误）里的按钮也能被定位并点击。
+    let automation = UIAutomation::new().map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let condition = automation
+        .create_true_condition()
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let desktop = automation
+        .get_root_element()
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let children = desktop
+        .find_all(TreeScope::Children, &condition)
+        .map_err(|e| CapError::InvalidState(e.to_string()))?;
+    let mut matches = Vec::new();
+    for c in children {
+        collect_matches(&c, target, &condition, 0, GUI_FIND_DEPTH, &mut matches);
+    }
+    matches.sort_by(|a, b| b.score.cmp(&a.score));
+    Ok(matches)
+}
+
+/// click_element 的 UIA 定位+点击段（工作线程本体）。
+/// 返回 Some(res)=已有结论（命中点击成功/真实错误）；None=UIA 无命中 → 调用方走视觉兜底。
+fn click_element_uia_impl(target: String) -> Option<Result<ActionResult, CapError>> {
+    let automation = UIAutomation::new().ok()?;
+    let condition = automation.create_true_condition().ok()?;
+    let req = ObserveReq::default();
+    let root = resolve_root_element(&automation, &condition, &req).ok()?;
+    // 评分选优：先收集全部候选取最高分，再回树上按「名称+矩形」双条件定位点击。
+    let mut candidates = Vec::new();
+    collect_matches(&root, &target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
+    candidates.sort_by(|a, b| b.score.cmp(&a.score));
+    if let Some(best) = candidates.first() {
+        let (name, bbox, score) = (best.name.clone(), best.bbox, best.score);
+        let mut clicked = false;
+        click_by_ident(&root, &condition, 0, GUI_FIND_DEPTH, &name, bbox, &mut clicked).ok()?;
+        if clicked {
+            let note = if score < 72 {
+                format!("（模糊匹配 score={score}，请核验是否点中预期控件）")
+            } else {
+                String::new()
+            };
+            return Some(Ok(ActionResult {
+                ok: true,
+                description: format!("点击控件: {target}{note}"),
+            }));
+        }
+    }
+    None
 }
 
 impl Capability for WindowsCapability {
@@ -148,37 +361,22 @@ impl Capability for WindowsCapability {
     }
 
     fn observe(&self, req: &ObserveReq) -> Result<Observation, CapError> {
-        let (automation, condition) = self.connect()?;
-        let root = self.resolve_root(&automation, &condition, req)?;
-
-        let mut count = 0usize;
-        let mut truncated = false;
-        let root_node = build(&root, 0, req, &condition, &mut count, &mut truncated)?;
-
-        // Chromium 系窗口（浏览器/Electron）首次被 UIA 访问时才构建辅助功能树，
-        // 首次读取常见空树/近空树：等待约 1s 后重建一次，避免模型在空观察上空转。
-        let root_node = if count <= 3
-            && root
-                .get_classname()
-                .map(|c| c == "Chrome_WidgetWin_1")
-                .unwrap_or(false)
-        {
-            std::thread::sleep(std::time::Duration::from_millis(900));
-            count = 0;
-            truncated = false;
-            build(&root, 0, req, &condition, &mut count, &mut truncated)?
-        } else {
-            root_node
-        };
-
-        Ok(Observation {
-            source: "windows_uia".to_string(),
-            tree: Some(A11yTree {
-                root: root_node,
-                node_count: count,
-                truncated,
-            }),
-        })
+        // UIA 树构建放工作线程限时执行：目标窗口无响应时（Chromium 首建辅助功能树/
+        // 应用挂死）find_all 会无限阻塞，主线程超时放弃并给出改道路线
+        let req = req.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(observe_impl(req));
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(OBSERVE_TIMEOUT_MS)) {
+            Ok(res) => res,
+            Err(_) => Err(CapError::InvalidState(format!(
+                "UIA 树读取超时（{OBSERVE_TIMEOUT_MS}ms）：目标窗口可能正在构建辅助功能树\
+                 （Chromium 系应用刚启动时常见）或已无响应。请改走截图路线：capture_screen + \
+                 ground_on_screenshot / screen_elements（其 UIA 部分超时会自动只回 OCR 结果），\
+                 或等待 1-2 秒后重试本工具"
+            ))),
+        }
     }
 
     fn capture_screen(&self) -> Result<ScreenshotInfo, CapError> {
@@ -502,150 +700,67 @@ impl Capability for WindowsCapability {
     }
 
     fn find(&self, target: &str) -> Result<Vec<ElementMatch>, CapError> {
-        let (automation, condition) = self.connect()?;
-        let req = ObserveReq::default();
-        let root = self.resolve_root(&automation, &condition, &req)?;
-        let mut matches = Vec::new();
-        collect_matches(&root, target, &condition, 0, 6, &mut matches);
-        Ok(matches)
+        // UIA 遍历放工作线程限时执行（同 observe，防无响应窗口阻塞）
+        let target = target.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(find_in_window_impl(ObserveReq::default(), &target));
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS)) {
+            Ok(res) => res,
+            Err(_) => Err(CapError::InvalidState(format!(
+                "UIA 控件搜索超时（{UIA_WALK_TIMEOUT_MS}ms）：目标窗口可能正在构建辅助功能树或无响应，\
+                 改用 screen_elements / capture_screen + ground_on_screenshot 视觉定位"
+            ))),
+        }
     }
 
     fn interactive_map(&self, window: Option<String>) -> Result<Value, CapError> {
-        let (automation, condition) = self.connect()?;
-        // 根元素：指定窗口名 → 按名解析；否则取当前焦点应用的顶层窗口
-        let req = ObserveReq {
-            mode: crate::capability::ObserveMode::TreeOnly,
-            max_depth: 0,
-            max_nodes: 0,
-            window: window
-                .map(crate::capability::WindowTarget::ByName),
-        };
-        let root = self.resolve_root(&automation, &condition, &req)?;
-
-        let mut out: Vec<Value> = Vec::new();
-
-        fn walk(
-            el: &UIElement,
-            condition: &UICondition,
-            depth: usize,
-            out: &mut Vec<Value>,
-        ) -> Result<(), CapError> {
-            if depth > 14 || out.len() >= 120 {
-                return Ok(());
-            }
-            let ct = el
-                .get_control_type()
-                .map(|c| format!("{:?}", c))
-                .unwrap_or_default();
-            let bbox = el.get_bounding_rectangle().ok();
-            // Image 控件单独收录：音乐/视频类自渲染应用的「播放按钮」是行内小图标（无文字、
-            // 不可交互类型），但它正是点击播放的目标——只收图标尺寸（8-64px），避免大封面图刷屏
-            let icon_image = ct == "Image"
-                && bbox
-                    .as_ref()
-                    .map(|r| {
-                        let w = r.get_right() - r.get_left();
-                        let h = r.get_bottom() - r.get_top();
-                        (8..=64).contains(&w) && (8..=64).contains(&h)
-                    })
-                    .unwrap_or(false);
-            if interactive_ctl(&ct) || icon_image {
-                if let Ok(name) = el.get_name() {
-                    let name = name.trim().to_string();
-                    if !name.is_empty() || icon_image {
-                        let (cx, cy) = bbox
-                            .map(|r| {
-                                (
-                                    (r.get_left() + r.get_right()) as f64 / 2.0,
-                                    (r.get_top() + r.get_bottom()) as f64 / 2.0,
-                                )
-                            })
-                            .unwrap_or((0.0, 0.0));
-                        out.push(json!({
-                            "name": if name.is_empty() { format!("{ct}图标") } else { name },
-                            "type": ct,
-                            "x": cx as i32,
-                            "y": cy as i32,
-                        }));
-                    }
-                }
-            }
-            if let Ok(children) = el.find_all(TreeScope::Children, condition) {
-                for c in children {
-                    walk(&c, condition, depth + 1, out)?;
-                }
-            }
-            Ok(())
+        // 与 observe 同理：UIA 遍历放工作线程限时执行，防止对无响应窗口无限阻塞
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(interactive_map_impl(window));
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS)) {
+            Ok(res) => res,
+            Err(_) => Err(CapError::InvalidState(format!(
+                "UIA 元素枚举超时（{UIA_WALK_TIMEOUT_MS}ms）：目标窗口可能正在构建辅助功能树\
+                 （Chromium 系应用刚启动时常见）或已无响应。本次仅返回 OCR 文字部分（若有），\
+                 也可改走 capture_screen + ground_on_screenshot 坐标路线，或等待 1-2 秒重试"
+            ))),
         }
-        walk(&root, &condition, 0, &mut out)?;
-
-        // Chromium 系窗口首调常空树（辅助功能树首次访问才构建）：等待约 1s 换新根元素重走一遍
-        let mut note = String::new();
-        if out.len() <= 3
-            && root
-                .get_classname()
-                .map(|c| c == "Chrome_WidgetWin_1")
-                .unwrap_or(false)
-        {
-            std::thread::sleep(std::time::Duration::from_millis(900));
-            let root2 = self.resolve_root(&automation, &condition, &req)?;
-            out.clear();
-            walk(&root2, &condition, 0, &mut out)?;
-            if out.len() > 3 {
-                note = "首次读取为空（Chromium 首次访问需构建辅助功能树），已等待约 1s 重读"
-                    .to_string();
-            }
-        }
-
-        let mut result = json!({ "elements": out, "count": out.len() });
-        if !note.is_empty() {
-            result["note"] = json!(note);
-        }
-        Ok(result)
     }
 
     fn find_anywhere(&self, target: &str) -> Result<Vec<ElementMatch>, CapError> {
-        // 跨所有顶层窗口搜索（而非仅前台窗口）：遍历 desktop 的每棵子树，
-        // 使弹出对话框（确认/卸载/错误）里的按钮也能被定位并点击。
-        let (automation, condition) = self.connect()?;
-        let desktop = automation
-            .get_root_element()
-            .map_err(|e| CapError::InvalidState(e.to_string()))?;
-        let children = desktop
-            .find_all(TreeScope::Children, &condition)
-            .map_err(|e| CapError::InvalidState(e.to_string()))?;
-        let mut matches = Vec::new();
-        for c in children {
-            collect_matches(&c, target, &condition, 0, GUI_FIND_DEPTH, &mut matches);
+        // UIA 遍历放工作线程限时执行（同 observe，防无响应窗口阻塞）
+        let target = target.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(find_anywhere_impl(&target));
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS)) {
+            Ok(res) => res,
+            Err(_) => Err(CapError::InvalidState(format!(
+                "UIA 跨窗口搜索超时（{UIA_WALK_TIMEOUT_MS}ms）：存在无响应窗口，\
+                 改用 screen_elements / capture_screen + ground_on_screenshot 视觉定位"
+            ))),
         }
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
-        Ok(matches)
     }
 
     fn click_element(&self, target: &str) -> Result<ActionResult, CapError> {
-        let (automation, condition) = self.connect()?;
-        let req = ObserveReq::default();
-        let root = self.resolve_root(&automation, &condition, &req)?;
-        // 评分选优：先收集全部候选取最高分，再回树上按「名称+矩形」双条件定位点击。
-        // 旧的「首个 name.contains 即点」会点中同名容器/父级文本，导致点空。
-        let mut candidates = Vec::new();
-        collect_matches(&root, target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
-        candidates.sort_by(|a, b| b.score.cmp(&a.score));
-        if let Some(best) = candidates.first() {
-            let (name, bbox, score) = (best.name.clone(), best.bbox, best.score);
-            let mut clicked = false;
-            click_by_ident(&root, &condition, 0, GUI_FIND_DEPTH, &name, bbox, &mut clicked)?;
-            if clicked {
-                let note = if score < 72 {
-                    format!("（模糊匹配 score={score}，请核验是否点中预期控件）")
-                } else {
-                    String::new()
-                };
-                return Ok(ActionResult {
-                    ok: true,
-                    description: format!("点击控件: {target}{note}"),
-                });
-            }
+        // UIA 定位+点击放工作线程限时执行：Some(res)=有结果直接返回；None=未命中或超时
+        // → 落视觉兜底链（OCR/SoM 接地坐标点击），保证对无响应窗口也能完成动作
+        let target_owned = target.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(click_element_uia_impl(target_owned));
+        });
+        let uia_result = rx
+            .recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS))
+            .ok()
+            .flatten();
+        if let Some(res) = uia_result {
+            return res;
         }
         // 回退：OCR / Set-of-Marks / 视觉接地 → 坐标点击，并附操作后界面变化验证。
         // 截图复用：ground_on_screenshot 直接用本图作为 before 基线，验证/微偏移重试
@@ -669,7 +784,9 @@ impl Capability for WindowsCapability {
         };
         Ok(ActionResult {
             ok: true,
-            description: format!("点击控件: {target}（{note}）"),
+            description: format!(
+                "点击控件: {target}（UIA 无命中/超时 {UIA_WALK_TIMEOUT_MS}ms，视觉兜底：{note}）"
+            ),
         })
     }
 }
@@ -1722,26 +1839,39 @@ pub fn app_profile_impl(window: Option<&str>) -> Result<Value, String> {
         })
         .unwrap_or(false);
 
-    // 4. UIA 树采样（最小化窗口树不可靠，跳过）
+    // 4. UIA 树采样（最小化窗口树不可靠，跳过；采样放工作线程限时——同 observe，防无响应窗口阻塞）
     let mut roles: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let node_count = if minimized {
-        0
+    let (node_count, sample_ok) = if minimized {
+        (0, true)
     } else {
-        UIAutomation::new()
-            .ok()
-            .and_then(|automation| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = UIAutomation::new().ok().and_then(|automation| {
                 let handle = uiautomation::types::Handle::from(hwnd);
                 automation.element_from_handle(handle).ok().map(|root| {
-                    let mut count = 0;
+                    let mut count = 0usize;
+                    let mut r: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
                     if let Ok(cond) = automation.create_true_condition() {
-                        sample_tree_nodes(&root, &cond, 0, &mut count, &mut roles);
+                        sample_tree_nodes(&root, &cond, 0, &mut count, &mut r);
                     }
-                    count
+                    (count, r)
                 })
-            })
-            .unwrap_or(0)
+            });
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS)) {
+            Ok(Some((count, r))) => {
+                roles = r;
+                (count, true)
+            }
+            Ok(None) => (0, true), // element_from_handle 失败：窗口无 UIA 支持，按空树处理
+            Err(_) => (0, false),  // 采样超时：目标窗口 UIA 无响应
+        }
     };
-    let quality = if minimized {
+    let quality = if !sample_ok {
+        "empty"
+    } else if minimized {
         "unknown"
     } else if node_count <= 3 {
         "empty"
@@ -1760,7 +1890,7 @@ pub fn app_profile_impl(window: Option<&str>) -> Result<Value, String> {
         "electron"
     } else if class == "ApplicationFrameWindow" || class == "Windows.UI.Core.CoreWindow" {
         "uwp"
-    } else if fullscreen && quality == "empty" {
+    } else if fullscreen && quality == "empty" && sample_ok {
         "game"
     } else if quality == "rich" {
         "native"
@@ -1818,6 +1948,9 @@ pub fn app_profile_impl(window: Option<&str>) -> Result<Value, String> {
     if !minimized && quality == "empty" && app_type != "game" {
         suggest.push("树为空也可能是窗口被遮挡/未激活：可先 window_focus 聚焦目标窗口再重试");
     }
+    if !sample_ok {
+        suggest.push("UIA 树采样超时：目标窗口无响应或正在构建辅助功能树，树质量不可信，请走截图感知路线（capture_screen / screen_elements）");
+    }
 
     // 控件类型 Top5（帮助模型预判界面构成）
     let mut top_roles: Vec<(String, usize)> = roles.into_iter().collect();
@@ -1835,6 +1968,7 @@ pub fn app_profile_impl(window: Option<&str>) -> Result<Value, String> {
         "app_type": app_type,
         "a11y_quality": quality,
         "node_count": node_count,
+        "sample_timeout": !sample_ok,
         "top_roles": top_roles,
         "fullscreen": fullscreen,
         "minimized": minimized,

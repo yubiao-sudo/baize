@@ -3,7 +3,7 @@ mod agent;
 mod background;
 mod browser;
 mod calendar;
-mod capability;
+pub mod capability; // [探针/外部集成可见] GUI 能力层（含 bin/gui_probe 实测探针）
 mod clipboard;
 mod commands;
 mod datapipeline;

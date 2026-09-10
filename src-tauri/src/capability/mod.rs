@@ -855,6 +855,12 @@ impl Tool for AppProfileTool {
     }
 }
 
+/// 探针/外部集成入口：直接调用应用类型画像（windows 模块 pub(crate)，经此转发对外可见）
+#[cfg(windows)]
+pub fn app_profile_for_probe(window: Option<&str>) -> Result<Value, String> {
+    windows::app_profile_impl(window)
+}
+
 
 pub struct ReadScreenTool {
     capability: Arc<dyn Capability>,
