@@ -678,6 +678,81 @@ impl MemoryStore {
         Ok(())
     }
 
+    // ---------- 统一搜索 / 夜间记忆整理：跨会话消息查询 ----------
+
+    /// 全文检索所有会话消息（LIKE 包含匹配，%/_ 通配符转义），联查会话标题。
+    /// 返回时间正序的 (会话id, 会话标题, role, content, created_at)。
+    pub fn search_messages(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, String, i64)>, String> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        // LIKE 通配符转义：把用户输入当字面量
+        let escaped = format!(
+            "%{}%",
+            q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+        );
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.conversation_id, COALESCE(c.title, ''), m.role, m.content, m.created_at
+                 FROM messages m LEFT JOIN conversations c ON c.id = m.conversation_id
+                 WHERE m.content LIKE ?1 ESCAPE '\\' AND m.content != ''
+                 ORDER BY m.created_at DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![escaped, limit as i64], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out: Vec<(String, String, String, String, i64)> = rows
+            .filter_map(|r| r.ok())
+            .collect();
+        out.reverse();
+        Ok(out)
+    }
+
+    /// 某时间点之后（不含）的全部消息，跨会话，时间正序。
+    /// 供夜间记忆整理拉取「今天的对话」。
+    pub fn messages_since(
+        &self,
+        since_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, i64)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(c.title, ''), m.role, m.content, m.created_at
+                 FROM messages m LEFT JOIN conversations c ON c.id = m.conversation_id
+                 WHERE m.created_at > ?1 AND m.content != ''
+                 ORDER BY m.created_at ASC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![since_ms, limit as i64], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let out: Vec<(String, String, String, i64)> = rows.filter_map(|r| r.ok()).collect();
+        Ok(out)
+    }
+
     // ---------- RAG 知识库 chunk 持久化 ----------
 
     /// 保存 RAG chunks（清空重建）

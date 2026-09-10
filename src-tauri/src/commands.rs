@@ -1843,6 +1843,61 @@ pub fn set_permission_rule(state: State<'_, AppState>, key: String, allowed: boo
     state.security.rules_set(&key, allowed);
 }
 
+// ---------------- 细粒度权限策略（一键放权） ----------------
+
+/// 读取细粒度权限策略（前端设置面板用）
+#[tauri::command]
+pub fn permission_policy_get(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let policy = state.security.policy_get();
+    serde_json::to_value(policy).map_err(|e| e.to_string())
+}
+
+/// 保存细粒度权限策略（body 为完整策略 JSON：tool_rules / class_rules / default）
+#[tauri::command]
+pub fn permission_policy_set(
+    state: State<'_, AppState>,
+    policy: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let parsed: crate::security::PermissionPolicy = serde_json::from_value(policy)
+        .map_err(|e| format!("策略格式无效: {e}"))?;
+    state.security.policy_set(parsed)?;
+    let updated = state.security.policy_get();
+    serde_json::to_value(updated).map_err(|e| e.to_string())
+}
+
+// ---------------- 主动记忆整理（夜间日记） ----------------
+
+/// 手动触发一次记忆整理（前端设置/记忆看板用）
+#[tauri::command]
+pub async fn nightly_digest_run(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let store = state.store.clone();
+    let model = state.model.clone();
+    // 命令运行在 tokio 上下文，直接 await
+    let (note, count) = crate::memory::digest::run_digest(&store, &model).await?;
+    if count == 0 {
+        return Ok(serde_json::json!({
+            "ok": true, "messages": 0, "note": "", "message": "上次整理后没有新对话，无需整理"
+        }));
+    }
+    Ok(serde_json::json!({ "ok": true, "messages": count, "note": note }))
+}
+
+/// 读取夜间整理配置（enabled / time）
+#[tauri::command]
+pub fn nightly_digest_config(state: State<'_, AppState>) -> serde_json::Value {
+    crate::memory::digest::config_get(&state.store)
+}
+
+/// 保存夜间整理配置（enabled / time 可选传，不传不变）
+#[tauri::command]
+pub fn nightly_digest_set_config(
+    state: State<'_, AppState>,
+    enabled: Option<bool>,
+    time: Option<String>,
+) -> Result<serde_json::Value, String> {
+    crate::memory::digest::config_set(&state.store, enabled, time.as_deref())
+}
+
 // ---------------- 屏幕感知 ----------------
 
 /// 一键截屏：返回截图路径（前端把截图作为附件 + 默认问题发送给模型分析）

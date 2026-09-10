@@ -31,3 +31,6 @@ __pycache__/
 
 # Tauri 生成物
 src-tauri/gen/
+
+# Vite 临时时间戳文件
+vite.config.ts.timestamp-*.mjs

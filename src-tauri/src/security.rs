@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::memory::MemoryStore;
-use crate::tools::PermissionClass;
+use crate::tools::{PermissionClass, Tool};
 
 /// 记住的权限规则持久化键
 const RULES_KEY: &str = "permission_rules";
@@ -35,6 +35,73 @@ pub enum PermissionDecision {
     Prompt(PermissionRequest),
 }
 
+// ---------------- 细粒度权限策略（PermissionPolicy） ----------------
+//
+// 在「工具权限级别（ReadOnly/Write/HighRisk）」之上叠加一层用户可配置的策略，
+// 实现「允许读文件但禁止联网」这类一键放权场景。三层规则按序匹配，命中即生效：
+//   1) tool_rules   按工具名精确匹配（最高优先），如 "http_request": "deny"
+//   2) class_rules  按权限级别匹配，如 "HighRisk": "deny"
+//   3) default      全局默认（allow / ask / deny）
+// 未命中任何规则的调用回退到原有分类逻辑（ReadOnly 放行 / Write 视目录 / HighRisk 审批）。
+// 持久化：SQLite settings 表 key = "permission_policy"。
+
+/// 策略持久化键
+const POLICY_KEY: &str = "permission_policy";
+
+/// 一条规则的动作
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PolicyAction {
+    /// 放行（无需审批）
+    #[serde(rename = "allow")]
+    Allow,
+    /// 走原分类逻辑（ReadOnly 放行 / Write 视目录 / HighRisk 审批）
+    #[serde(rename = "ask")]
+    Ask,
+    /// 直接拒绝
+    #[serde(rename = "deny")]
+    Deny,
+}
+
+/// 细粒度权限策略
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct PermissionPolicy {
+    /// 工具名 → 动作（最高优先）
+    #[serde(default)]
+    pub tool_rules: std::collections::BTreeMap<String, PolicyAction>,
+    /// 权限级别（"ReadOnly" / "Write" / "HighRisk"）→ 动作
+    #[serde(default)]
+    pub class_rules: std::collections::BTreeMap<String, PolicyAction>,
+    /// 全局默认动作；缺省 = ask（即走原分类逻辑）
+    #[serde(default)]
+    pub default: Option<PolicyAction>,
+}
+
+impl PermissionPolicy {
+    /// 加载持久化策略（无 / 损坏时返回默认空策略）
+    fn load(store: &MemoryStore) -> Self {
+        match store.get_setting(POLICY_KEY) {
+            Ok(Some(json)) => serde_json::from_str(&json).unwrap_or_default(),
+            _ => Self::default(),
+        }
+    }
+
+    /// 决策一次工具调用；返回 None 表示无规则命中（继续走原分类逻辑）
+    fn decide(&self, tool: &str, class: PermissionClass) -> Option<PolicyAction> {
+        if let Some(a) = self.tool_rules.get(tool) {
+            return Some(*a);
+        }
+        let class_key = match class {
+            PermissionClass::ReadOnly => "ReadOnly",
+            PermissionClass::Write => "Write",
+            PermissionClass::HighRisk => "HighRisk",
+        };
+        if let Some(a) = self.class_rules.get(class_key) {
+            return Some(*a);
+        }
+        self.default
+    }
+}
+
 /// 权限管理器：pending = 待审批，decisions = 已决策，remembered = 已记住的规则
 ///
 /// 策略：
@@ -46,6 +113,8 @@ pub struct SecurityManager {
     pending: Mutex<HashMap<String, PermissionRequest>>,
     decisions: Mutex<HashMap<String, bool>>,
     remembered: Mutex<HashMap<String, bool>>,
+    /// 细粒度权限策略（工具名/级别/默认三层规则），RwLock 支持运行时修改
+    policy: std::sync::RwLock<PermissionPolicy>,
     store: Arc<MemoryStore>,
 }
 
@@ -55,6 +124,7 @@ impl SecurityManager {
             pending: Mutex::new(HashMap::new()),
             decisions: Mutex::new(HashMap::new()),
             remembered: Mutex::new(load_rules(&store)),
+            policy: std::sync::RwLock::new(PermissionPolicy::load(&store)),
             store,
         }
     }
@@ -70,6 +140,18 @@ impl SecurityManager {
             } else {
                 PermissionDecision::AutoDeny
             };
+        }
+
+        // 细粒度策略层：工具名规则 > 权限级别规则 > 全局默认，命中即生效；
+        // 未命中（None / Ask）回退到原有分类逻辑
+        let policy_action = {
+            let policy = self.policy.read().unwrap();
+            policy.decide(tool, class)
+        };
+        match policy_action {
+            Some(PolicyAction::Allow) => return PermissionDecision::AutoAllow,
+            Some(PolicyAction::Deny) => return PermissionDecision::AutoDeny,
+            _ => {}
         }
 
         match class {
@@ -176,6 +258,23 @@ impl SecurityManager {
         };
         save_rules(&self.store, &snapshot);
     }
+
+    // ---------------- 细粒度权限策略（PermissionPolicy）管理 ----------------
+
+    /// 读取当前策略快照
+    pub fn policy_get(&self) -> PermissionPolicy {
+        self.policy.read().unwrap().clone()
+    }
+
+    /// 整体替换策略并持久化（前端「一键放权」配置面板 / Agent 工具都会走这里）
+    pub fn policy_set(&self, policy: PermissionPolicy) -> Result<(), String> {
+        let json = {
+            let mut guard = self.policy.write().unwrap();
+            *guard = policy;
+            serde_json::to_string(&*guard).map_err(|e| format!("策略序列化失败: {e}"))?
+        };
+        self.store.set_setting(POLICY_KEY, &json)
+    }
 }
 
 /// 计算权限记忆的「情况指纹」：让「记住」只作用于相同具体情况。
@@ -278,4 +377,177 @@ pub struct AuditEntry {
     pub args: Value,
     pub decision: String, // auto-allow / approved / denied / timeout
     pub result: String,
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse_action(s: &str) -> PolicyAction {
+        serde_json::from_value(json!(s)).unwrap()
+    }
+
+    #[test]
+    fn policy_action_serde() {
+        assert_eq!(parse_action("allow"), PolicyAction::Allow);
+        assert_eq!(parse_action("ask"), PolicyAction::Ask);
+        assert_eq!(parse_action("deny"), PolicyAction::Deny);
+    }
+
+    #[test]
+    fn decide_tool_rule_wins_over_class_rule() {
+        let p = PermissionPolicy {
+            tool_rules: [("http_request".to_string(), PolicyAction::Allow)]
+                .into_iter()
+                .collect(),
+            class_rules: [("HighRisk".to_string(), PolicyAction::Deny)]
+                .into_iter()
+                .collect(),
+            default: None,
+        };
+        // 工具级 allow 优先于级别 deny
+        assert_eq!(
+            p.decide("http_request", PermissionClass::HighRisk),
+            Some(PolicyAction::Allow)
+        );
+        // 其它 HighRisk 工具被级别规则拒绝
+        assert_eq!(
+            p.decide("run_command", PermissionClass::HighRisk),
+            Some(PolicyAction::Deny)
+        );
+        // 无命中的只读工具无规则 → None（走原分类）
+        assert_eq!(p.decide("list_files", PermissionClass::ReadOnly), None);
+    }
+
+    #[test]
+    fn decide_default_applies_when_no_rules() {
+        let p = PermissionPolicy {
+            tool_rules: Default::default(),
+            class_rules: Default::default(),
+            default: Some(PolicyAction::Deny),
+        };
+        assert_eq!(
+            p.decide("anything", PermissionClass::Write),
+            Some(PolicyAction::Deny)
+        );
+    }
+}
+
+// ---------------- 细粒度权限策略：Agent 工具 ----------------
+
+/// 查询当前细粒度权限策略（只读）
+pub struct PolicyGetTool {
+    store: Arc<MemoryStore>,
+}
+
+impl PolicyGetTool {
+    pub fn new(store: Arc<MemoryStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl Tool for PolicyGetTool {
+    fn name(&self) -> &str {
+        "permission_policy_get"
+    }
+    fn description(&self) -> &str {
+        "查询当前的细粒度权限策略：tool_rules（按工具名）/ class_rules（按权限级别 ReadOnly/Write/HighRisk）/ default，\
+         取值 allow（放行）/ ask（走原审批逻辑）/ deny（拒绝）"
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object", "properties": {} })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::ReadOnly
+    }
+    fn run(&self, _args: Value) -> Result<Value, String> {
+        let policy = PermissionPolicy::load(&self.store);
+        serde_json::to_value(policy).map_err(|e| e.to_string())
+    }
+}
+
+/// 修改细粒度权限策略（需要审批）：实现「允许读文件但禁止联网」类一键放权。
+/// 传整体策略对象（tool_rules / class_rules / default），传空对象等价于清空对应层；
+/// "clear": true 一键恢复默认（全部走原审批逻辑）。
+pub struct PolicySetTool {
+    store: Arc<MemoryStore>,
+}
+
+impl PolicySetTool {
+    pub fn new(store: Arc<MemoryStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl Tool for PolicySetTool {
+    fn name(&self) -> &str {
+        "permission_policy_set"
+    }
+    fn description(&self) -> &str {
+        "修改细粒度权限策略（高危，需用户审批）。参数为完整策略：\
+         { \"tool_rules\": {\"http_request\": \"deny\"}, \"class_rules\": {\"ReadOnly\": \"allow\"}, \"default\": \"ask\", \"clear\": false }。\
+         典型用法：「允许读文件但禁止联网」= class_rules.ReadOnly=allow + tool_rules.http_request/web_search=deny"
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "tool_rules": {
+                    "type": "object",
+                    "description": "工具名 → allow/ask/deny，如 {\"http_request\": \"deny\"}",
+                    "additionalProperties": { "type": "string", "enum": ["allow", "ask", "deny"] }
+                },
+                "class_rules": {
+                    "type": "object",
+                    "description": "权限级别（ReadOnly/Write/HighRisk）→ allow/ask/deny",
+                    "additionalProperties": { "type": "string", "enum": ["allow", "ask", "deny"] }
+                },
+                "default": { "type": "string", "enum": ["allow", "ask", "deny"], "description": "全局默认动作" },
+                "clear": { "type": "boolean", "description": "true 时清空全部策略，恢复原审批逻辑" }
+            }
+        })
+    }
+    fn permission(&self) -> PermissionClass {
+        PermissionClass::HighRisk
+    }
+    fn run(&self, args: Value) -> Result<Value, String> {
+        if args["clear"].as_bool().unwrap_or(false) {
+            let empty = PermissionPolicy::default();
+            let json = serde_json::to_string(&empty).map_err(|e| e.to_string())?;
+            self.store.set_setting(POLICY_KEY, &json)?;
+            return Ok(json!({ "ok": true, "cleared": true, "policy": empty }));
+        }
+        // 允许传部分层：未传的层沿用当前持久化策略
+        let mut policy = PermissionPolicy::load(&self.store);
+        if let Some(obj) = args["tool_rules"].as_object() {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, v) in obj {
+                let action: PolicyAction = serde_json::from_value(v.clone())
+                    .map_err(|_| format!("tool_rules.{k} 的取值应为 allow/ask/deny"))?;
+                map.insert(k.clone(), action);
+            }
+            policy.tool_rules = map;
+        }
+        if let Some(obj) = args["class_rules"].as_object() {
+            let mut map = std::collections::BTreeMap::new();
+            for (k, v) in obj {
+                if !matches!(k.as_str(), "ReadOnly" | "Write" | "HighRisk") {
+                    return Err(format!("class_rules 的键应为 ReadOnly/Write/HighRisk，收到 {k}"));
+                }
+                let action: PolicyAction = serde_json::from_value(v.clone())
+                    .map_err(|_| format!("class_rules.{k} 的取值应为 allow/ask/deny"))?;
+                map.insert(k.clone(), action);
+            }
+            policy.class_rules = map;
+        }
+        if !args["default"].is_null() {
+            let action: PolicyAction = serde_json::from_value(args["default"].clone())
+                .map_err(|_| "default 的取值应为 allow/ask/deny".to_string())?;
+            policy.default = Some(action);
+        }
+        let json = serde_json::to_string(&policy).map_err(|e| e.to_string())?;
+        self.store.set_setting(POLICY_KEY, &json)?;
+        Ok(json!({ "ok": true, "policy": policy }))
+    }
 }

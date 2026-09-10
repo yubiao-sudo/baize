@@ -1403,6 +1403,107 @@ fn resolve_mail_connection(store: &MemoryStore, name: &str) -> Result<Value, Str
     }
 }
 
+/// 统一搜索（unified_search）复用的邮件拉取：尝试 vault 中的 mail: 凭据，
+/// 最多 limit 封，返回 { from, subject, date, body_preview } 数组；无任何配置时返回 None。
+pub fn fetch_mails_for_unified_search(
+    store: &MemoryStore,
+    query: &str,
+    limit: usize,
+) -> Option<Vec<Value>> {
+    // 遍历凭据库找 IMAP 配置（含 imap_host 即视为邮件配置）
+    let names = store.vault_list().ok()?;
+    let mut mails: Vec<Value> = Vec::new();
+    for name in names {
+        let cfg = resolve_mail_connection(store, &name).unwrap_or_else(|_| json!({}));
+        let host = cfg["imap_host"].as_str().unwrap_or("");
+        let user = cfg["username"].as_str().unwrap_or("");
+        let pass = cfg["password"].as_str().unwrap_or("");
+        if host.is_empty() || user.is_empty() || pass.is_empty() {
+            continue;
+        }
+        let port = cfg["imap_port"].as_u64().unwrap_or(993) as u16;
+        let tls = match native_tls::TlsConnector::builder().build() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let client = match imap::connect((host, port), host, &tls) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut session = match client.login(user, pass) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if session.select("INBOX").is_err() {
+            let _ = session.logout();
+            continue;
+        }
+        let lower_q = query.to_lowercase();
+        // 先按 IMAP 服务端 SEARCH 过滤主题/正文关键词（无法过滤时取全部）
+        let crit = if query.trim().is_empty() {
+            "ALL".to_string()
+        } else {
+            format!("OR SUBJECT \"{}\" TEXT \"{}\"", query.trim(), query.trim())
+        };
+        let ids = match session.search(&crit) {
+            Ok(i) => i,
+            Err(_) => match session.search("ALL") {
+                Ok(i) => i,
+                Err(_) => {
+                    let _ = session.logout();
+                    continue;
+                }
+            },
+        };
+        let start = ids.len().saturating_sub(limit.min(20));
+        let target: Vec<u32> = ids.iter().skip(start).copied().collect();
+        if !target.is_empty() {
+            let seq = target
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Ok(fetched) = session.fetch(seq, "(RFC822.HEADER BODY[TEXT])") {
+                for msg in fetched.iter() {
+                    let header = msg
+                        .header()
+                        .map(|h| String::from_utf8_lossy(h).to_string())
+                        .unwrap_or_default();
+                    let body = msg
+                        .text()
+                        .map(|t| String::from_utf8_lossy(t).to_string())
+                        .unwrap_or_default();
+                    let subject = decode_mime_words(&parse_header_field(&header, "Subject"));
+                    let from = decode_mime_words(&parse_header_field(&header, "From"));
+                    // 无 IMAP 关键字命中时本地兜底过滤
+                    if !query.trim().is_empty()
+                        && !subject.to_lowercase().contains(&lower_q)
+                        && !body.to_lowercase().contains(&lower_q)
+                    {
+                        continue;
+                    }
+                    mails.push(json!({
+                        "from": from,
+                        "subject": subject,
+                        "date": parse_header_field(&header, "Date"),
+                        "body_preview": body.chars().take(300).collect::<String>(),
+                    }));
+                }
+            }
+        }
+        let _ = session.logout();
+        if mails.len() >= limit {
+            break;
+        }
+    }
+    if mails.is_empty() {
+        None
+    } else {
+        mails.truncate(limit);
+        Some(mails)
+    }
+}
+
 /// 解码 RFC 2047 编码词（=?charset?B/Q?data?=），支持 UTF-8 / GBK / GB18030 / Big5 等常见字符集；
 /// 相邻编码词（仅空白分隔）解码后直接拼接，未编码文本原样保留。用于修复中文主题/发件人乱码。
 fn decode_mime_words(raw: &str) -> String {
