@@ -609,6 +609,27 @@ pub(crate) fn load_mcp_config(store: &MemoryStore) -> mcp::McpConfig {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 确定性硬退出：hide 主窗 → cleanup_before_exit → process::exit(0)。
+/// 关键防线：cleanup_before_exit 在 WebView2/tao 状态不良时会同步卡住——主线程一旦
+/// 卡在这里，进程就成了窗口已隐藏、单实例互斥锁仍被持有的「隐形僵尸」；此后每次
+/// 双击启动都会被单实例插件转发给僵尸：回调 w.show() 亮出 webview 已半销毁、只剩
+/// #0b0d12 纯黑背景的主窗（黑窗一闪），僵尸随后消亡、新实例自行退出，表象即
+/// 「闪了一下黑窗，应用没启动」。因此挂看门狗线程兜底：cleanup 超过 1.2s 未完成
+/// 即强杀进程（互斥锁由内核在进程终止时释放），绝不让僵尸活过 1.2 秒。
+fn quit_hard(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        eprintln!("[退出] cleanup_before_exit 超时 1.2s，看门狗强制杀进程");
+        std::process::exit(0);
+    });
+    app.cleanup_before_exit();
+    std::process::exit(0);
+}
+
 pub fn run() {
     // 全局 panic 钩子：任何线程 panic 都落盘 exe 同目录 baize-crash.log（附时间与线程名），
     // GUI 场景控制台不可见，此前崩溃无现场可查——这是「横幅出现就崩」类问题的取证通道
@@ -656,6 +677,21 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // DEBUG-REPRO：BAIZE_AUTO_QUIT_MS=<毫秒> 时，启动该时长后自动执行与托盘
+            // 「退出」完全相同的代码路径（quit_hard），用于实机复现退出问题。
+            // 仅环境变量触发，正常用户无感。
+            if let Some(ms) = std::env::var("BAIZE_AUTO_QUIT_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    eprintln!("[repro] {ms}ms 后执行托盘同款退出");
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    quit_hard(&h);
+                });
+            }
+
             // 注册全局快捷键（Alt+Space 呼出/隐藏主窗口）
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -749,11 +785,7 @@ pub fn run() {
                         // 硬退出：app.exit 的优雅退出会被残留的 tao 覆盖层事件循环吊住
                         // （overlay 日志曾现 "cannot move state from Destroyed" panic），
                         // 托盘「退出」必须确定性结束进程，避免「窗口没了进程还在」
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                        app.cleanup_before_exit();
-                        std::process::exit(0);
+                        quit_hard(app);
                     }
                     _ => {}
                 })
