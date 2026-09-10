@@ -17,6 +17,8 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
 }
 
 fn main() {
+    // 崩溃取证先行：SEH 级未处理异常写 %TEMP%\baize-crash-<pid>-*.log
+    baize_lib::capability::crashlog_install();
     // 探针进程必须 DPI-aware：否则 GetSystemMetrics/UIA bbox 返回逻辑坐标
     // （125% 缩放下 1536×864），与截图/SendInput 物理坐标系（1920×1080）分裂，
     // 点击系统性偏移 25%。白泽本体由 tao 运行时设置，探针需自行声明。
@@ -29,6 +31,16 @@ fn main() {
     }
 
     let args: Vec<String> = std::env::args().collect();
+
+    // ── 自验模式：故意段错误，验证 crashlog 落盘 ──
+    if args.get(1).map(|s| s.as_str()) == Some("crashme") {
+        println!("故意触发 0xC0000005……");
+        unsafe {
+            let p: *const u8 = std::ptr::null();
+            std::ptr::read_volatile(p);
+        }
+        unreachable!();
+    }
 
     // ── 工具调用模式：与白泽 agent 同一执行路径 ──
     if args.get(1).map(|s| s.as_str()) == Some("tool") {
@@ -56,6 +68,74 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        return;
+    }
+
+    // ── 压测模式：同进程循环跑生产 UIA 工作线程路径，隔离间歇性段错误 ──
+    // 用法：gui_probe stress <locate|click|full> <目标名> <次数>
+    //       gui_probe stress uia <窗口名> <目标名> <次数>   （ByName 根内 el.click()）
+    if args.get(1).map(|s| s.as_str()) == Some("stress") {
+        let mode = args.get(2).cloned().unwrap_or_default();
+        let (target, n, uia_window) = if mode == "uia" {
+            (
+                args.get(4).cloned().unwrap_or_default(),
+                args.get(5).and_then(|s| s.parse().ok()).unwrap_or(20),
+                args.get(3).cloned().unwrap_or_default(),
+            )
+        } else {
+            (
+                args.get(3).cloned().unwrap_or_default(),
+                args.get(4).and_then(|s| s.parse().ok()).unwrap_or(20),
+                String::new(),
+            )
+        };
+        use std::io::Write as _;
+        // full 模式：完整生产路径（UIA 工作线程 + 视觉兜底链截图/OCR/接地）
+        let full_cap = if mode == "full" {
+            Some(create_capability())
+        } else {
+            None
+        };
+        for i in 0..n {
+            if let (Some(cap), Some(tg)) = (&full_cap, args.get(3)) {
+                let t = Instant::now();
+                let outcome = match cap.click_element(tg) {
+                    Ok(r) => format!("ok: {}", r.description),
+                    Err(e) => format!("ERR: {e}"),
+                };
+                println!("iter {}/{} [{:>8?}] {}", i + 1, n, t.elapsed(), outcome);
+                let _ = std::io::stdout().flush();
+                continue;
+            }
+            let target_owned = target.clone();
+            let mode_owned = mode.clone();
+            let uia_window_owned = uia_window.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let t = Instant::now();
+            std::thread::spawn(move || {
+                let res = if mode_owned == "locate" {
+                    baize_lib::capability::windows_for_probe_locate(&target_owned)
+                } else if mode_owned == "uia" {
+                    baize_lib::capability::windows_for_probe_uia_click(
+                        &uia_window_owned,
+                        &target_owned,
+                    )
+                } else {
+                    baize_lib::capability::windows_for_probe_click(&target_owned)
+                };
+                let _ = tx.send(res);
+            });
+            let outcome = match rx.recv_timeout(std::time::Duration::from_millis(8000)) {
+                Ok(Some(Ok(r))) => format!("ok: {}", r.description),
+                Ok(Some(Err(e))) => format!("ERR: {e}"),
+                Ok(None) => "no-hit".to_string(),
+                Err(_) => "TIMEOUT(8s)".to_string(),
+            };
+            println!("iter {}/{} [{:>8?}] {}", i + 1, n, t.elapsed(), outcome);
+            let _ = std::io::stdout().flush();
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        println!("===== stress 完成 =====");
         return;
     }
 

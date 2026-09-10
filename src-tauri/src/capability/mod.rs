@@ -861,6 +861,26 @@ pub fn app_profile_for_probe(window: Option<&str>) -> Result<Value, String> {
     windows::app_profile_impl(window)
 }
 
+/// 探针 stress 压测转发：完整生产 UIA 点击路径（遍历+匹配+click）
+pub fn windows_for_probe_click(target: &str) -> Option<Result<ActionResult, CapError>> {
+    windows::click_element_uia_impl(target.to_string())
+}
+
+/// 探针 stress 压测转发：仅定位（遍历+匹配，不点击）——用于二分崩溃点
+pub fn windows_for_probe_locate(target: &str) -> Option<Result<ActionResult, CapError>> {
+    windows::click_locate_uia_impl(target.to_string())
+}
+
+/// 探针转发：安装 SEH 崩溃日志过滤器（与白泽本体同一 crashlog 模块）
+pub fn crashlog_install() {
+    crate::crashlog::install();
+}
+
+/// 探针 stress 压测转发：ByName 窗口根内对目标执行 el.click()（WinUI3 菜单定向复现）
+pub fn windows_for_probe_uia_click(window: &str, target: &str) -> Option<Result<ActionResult, CapError>> {
+    windows::uia_click_in_window(window, target)
+}
+
 
 pub struct ReadScreenTool {
     capability: Arc<dyn Capability>,

@@ -6,6 +6,7 @@ mod calendar;
 pub mod capability; // [探针/外部集成可见] GUI 能力层（含 bin/gui_probe 实测探针）
 mod clipboard;
 mod commands;
+mod crashlog; // SEH 级崩溃诊断：段错误等未处理异常写 %TEMP%\baize-crash-<pid>-*.log
 mod datapipeline;
 mod heartbeat;
 mod document;
@@ -621,6 +622,9 @@ pub fn run() {
         eprintln!("{line}");
         crate::windows::diag_log(&line);
     }));
+    // SEH 级未处理异常（0xC0000005 段错误等，panic 钩子覆盖不到）也落盘取证：
+    // GUI 自动化 FFI 链（UIA COM / SendInput / xcap / OCR）曾观测到间歇性 Segmentation fault
+    crashlog::install();
 
     tauri::Builder::default()
         // 单实例保护（必须最先注册）：双开白泽时旧实例的孤儿清理会误杀新实例的

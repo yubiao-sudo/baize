@@ -320,7 +320,8 @@ fn find_anywhere_impl(target: &str) -> Result<Vec<ElementMatch>, CapError> {
 
 /// click_element 的 UIA 定位+点击段（工作线程本体）。
 /// 返回 Some(res)=已有结论（命中点击成功/真实错误）；None=UIA 无命中 → 调用方走视觉兜底。
-fn click_element_uia_impl(target: String) -> Option<Result<ActionResult, CapError>> {
+/// 语义点击的 UIA 段（工作线程内执行）。pub(crate) 供探针 stress 压测复用同一生产路径。
+pub(crate) fn click_element_uia_impl(target: String) -> Option<Result<ActionResult, CapError>> {
     let automation = UIAutomation::new().ok()?;
     let condition = automation.create_true_condition().ok()?;
     let req = ObserveReq::default();
@@ -346,6 +347,52 @@ fn click_element_uia_impl(target: String) -> Option<Result<ActionResult, CapErro
         }
     }
     None
+}
+
+/// 仅定位不点击（与 click_element_uia_impl 同路径，剥离 el.click()）——stress 二分用
+pub(crate) fn click_locate_uia_impl(target: String) -> Option<Result<ActionResult, CapError>> {
+    let automation = UIAutomation::new().ok()?;
+    let condition = automation.create_true_condition().ok()?;
+    let root = resolve_root_element(&automation, &condition, &ObserveReq::default()).ok()?;
+    let mut candidates = Vec::new();
+    collect_matches(&root, &target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
+    candidates.sort_by(|a, b| b.score.cmp(&a.score));
+    candidates.first().map(|best| {
+        Ok(ActionResult {
+            ok: true,
+            description: format!("定位控件: {} (score={})", best.name, best.score),
+        })
+    })
+}
+
+/// 定向压测：ByName 指定窗口根（能完整看到 WinUI3 菜单栏），遍历并 el.click() 目标。
+/// 复现「SetFocus+SendInput 落在 WinUI3 菜单项 + flyout 生灭」这一最可疑崩溃组合。
+pub(crate) fn uia_click_in_window(
+    window: &str,
+    target: &str,
+) -> Option<Result<ActionResult, CapError>> {
+    let automation = UIAutomation::new().ok()?;
+    let condition = automation.create_true_condition().ok()?;
+    let req = ObserveReq {
+        window: Some(crate::capability::WindowTarget::ByName(window.to_string())),
+        ..ObserveReq::default()
+    };
+    let root = resolve_root_element(&automation, &condition, &req).ok()?;
+    let mut candidates = Vec::new();
+    collect_matches(&root, target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
+    candidates.sort_by(|a, b| b.score.cmp(&a.score));
+    let best = candidates.first()?;
+    let (name, bbox) = (best.name.clone(), best.bbox);
+    let mut clicked = false;
+    click_by_ident(&root, &condition, 0, GUI_FIND_DEPTH, &name, bbox, &mut clicked).ok()?;
+    if clicked {
+        Some(Ok(ActionResult {
+            ok: true,
+            description: format!("uia_click_in_window: {target}"),
+        }))
+    } else {
+        None
+    }
 }
 
 impl Capability for WindowsCapability {
