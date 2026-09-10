@@ -1,16 +1,13 @@
-//! GUI 自动化实测探针（开发用，不随安装包分发——release 构建前可删除或保留）。
+//! GUI 自动化实测入口（开发用）。
 //!
-//! 对指定窗口依次执行：app_profile → observe → interactive_map → find →（可选）click_element，
-//! 每步打印耗时，用于验证：
-//!   1. 非自绘应用（记事本/计算器）：UIA 树 rich，全链路秒级返回
-//!   2. 自绘/Electron 应用（汽水音乐）：刚启动首调 interactive_map 应在 8s 超时返回
-//!      （而不是挂死数分钟），等 1-2s 重试应成功读到控件
-//!
-//! 用法：cargo run --bin gui_probe -- <窗口关键词> [--find 关键词] [--click 按钮名]
-//! 例： cargo run --bin gui_probe -- 记事本 --find 文本编辑器
-//!     cargo run --bin gui_probe -- 汽水音乐 --click 播放
+//! 两种模式：
+//! 1. 全链路探针：gui_probe <窗口关键词> [--find 关键词] [--click 按钮名] [--list]
+//! 2. 工具调用（与白泽 agent 完全同构）：gui_probe tool <工具名> '<json 参数>'
+//!    例：gui_probe tool window_focus '{"name":"记事本"}'
+//!        gui_probe tool screen_elements '{"window":"记事本"}'
+//!        gui_probe tool click_element '{"target":"文件"}'
 
-use baize_lib::capability::{create_capability, ObserveReq};
+use baize_lib::capability::{create_capability, dispatch_tool, ObserveReq};
 use std::time::Instant;
 
 fn arg_after(args: &[String], flag: &str) -> Option<String> {
@@ -20,7 +17,49 @@ fn arg_after(args: &[String], flag: &str) -> Option<String> {
 }
 
 fn main() {
+    // 探针进程必须 DPI-aware：否则 GetSystemMetrics/UIA bbox 返回逻辑坐标
+    // （125% 缩放下 1536×864），与截图/SendInput 物理坐标系（1920×1080）分裂，
+    // 点击系统性偏移 25%。白泽本体由 tao 运行时设置，探针需自行声明。
+    #[cfg(windows)]
+    unsafe {
+        use ::windows::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
     let args: Vec<String> = std::env::args().collect();
+
+    // ── 工具调用模式：与白泽 agent 同一执行路径 ──
+    if args.get(1).map(|s| s.as_str()) == Some("tool") {
+        let tool_name = args
+            .get(2)
+            .cloned()
+            .unwrap_or_else(|| "缺工具名".to_string());
+        let json_str = args.get(3).cloned().unwrap_or_else(|| "{}".to_string());
+        let parsed: serde_json::Value = match serde_json::from_str(&json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("JSON 参数解析失败: {e}\n原始: {json_str}");
+                std::process::exit(2);
+            }
+        };
+        let cap = create_capability();
+        let t = Instant::now();
+        match dispatch_tool(&cap, &tool_name, parsed) {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                eprintln!("[{tool_name} {:>9?}]", t.elapsed());
+            }
+            Err(e) => {
+                eprintln!("[{tool_name} {:>9?}] ERROR: {e}", t.elapsed());
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // ── 原全链路探针模式 ──
     let target = args.get(1).cloned().unwrap_or_default();
     let find_kw = arg_after(&args, "--find");
     let click_target = arg_after(&args, "--click");
@@ -29,7 +68,6 @@ fn main() {
 
     println!("===== GUI 探针：target={target:?} =====");
 
-    // --list：枚举窗口后退出（诊断用）
     if args.iter().any(|a| a == "--list") {
         match cap.list_windows() {
             Ok(wins) => {
@@ -46,7 +84,6 @@ fn main() {
         return;
     }
 
-    // 0. 应用类型画像
     let t = Instant::now();
     match baize_lib::capability::app_profile_for_probe(win.as_deref()) {
         Ok(v) => println!(
@@ -60,7 +97,6 @@ fn main() {
         Err(e) => println!("[app_profile  {:>9?}] ERROR: {e}", t.elapsed()),
     }
 
-    // 1. observe：全树构建（超时保护 12s）
     let t = Instant::now();
     match cap.observe(&ObserveReq::default()) {
         Ok(obs) => println!(
@@ -72,7 +108,6 @@ fn main() {
         Err(e) => println!("[observe      {:>9?}] ERROR: {e}", t.elapsed()),
     }
 
-    // 2. interactive_map：可交互元素地图（超时保护 8s）
     let t = Instant::now();
     match cap.interactive_map(win.clone()) {
         Ok(v) => println!(
@@ -84,7 +119,6 @@ fn main() {
         Err(e) => println!("[interactive  {:>9?}] ERROR: {e}", t.elapsed()),
     }
 
-    // 3. find：控件搜索（跨窗口，超时保护 8s）
     if let Some(kw) = find_kw {
         let t = Instant::now();
         match cap.find(&kw) {
@@ -98,7 +132,6 @@ fn main() {
         }
     }
 
-    // 4. click_element：语义点击（UIA 段超时 8s 后落视觉兜底）
     if let Some(ct) = click_target {
         let t = Instant::now();
         match cap.click_element(&ct) {

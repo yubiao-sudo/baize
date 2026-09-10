@@ -53,6 +53,7 @@ mod text_to_image;
 mod text_tools;
 mod token_saver;
 mod tools;
+mod unified_search;
 mod tts;
 pub(crate) mod vault;
 mod visual_diff;
@@ -1044,6 +1045,12 @@ pub fn run() {
                 });
             }
 
+            // 主动记忆整理：每晚到点把当日对话沉淀为结构化笔记（可配置开关与时间）
+            {
+                let state = app.state::<AppState>();
+                memory::digest::spawn_nightly_loop(state.store.clone(), state.model.clone());
+            }
+
             // 后台自动连接 IM 通道（微信 / 飞书，若已登录则恢复长连接接收指令）
             app.state::<AppState>().im_bus.start_all(app.handle());
         // 微信回图工具（需 AppHandle，setup 时补注册）：此前从未注册，导致模型
@@ -1053,6 +1060,30 @@ pub fn run() {
             state
                 .tools
                 .register(Box::new(wechat::WeChatSendImageTool::new(app.handle().clone())));
+        }
+
+        // 统一搜索 + 细粒度权限策略 + 记忆整理手动触发（需 store / model，setup 时补注册）
+        {
+            let state = app.state::<AppState>();
+            unified_search::set_rag_bridge(state.rag.clone());
+            unified_search::set_im_log_bridge(state.im_bus.log.clone());
+            state
+                .tools
+                .register(Box::new(unified_search::UnifiedSearchTool::new(
+                    state.store.clone(),
+                )));
+            state
+                .tools
+                .register(Box::new(security::PolicyGetTool::new(state.store.clone())));
+            state
+                .tools
+                .register(Box::new(security::PolicySetTool::new(state.store.clone())));
+            state
+                .tools
+                .register(Box::new(memory::digest::MemoryDigestNowTool::new(
+                    state.store.clone(),
+                    state.model.clone(),
+                )));
         }
 
             // 自测：设置 BAIZE_TEST_TASK 环境变量后，启动时自动跑一次任务并截图（用于联调验证）
@@ -1206,6 +1237,11 @@ pub fn run() {
             commands::disk_info,
             commands::schedule_list_jobs,
             commands::schedule_add_job,
+            commands::permission_policy_get,
+            commands::permission_policy_set,
+            commands::nightly_digest_run,
+            commands::nightly_digest_config,
+            commands::nightly_digest_set_config,
             commands::schedule_update_job,
             commands::schedule_delete_job,
             commands::schedule_set_enabled,

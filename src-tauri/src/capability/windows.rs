@@ -9,8 +9,9 @@ use uiautomation::inputs::Keyboard;
 use uiautomation::types::TreeScope;
 use uiautomation::{UIElement, UIAutomation};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
-    self, keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    self, keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
+use ::windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
@@ -54,15 +55,25 @@ fn send_keys_via_vk(keys: &str) -> Option<()> {
     }
     let vks: Vec<VIRTUAL_KEY> = parts.iter().map(|p| str_to_vk(p)).collect::<Option<Vec<_>>>()?;
     unsafe {
+        // 修饰键按下后必须留间隔：零间隔批量事件（ctrl down 与 t down 同批到达）
+        // 在 Chromium 系应用（Chrome/Edge/Electron）上快捷键不触发——实测 ctrl+t/ctrl+l
+        // 全部被吞而单键 f5 正常；真实键盘击键天然有时间差。同时填入扫描码
+        // （scan=0 的合成键在部分 Chromium 版本同样被忽略）。
         for vk in &vks[..vks.len() - 1] {
-            keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYDOWN, 0);
+            let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
+            keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYDOWN, 0);
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
         let last = vks.last().unwrap();
-        keybd_event(last.0 as u8, 0, KEYEVENTF_KEYDOWN, 0);
+        let last_sc = MapVirtualKeyW(last.0 as u32, MAPVK_VK_TO_VSC);
+        keybd_event(last.0 as u8, last_sc as u8, KEYEVENTF_KEYDOWN, 0);
         std::thread::sleep(std::time::Duration::from_millis(20));
-        keybd_event(last.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+        keybd_event(last.0 as u8, last_sc as u8, KEYEVENTF_KEYUP, 0);
+        std::thread::sleep(std::time::Duration::from_millis(30));
         for vk in vks[..vks.len() - 1].iter().rev() {
-            keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+            let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
+            keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYUP, 0);
+            std::thread::sleep(std::time::Duration::from_millis(15));
         }
     }
     Some(())
@@ -1067,24 +1078,18 @@ fn approach_and_hover(x: i32, y: i32) {
     std::thread::sleep(std::time::Duration::from_millis(160));
 }
 
-/// 左键单击：逼近 + hover 停留 → 按下 → 停顿 → 释放，合并为绝对坐标事件以保证命中精度。
+/// 左键单击：逼近 + hover 停留 → 按下 → 停顿 → 释放。
+/// down/up 不带 MOVE|ABSOLUTE：鼠标已经 approach_and_hover 移到目标位置，
+/// WinUI3 应用（Win11 记事本/设置等）的菜单栏对「移动+按下」合并事件
+/// 只高亮不展开（XAML 输入层把合并事件当拖拽前奏），独立按下事件才正常弹出。
 fn click_left(x: i32, y: i32) {
     use ::windows::Win32::UI::Input::KeyboardAndMouse::{
-        MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE,
+        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     };
     approach_and_hover(x, y);
-    let (dx, dy) = abs_mouse_pos(x, y);
-    send_mouse(
-        dx,
-        dy,
-        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
-    );
+    send_mouse(0, 0, MOUSEEVENTF_LEFTDOWN);
     std::thread::sleep(std::time::Duration::from_millis(35));
-    send_mouse(
-        dx,
-        dy,
-        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
-    );
+    send_mouse(0, 0, MOUSEEVENTF_LEFTUP);
     std::thread::sleep(std::time::Duration::from_millis(40));
 }
 

@@ -2416,3 +2416,51 @@ impl Tool for WindowFocusTool {
         Ok(json!({ "ok": res.ok, "description": res.description }))
     }
 }
+
+/// 按工具名构造并执行 GUI 工具（与 lib.rs 注册表同一批工具）。
+/// 供实测入口 bin/gui_probe 使用：外部（如开发调试的 agent 会话）
+/// 传工具名+JSON 参数，走与白泽 agent 完全相同的 Tool::run 执行路径。
+pub fn dispatch_tool(
+    capability: &std::sync::Arc<dyn Capability>,
+    tool_name: &str,
+    args: Value,
+) -> Result<Value, String> {
+    use crate::capability::*;
+    let cap = capability.clone();
+    match tool_name {
+        "gui_undo" => GuiUndoTool::new(cap).run(args),
+        "ui_analyze" => UiAnalyzeTool::new(cap).run(args),
+        "app_profile" => AppProfileTool.run(args),
+        "read_screen" => ReadScreenTool::new(cap).run(args),
+        "list_windows" => ListWindowsTool::new(cap).run(args),
+        "read_window" => ReadWindowTool::new(cap).run(args),
+        "capture_screen" => CaptureScreenTool::new(cap).run(args),
+        "screen_elements" => ScreenElementsTool::new(cap).run(args),
+        "click_at" => ClickAtTool::new(cap).run(args),
+        "type_text" => TypeTextTool::new(cap).run(args),
+        "find_element" => FindElementTool::new(cap).run(args),
+        "click_element" => ClickElementTool::new(cap).run(args),
+        "ground_element" => GroundElementTool::new(cap).run(args),
+        "mouse_click" => MouseClickTool::new(cap).run(args),
+        "wheel_scroll" => WheelScrollTool::new(cap).run(args),
+        "middle_click" => MiddleClickTool::new(cap).run(args),
+        "hover" => HoverTool::new(cap).run(args),
+        "mouse_drag" => MouseDragTool::new(cap).run(args),
+        "key_press" => KeyPressTool::new(cap).run(args),
+        "key_down" => KeyDownTool::new(cap).run(args),
+        "key_up" => KeyUpTool::new(cap).run(args),
+        "paste_text" => PasteTextTool::new(cap).run(args),
+        "save_dialog" => SaveDialogTool::new(cap).run(args),
+        "wait_ui_stable" => WaitStableTool::new(cap).run(args),
+        "region_ocr" => RegionOcrTool.run(args),
+        "board_diff" => BoardDiffTool.run(args),
+        "macro" => MacroTool.run(args),
+        "window_minimize_all" => WindowMinimizeAllTool::new(cap).run(args),
+        "window_set_topmost" => WindowSetTopmostTool::new(cap).run(args),
+        "window_prepare" => WindowPrepareTool::new(cap).run(args),
+        "window_focus" => WindowFocusTool::new(cap).run(args),
+        _ => Err(format!(
+            "未知工具: {tool_name}（可用: app_profile/list_windows/window_focus/screen_elements/read_screen/observe 系列/click_*/type_text/key_*/region_ocr/macro 等 31 个）"
+        )),
+    }
+}
