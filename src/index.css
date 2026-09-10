@@ -2893,6 +2893,66 @@ select option:checked {
   font-size: 13px;
 }
 
+/* 语音指令二次确认条（连续语音对话：识别结果 → 确认后才发送） */
+.voice-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--option-bg);
+  animation: voice-confirm-in 0.18s ease-out;
+}
+@keyframes voice-confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.voice-confirm-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.voice-confirm-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-confirm-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 4px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.voice-confirm-btn.ok {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.voice-confirm-btn.ok:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+.voice-confirm-btn.no:hover {
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+}
+
 /* 语音光环球（参考 cyber-companion 效果） */
 .voice-orb {
   position: relative;

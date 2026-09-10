@@ -252,7 +252,11 @@ export default function ConsciousnessNetwork() {
         {voiceMode !== "off" && (
           <div className={`mind-voice-hint ${voiceMode}`} title="连续语音对话已开启">
             <span className={`voice-conv-dot ${voiceMode}`} />
-            {voiceMode === "listening" ? "聆听中 · 请说出你的需求…" : "语音待唤醒 · 说「白泽」"}
+            {voiceMode === "listening"
+              ? "聆听中 · 请说出你的需求…"
+              : voiceMode === "confirm"
+                ? "识别完成 · 请在输入区确认发送"
+                : "语音待唤醒 · 说「白泽」"}
           </div>
         )}
         {nodeCount === 0 && (

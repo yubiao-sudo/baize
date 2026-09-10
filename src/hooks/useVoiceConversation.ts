@@ -9,6 +9,7 @@ import { emit } from "@tauri-apps/api/event";
  * 状态机：
  *  - standby  常驻聆听，等唤醒词（「白泽」及常见近音误识别）
  *  - listening 命中唤醒词后捕获指令，静音超时自动回落 standby
+ *  - confirm  识别出指令后暂停，等用户在界面点「发送/取消」二次确认（防误触发自激发送）
  *  - barge-in  白泽正在说话（TTS）时喊「白泽」立即闭嘴并进入 listening —— 打断插话
  *
  * 实现要点：continuous=true 常驻识别为主（一次授权长期出结果，比单轮重启更稳），
@@ -17,7 +18,7 @@ import { emit } from "@tauri-apps/api/event";
  *
  * 水球律动：模式变化广播 baize:voice-mode 事件，主页大水球订阅后切换待机呼吸/聆听脉动形态。
  */
-export type VoiceConvMode = "off" | "standby" | "listening";
+export type VoiceConvMode = "off" | "standby" | "listening" | "confirm";
 
 /** 唤醒词（含常见近音误识别：白泽 → 白色/百泽/拜泽/柏泽/白则…） */
 const WAKE_RE = /白\s*泽|百\s*泽|白\s*色|拜\s*泽|柏\s*泽|白\s*则|baize/i;
@@ -32,6 +33,13 @@ const WATCHDOG_TICK_MS = 4000;
 const TTS_STALL_MS = 120000;
 /** 识别重启退避上限 */
 const RESTART_BACKOFF_MAX_MS = 8000;
+/** 待机自动休眠：常驻聆听连续该时长无唤醒/无指令 → 整体退出对话模式（防长时间挂麦误收音） */
+const STANDBY_SLEEP_MS = 600000;
+/** 二次确认超时：confirm 态超时未确认则丢弃并回落待机 */
+const CONFIRM_TIMEOUT_MS = 15000;
+/** 回声冷却窗：朗读结束后识别引擎出结果有 1~3 秒延迟，800ms 不够——
+ *  含「白泽」的扬声器回声会在门开后漏进来自己唤醒自己（自激循环），放宽到 3s */
+const ECHO_COOLDOWN_MS = 3000;
 
 /** 全局快照：最近一次广播的语音对话模式（供未挂载时错过事件的组件在挂载时取初值） */
 let currentVoiceMode: VoiceConvMode = "off";
@@ -50,12 +58,18 @@ export interface UseVoiceConversation {
   mode: VoiceConvMode;
   /** 当前聆听到的文字（standby 下显示环境语音，listening 下显示指令） */
   heard: string;
+  /** 二次确认：识别出的候选指令，非空时界面展示「发送/取消」确认条 */
+  pending: string;
   /** 致命错误（麦克风被占用 / 无权限 / 识别服务不可用），非空时对话模式已自动退出 */
   error: string;
   sttSupported: boolean;
   start: () => void;
   stop: () => void;
   toggle: () => void;
+  /** 确认发送 pending 指令 */
+  confirmSend: () => void;
+  /** 丢弃 pending 指令，回落待机 */
+  confirmDiscard: () => void;
   /** 问句交回：白泽以提问结尾时自动唤醒聆听（免唤醒词，带交回提示音） */
   wakeForAnswer: () => void;
 }
@@ -77,6 +91,15 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
   const cmdRef = useRef(onCommand);
   const listenTimer = useRef(0);
   const restartTimer = useRef(0);
+  /** 待机自动休眠计时器 */
+  const sleepTimer = useRef(0);
+  /** 二次确认计时器 */
+  const confirmTimer = useRef(0);
+  /** 确认态挂起的指令文本（state 供渲染，ref 供回调读取） */
+  const [pending, setPending] = useState("");
+  const pendingRef = useRef("");
+  /** stop 的间接引用：setModeSafe 的休眠定时器需要触发 stop（定义在后，用 ref 中转） */
+  const stopRef = useRef<(() => void) | null>(null);
   /** 回声门：白泽正在朗读（TTS 播放中）时为 true。
    *  识别器是常驻的，白泽念到自己名字（「我是白泽」）会被麦克风拾回并命中唤醒词，
    *  造成「自己唤醒自己、自己打断自己」——播放期间的所有识别结果一律丢弃。 */
@@ -107,7 +130,7 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
         if (until) window.clearTimeout(until);
         echoCooldownUntil.current = window.setTimeout(() => {
           echoGate.current = false;
-        }, 800);
+        }, ECHO_COOLDOWN_MS);
         echoGate.current = true;
       } else {
         echoGate.current = false;
@@ -135,6 +158,14 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
     modeRef.current = m;
     setMode(m);
     dispatchVoiceMode(m);
+    // 待机自动休眠：进入 standby 起计时，连续 10 分钟无唤醒/无指令 → 整体退出，
+    // 避免常驻识别长期挂麦（误收环境音 / 麦克风占用图标常亮）
+    window.clearTimeout(sleepTimer.current);
+    if (m === "standby") {
+      sleepTimer.current = window.setTimeout(() => {
+        if (modeRef.current === "standby" && activeRef.current) stopRef.current?.();
+      }, STANDBY_SLEEP_MS);
+    }
   }, []);
 
   const sendCommand = useCallback((text: string) => {
@@ -143,9 +174,47 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
     cmdRef.current(text);
   }, [setModeSafe]);
 
+  /** 二次确认：识别出的指令先挂起，界面出「发送/取消」确认条，超时自动丢弃。
+   *  防线：近音误唤醒/扬声器回声漏过回声门时，不至于把环境音当指令自动发出去。 */
+  const enterConfirm = useCallback((text: string) => {
+    pendingRef.current = text;
+    setPending(text);
+    setHeard("");
+    setModeSafe("confirm");
+    window.clearTimeout(confirmTimer.current);
+    confirmTimer.current = window.setTimeout(() => {
+      if (modeRef.current === "confirm") confirmDiscardRef.current?.();
+    }, CONFIRM_TIMEOUT_MS);
+  }, [setModeSafe]);
+
+  const confirmDiscard = useCallback(() => {
+    window.clearTimeout(confirmTimer.current);
+    pendingRef.current = "";
+    setPending("");
+    if (modeRef.current === "confirm") {
+      setHeard("");
+      setModeSafe("standby");
+    }
+  }, [setModeSafe]);
+
+  const confirmSend = useCallback(() => {
+    const text = pendingRef.current.trim();
+    window.clearTimeout(confirmTimer.current);
+    pendingRef.current = "";
+    setPending("");
+    if (text) sendCommand(text);
+  }, [sendCommand]);
+
+  /** confirmDiscard 的 ref 中转（定时器回调在定义前就需要调用它） */
+  const confirmDiscardRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    confirmDiscardRef.current = confirmDiscard;
+  }, [confirmDiscard]);
+
   const handleChunk = useCallback((chunk: string, isFinal: boolean) => {
     const m = modeRef.current;
-    if (m === "off") return;
+    // confirm 态挂起等待用户操作：后续识别结果一律忽略（避免环境音覆盖候选指令）
+    if (m === "off" || m === "confirm") return;
     // 回声门：白泽朗读期间（及结束后 800ms 冷却窗内）丢弃所有识别结果。
     // 无法区分「用户喊白泽」与「白泽念到自己名字」的麦克风回声，
     // 若放行会自己唤醒/打断自己，甚至把朗读内容后半句误当指令发送。
@@ -160,7 +229,7 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
         .replace(/^[，,。.\s、?？!！]*/, "")
         .trim();
       if (rest.length >= 2 && (isFinal || rest.length >= 4)) {
-        sendCommand(rest);
+        enterConfirm(rest);
       } else {
         setHeard("");
         setModeSafe("listening");
@@ -176,14 +245,14 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
       setHeard(chunk);
       if (isFinal) {
         window.clearTimeout(listenTimer.current);
-        if (chunk.trim().length >= 2) sendCommand(chunk.trim());
+        if (chunk.trim().length >= 2) enterConfirm(chunk.trim());
         else setModeSafe("standby");
       }
     } else if (m === "standby" && isFinal) {
       // 待机态把「刚听到的」透出，方便确认识别链路活着、唤醒词被听成了什么
       setHeard(chunk);
     }
-  }, [sendCommand, setModeSafe]);
+  }, [enterConfirm, sendCommand, setModeSafe]);
 
   const startRec = useCallback(() => {
     const SR = (window as unknown as Record<string, unknown>).SpeechRecognition
@@ -313,12 +382,21 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
     setActive(false);
     window.clearTimeout(listenTimer.current);
     window.clearTimeout(restartTimer.current);
+    window.clearTimeout(sleepTimer.current);
+    window.clearTimeout(confirmTimer.current);
     recRef.current?.stop();
     recRef.current = null;
+    pendingRef.current = "";
+    setPending("");
     setHeard("");
     setError("");
     setModeSafe("off");
   }, [setModeSafe]);
+
+  // 休眠定时器经 ref 调用 stop（stop 定义在 setModeSafe 之后）
+  useEffect(() => {
+    stopRef.current = stop;
+  }, [stop]);
 
   const toggle = useCallback(() => {
     if (activeRef.current) stop();
@@ -343,10 +421,25 @@ export function useVoiceConversation(onCommand: (text: string) => void): UseVoic
       activeRef.current = false;
       window.clearTimeout(listenTimer.current);
       window.clearTimeout(restartTimer.current);
+      window.clearTimeout(sleepTimer.current);
+      window.clearTimeout(confirmTimer.current);
       recRef.current?.stop();
       dispatchVoiceMode("off");
     };
   }, []);
 
-  return { active, mode, heard, error, sttSupported, start, stop, toggle, wakeForAnswer };
+  return {
+    active,
+    mode,
+    heard,
+    pending,
+    error,
+    sttSupported,
+    start,
+    stop,
+    toggle,
+    confirmSend,
+    confirmDiscard,
+    wakeForAnswer,
+  };
 }

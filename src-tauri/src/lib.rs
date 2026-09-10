@@ -745,7 +745,16 @@ pub fn run() {
                             let _ = w.hide();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        // 硬退出：app.exit 的优雅退出会被残留的 tao 覆盖层事件循环吊住
+                        // （overlay 日志曾现 "cannot move state from Destroyed" panic），
+                        // 托盘「退出」必须确定性结束进程，避免「窗口没了进程还在」
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                        app.cleanup_before_exit();
+                        std::process::exit(0);
+                    }
                     _ => {}
                 })
                 .build(app)?;

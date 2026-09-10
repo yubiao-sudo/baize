@@ -443,11 +443,11 @@ export default function ChatView() {
     }
   };
 
-  // 启动即待机聆听：等应用稳定后自动进入，免点击直接喊「白泽」。
-  // 上次手动退出（localStorage=0）则尊重偏好不自动启动。
+  // 启动自动待机：仅当用户明确开启过语音对话（localStorage=1）才恢复，
+  // 首次使用绝不自动开麦——避免「没开过语音却一直在收音/自白发消息」的困惑
   useEffect(() => {
     if (!voiceConv.sttSupported) return;
-    if (localStorage.getItem("voice_conv_autostart") === "0") return;
+    if (localStorage.getItem("voice_conv_autostart") !== "1") return;
     const t = window.setTimeout(() => voiceConv.start(), 1500);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1211,6 +1211,29 @@ export default function ChatView() {
               </div>
               {imgResult && <img className="img-result" src={imgResult} alt="生成结果" />}
             </div>
+          </div>
+        )}
+
+        {voiceConv.pending && (
+          <div className="voice-confirm" data-guide="voice-confirm">
+            <span className="voice-confirm-label">语音指令确认</span>
+            <span className="voice-confirm-text" title={voiceConv.pending}>
+              {voiceConv.pending}
+            </span>
+            <button
+              className="voice-confirm-btn ok"
+              onClick={() => voiceConv.confirmSend()}
+              title="确认发送"
+            >
+              发送
+            </button>
+            <button
+              className="voice-confirm-btn no"
+              onClick={() => voiceConv.confirmDiscard()}
+              title="丢弃（15 秒不确认自动丢弃）"
+            >
+              取消
+            </button>
           </div>
         )}
 
