@@ -125,10 +125,30 @@ impl AppState {
         // 内含旧数据一次性迁移（历史版本把 baize.db 写在相对工作目录，可能散落 C 盘各处）
         crate::paths::init();
         let db_path = crate::paths::db_path();
-        let store = Arc::new(
-            MemoryStore::open(db_path.to_string_lossy().as_ref())
-                .expect("无法打开本地数据库 baize.db"),
-        );
+        // 数据库打开重试：SQLite 偶发瞬时 disk I/O error（杀毒软件短锁文件 / WAL 恢复
+        // 半途 / 双击连开两实例竞态）——原实现直接 panic 整个进程静默消失，用户侧表现
+        // 为「闪一下就没了」。改为 10 次 × 400ms 退避重试，把瞬时锁全部让过去。
+        let store = {
+            let mut last_err = String::new();
+            let mut opened = None;
+            for attempt in 1..=10 {
+                match MemoryStore::open(db_path.to_string_lossy().as_ref()) {
+                    Ok(s) => {
+                        opened = Some(s);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = e;
+                        eprintln!("[启动] 数据库打开失败(第{attempt}/10次): {last_err}，400ms 后重试");
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                    }
+                }
+            }
+            match opened {
+                Some(s) => Arc::new(s),
+                None => panic!("无法打开本地数据库 baize.db: {last_err}"),
+            }
+        };
 
         // 模型用量上报 / 降级失败日志 sink（P0-2 / P1-7）：路由层事件统一落库
         {
@@ -658,7 +678,9 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
-        .manage(AppState::new())
+        // 注意：AppState（含数据库打开）不在此处 manage —— builder 链上的 manage 会
+        // 在单实例插件检查之前执行，双击连开两个实例时后者会先撞数据库锁
+        // （disk I/O error）panic 秒退。改为在 setup() 里 manage（插件初始化之后）。
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -677,6 +699,11 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // 状态初始化放在 setup：保证在单实例插件检查（防双开转发退出）之后
+            // 才打开数据库，消除双击竞态导致的 disk I/O error panic 秒退
+            use tauri::Manager;
+            app.manage(AppState::new());
+
             // DEBUG-REPRO：BAIZE_AUTO_QUIT_MS=<毫秒> 时，启动该时长后自动执行与托盘
             // 「退出」完全相同的代码路径（quit_hard），用于实机复现退出问题。
             // 仅环境变量触发，正常用户无感。
