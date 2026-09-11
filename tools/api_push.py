@@ -100,16 +100,26 @@ def main():
         return 1
     print(f"[remote] parent tree={remote_parent['tree']['sha']}")
 
-    # 3) 变更文件清单（相对父提交）
-    names = [n for n in git("diff", "--name-only", parent_sha, LOCAL_COMMIT).splitlines() if n]
-    print(f"[diff] {len(names)} 个文件")
+    # 3) 变更文件清单（相对父提交）——注意区分新增/修改/删除
+    changes = []  # (status, path)
+    for line in git("diff", "--name-status", parent_sha, LOCAL_COMMIT).splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            changes.append((parts[0][0], parts[-1]))
+    print(f"[diff] {len(changes)} 个文件")
 
     entries = []
-    for name in names:
-        ls = git("ls-tree", LOCAL_COMMIT, "--", name)
-        if not ls:
+    for status, path in changes:
+        if status == "D":
+            # Git Data API 用 sha=null 表示删除该路径
+            entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+            print(f"  delete {path}")
             continue
-        meta, _, path = ls.partition("\t")
+        ls = git("ls-tree", LOCAL_COMMIT, "--", path)
+        if not ls:
+            print(f"[warn] {path} 在 {LOCAL_COMMIT} 中不存在，跳过")
+            continue
+        meta, _, _p = ls.partition("\t")
         mode, _typ, blob_sha = meta.split()
         content = git("cat-file", "blob", blob_sha, raw=True)
         st, resp = api("POST", f"/repos/{REPO}/git/blobs", {
@@ -117,10 +127,10 @@ def main():
             "encoding": "base64",
         })
         if st not in (200, 201):
-            print(f"[err] 创建 blob 失败 {name}: {st} {resp}")
+            print(f"[err] 创建 blob 失败 {path}: {st} {resp}")
             return 1
         if resp["sha"] != blob_sha:
-            print(f"[warn] blob sha 不一致 {name}: remote={resp['sha']} local={blob_sha}")
+            print(f"[warn] blob sha 不一致 {path}: remote={resp['sha']} local={blob_sha}")
         entries.append({"path": path, "mode": mode, "type": "blob", "sha": resp["sha"]})
         print(f"  blob ok {path} {blob_sha[:8]}")
 
