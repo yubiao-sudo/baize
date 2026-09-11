@@ -2,6 +2,8 @@
 node_modules
 dist
 target
+# 打包绕开批量删除护栏时的临时产物（mv dist dist_old_buildN）
+dist_old_build*
 
 # 运行时数据 / 日志 / 截图（不应入库）
 *.db
