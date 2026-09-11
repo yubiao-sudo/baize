@@ -104,8 +104,24 @@ export default function ThoughtStream() {
           <div key={t.id ?? `${t.kind}-${t.ts}`} className={`thought-item ${t.kind}`}>
             <span className={`thought-kind ${t.kind}`} />
             <div className="thought-body">
-              <div className="thought-label">{t.label}</div>
+              <div className="thought-label">
+                {t.icon ? `${t.icon} ` : ""}
+                {t.label}
+                {t.kind === "tool_progress" && typeof t.progress === "number" && (
+                  <span className="thought-pct">
+                    {t.phase === "done" ? "✓" : t.phase === "failed" ? "✕" : `${Math.round(t.progress)}%`}
+                  </span>
+                )}
+              </div>
               {t.detail && <div className="thought-detail">{t.detail}</div>}
+              {t.kind === "tool_progress" && typeof t.progress === "number" && (
+                <span className="flow-mini-bar" style={{ marginTop: 6 }}>
+                  <span
+                    className="flow-mini-fill"
+                    style={{ width: `${Math.max(0, Math.min(100, t.progress))}%` }}
+                  />
+                </span>
+              )}
             </div>
           </div>
         ))}

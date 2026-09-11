@@ -49,6 +49,30 @@ def _try_import(name):
         return None
 
 
+# ── 进度上报协议（Rust 侧逐行读 stderr，转成执行流进度条） ──
+# 行格式：@@BAIZE_PROGRESS {"pct": 42.0, "msg": "解析 报告.pdf (3/8)"}
+PROGRESS_TAG = "@@BAIZE_PROGRESS"
+# 当前文件在总进度里占的区间（由 main 逐文件推进，页面级进度在区间内插值）
+_BAND = {"base": 0.0, "span": 0.0}
+
+
+def _emit_progress(pct, msg):
+    try:
+        pct = max(0.0, min(100.0, float(pct)))
+        sys.stderr.write(
+            PROGRESS_TAG + " " + json.dumps({"pct": round(pct, 1), "msg": str(msg)},
+                                            ensure_ascii=False) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _sub_progress(frac, msg):
+    """当前文件区间内的细粒度进度（frac ∈ [0,1]），如 PDF 逐页"""
+    frac = max(0.0, min(1.0, float(frac)))
+    _emit_progress(_BAND["base"] + _BAND["span"] * frac, msg)
+
+
 pdfplumber = _try_import("pdfplumber")
 docx = _try_import("docx")
 openpyxl = _try_import("openpyxl")
@@ -154,7 +178,11 @@ def extract_pdf(path, out_dir, stem, opts, warnings):
     with pdfplumber.open(path) as pdf:
         pages = pdf.pages or []
         stats["pages"] = len(pages)
+        total_pages = len(pages)
         for pi, page in enumerate(pages):
+            if total_pages > 1:
+                _sub_progress((pi) / total_pages,
+                              f"解析 PDF 第 {pi + 1}/{total_pages} 页 · {os.path.basename(path)}")
             if ok_text:
                 t = page.extract_text() or ""
                 if t:
@@ -166,6 +194,8 @@ def extract_pdf(path, out_dir, stem, opts, warnings):
                     # 跳过全空表
                     if rows["columns"] or any(any(c for c in r) for r in rows["rows"]):
                         tables.append(rows)
+        if total_pages > 1:
+            _sub_progress(1.0, f"解析 PDF 完成 · {total_pages} 页 · {os.path.basename(path)}")
     if ok_images:
         imgs = _save_pdf_images(path, out_dir, stem, warnings)
     return text, tables, imgs, stats
@@ -211,7 +241,11 @@ def extract_xlsx(path, out_dir, stem, opts, warnings):
         return text, tables, imgs, stats
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     stats["sheets"] = wb.sheetnames
-    for ws in wb.worksheets:
+    sheet_total = len(wb.worksheets)
+    for si, ws in enumerate(wb.worksheets):
+        if sheet_total > 1:
+            _sub_progress(si / sheet_total,
+                          f"解析工作表 {ws.title} ({si + 1}/{sheet_total}) · {os.path.basename(path)}")
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
         if not rows:
             continue
@@ -258,8 +292,12 @@ def extract_pptx(path, out_dir, stem, opts, warnings):
         return text, tables, imgs, stats
     prs = pptx.Presentation(path)
     stats["slides"] = len(prs.slides)
+    total_slides = len(prs.slides)
     if ok_text or ok_tables:
         for si, slide in enumerate(prs.slides):
+            if total_slides > 3:
+                _sub_progress(si / total_slides,
+                              f"解析演示第 {si + 1}/{total_slides} 页 · {os.path.basename(path)}")
             buf = []
             for shape in slide.shapes:
                 if ok_text:
@@ -400,11 +438,19 @@ def main():
 
     warnings = []
     files = []
-    for p in paths:
+    total = len(paths)
+    # 每文件在总进度里占一段：8% 起步（Rust 侧已占用 0-8%），留 4% 给收尾
+    for idx, p in enumerate(paths):
+        _BAND["base"] = 8.0 + (88.0 * idx / max(1, total))
+        _BAND["span"] = 88.0 / max(1, total)
+        _emit_progress(_BAND["base"],
+                       f"解析 {os.path.basename(p)} ({idx + 1}/{total})")
         try:
             files.append(process_file(p, opts, out_dir, warnings))
         except Exception as e:
             warnings.append(f"{p} 解析失败: {e}")
+        _emit_progress(_BAND["base"] + _BAND["span"],
+                       f"已完成 {idx + 1}/{total} · {os.path.basename(p)}")
 
     json.dump({"ok": True, "count": len(files), "files": files, "warnings": warnings},
               sys.stdout, ensure_ascii=False)

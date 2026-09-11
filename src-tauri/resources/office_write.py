@@ -23,6 +23,22 @@ def respond(obj):
     sys.stdout.flush()
 
 
+# ── 进度上报协议（Rust 侧逐行读 stderr，转成执行流进度条） ──
+# 行格式：@@BAIZE_PROGRESS {"pct": 42.0, "msg": "渲染第 3/10 页幻灯片"}
+PROGRESS_TAG = "@@BAIZE_PROGRESS"
+
+
+def _progress(pct, msg):
+    try:
+        pct = max(0.0, min(100.0, float(pct)))
+        sys.stderr.write(
+            PROGRESS_TAG + " " + json.dumps({"pct": round(pct, 1), "msg": str(msg)},
+                                            ensure_ascii=False) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
 # ══════════════════════════ 主题常量 ══════════════════════════
 
 ACCENT = "1F4E79"      # 深蓝：标题 / 表头 / 强调
@@ -277,9 +293,13 @@ def render_docx(req):
     i, n = 0, len(lines)
     first_h1_skipped = False
     code_re = re.compile(r"^```(\w*)\s*$")
+    _progress(12.0, "封面与目录已排版，正在写入正文…")
     while i < n:
         line = lines[i]
         stripped = line.strip()
+        # 正文逐行进度（Rust 侧按 120ms 节流，不会刷屏）
+        if n > 0:
+            _progress(12.0 + 78.0 * i / n, f"排版正文 {i}/{n} 行 · 约 {int(12 + 78 * i / n)}%")
 
         # 围栏代码块
         m = code_re.match(stripped)
@@ -464,6 +484,7 @@ def render_docx(req):
 
     out = req["path"]
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    _progress(94.0, "正在保存 .docx 文件…")
     doc.save(out)
     respond({
         "ok": True,
@@ -564,12 +585,15 @@ def render_pptx(req):
         if cur:
             slides_spec.append(cur)
 
+    _progress(10.0, f"封面已生成，准备渲染 {len(slides_spec)} 页内容…")
     for idx, sp in enumerate(slides_spec):
         stitle = (sp.get("title") or "").strip() if isinstance(sp, dict) else str(sp)
         bullets = sp.get("bullets") or [] if isinstance(sp, dict) else []
         notes = sp.get("notes") or [] if isinstance(sp, dict) else []
         if isinstance(notes, str):
             notes = [notes]
+        _progress(12.0 + 80.0 * idx / max(1, len(slides_spec)),
+                  f"渲染第 {idx + 1}/{len(slides_spec)} 页幻灯片 · {stitle or '（分区页）'}")
         s = prs.slides.add_slide(blank)
 
         if not bullets:
@@ -611,6 +635,7 @@ def render_pptx(req):
 
     out = req["path"]
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    _progress(94.0, "正在保存 .pptx 文件…")
     prs.save(out)
     respond({
         "ok": True,
@@ -631,8 +656,13 @@ def docx_to_md(req):
     from docx.text.paragraph import Paragraph
 
     d = docx.Document(req["src"])
+    _progress(15.0, "已打开 Word 文档，正在抽取段落与表格…")
     out = []
-    for child in d.element.body.iterchildren():
+    _children = list(d.element.body.iterchildren())
+    for _ci, child in enumerate(_children):
+        if _children:
+            _progress(15.0 + 75.0 * _ci / len(_children),
+                      f"转换中 {_ci}/{len(_children)} 个块…")
         if isinstance(child, CT_P):
             p = Paragraph(child, d)
             text = p.text.strip()
@@ -676,13 +706,18 @@ def pdf_merge(req):
     from pypdf import PdfReader, PdfWriter
     w = PdfWriter()
     total = 0
-    for src in req["srcs"]:
+    srcs = req["srcs"]
+    _progress(10.0, f"准备合并 {len(srcs)} 个 PDF…")
+    for si, src in enumerate(srcs):
         r = PdfReader(src)
         total += len(r.pages)
         for pg in r.pages:
             w.add_page(pg)
+        _progress(10.0 + 80.0 * (si + 1) / len(srcs),
+                  f"已合并 {si + 1}/{len(srcs)} 个文件 · 累计 {total} 页")
     out = req["out"]
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    _progress(93.0, "正在写出合并后的 PDF…")
     with open(out, "wb") as f:
         w.write(f)
     respond({"ok": True, "path": out, "pages": total, "sources": len(req["srcs"])})
@@ -695,6 +730,7 @@ def pdf_split(req):
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(req["src"]))[0]
     pages = []
+    total_pages = len(r.pages)
     for i, pg in enumerate(r.pages):
         w = PdfWriter()
         w.add_page(pg)
@@ -702,6 +738,8 @@ def pdf_split(req):
         with open(p, "wb") as f:
             w.write(f)
         pages.append(p)
+        _progress(8.0 + 88.0 * (i + 1) / max(1, total_pages),
+                  f"已拆分 {i + 1}/{total_pages} 页")
     respond({"ok": True, "count": len(pages), "pages": pages})
 
 
@@ -720,6 +758,8 @@ def xlsx_to_csv(req):
         for row in ws.iter_rows(values_only=True):
             wr.writerow(["" if v is None else v for v in row])
             rows += 1
+            if rows % 200 == 0:
+                _progress(15.0 + min(75.0, rows / 200.0), f"已导出 {rows} 行…")
     respond({"ok": True, "path": dst, "rows": rows, "sheet": ws.title})
 
 
@@ -736,12 +776,15 @@ def csv_to_xlsx(req):
         for row in csv.reader(f):
             ws.append(row)
             rows += 1
+            if rows % 200 == 0:
+                _progress(15.0 + min(70.0, rows / 200.0), f"已写入 {rows} 行…")
     # 表头加粗
     if rows:
         from openpyxl.styles import Font, PatternFill
         for c in ws[1]:
             c.font = Font(bold=True, color="FFFFFF")
             c.fill = PatternFill("solid", fgColor=ACCENT)
+    _progress(92.0, "正在保存 Excel 文件…")
     wb.save(dst)
     respond({"ok": True, "path": dst, "rows": rows})
 

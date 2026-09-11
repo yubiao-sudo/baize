@@ -291,6 +291,9 @@ export interface ThoughtEvent {
   version?: string;
   /** 软件官网（用于推导应用图标域名），仅 tool_progress 安装事件携带 */
   homepage?: string;
+  /** 任务类型图标（📄 文档解析 / 🎞 演示生成 / 🔀 格式转换 …），仅 tool_progress 携带；
+      与 homepage 二选一，优先展示图标 */
+  icon?: string;
 }
 
 // 内置浏览器窗口状态（与后端 browser::BrowserState 对齐）

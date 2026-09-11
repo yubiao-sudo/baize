@@ -9,6 +9,7 @@ use std::io::Write;
 
 use serde_json::{json, Value};
 
+use crate::progress::{self, Progress};
 use crate::tools::{resolve_path, PermissionClass, Tool};
 
 /// 内嵌的 Python 解析脚本（编译期打入二进制，运行时落盘到临时目录执行）
@@ -75,8 +76,10 @@ fn collect_files(path: &str, recursive: bool) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// 运行 Python sidecar，返回其 stdout 解析出的 JSON
-fn run_python(request: &Value) -> Result<Value, String> {
+/// 运行 Python sidecar，返回其 stdout 解析出的 JSON。
+/// `progress` 非空时：Python 侧 stderr 的进度协议行（@@BAIZE_PROGRESS）会实时转发到执行流，
+/// 长时间无内部信号时按「已耗时」发心跳，避免进度条卡死。
+fn run_python(request: &Value, progress: Option<&Progress>) -> Result<Value, String> {
     let script_dir = std::env::temp_dir().join(format!("baize_rd_script_{}", now_nanos()));
     std::fs::create_dir_all(&script_dir).map_err(|e| format!("创建脚本目录失败: {e}"))?;
     let script = script_dir.join("read_document.py");
@@ -104,34 +107,36 @@ fn run_python(request: &Value) -> Result<Value, String> {
     // 关闭 stdin 让脚本读到 EOF
     drop(child.stdin.take());
 
-    let out_h = child.stdout.take().map(|mut s| {
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut b = String::new();
-            let _ = s.read_to_string(&mut b);
-            b
-        })
-    });
-    let err_h = child.stderr.take().map(|mut s| {
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut b = String::new();
-            let _ = s.read_to_string(&mut b);
-            b
-        })
-    });
+    let out_h = child.stdout.take().map(crate::progress::drain_stdout);
+    let err_h = child
+        .stderr
+        .take()
+        .map(|s| crate::progress::drain_stderr(s, progress.cloned()));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(PY_TIMEOUT_SECS);
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(PY_TIMEOUT_SECS);
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) => {}
             Err(e) => return Err(format!("等待 Python 退出失败: {e}")),
         }
+        // 心跳：脚本超过 1.5s 没有进度上报时，用「已耗时」缓慢推进（封顶 90%，不倒退）
+        if let Some(p) = progress {
+            let elapsed = started.elapsed().as_millis();
+            if p.idle_ms() > 1500 {
+                let hb = progress::heartbeat_pct(elapsed, p.pct().max(12.0), 90.0);
+                p.set(hb, &format!("解析中… 已用时 {}s", elapsed / 1000));
+            }
+        }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("文档解析超时（{PY_TIMEOUT_SECS}s），已终止"));
+            let msg = format!("文档解析超时（{PY_TIMEOUT_SECS}s），已终止");
+            if let Some(p) = progress {
+                p.fail(&msg);
+            }
+            return Err(msg);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -140,7 +145,10 @@ fn run_python(request: &Value) -> Result<Value, String> {
     let stderr = err_h.and_then(|h| h.join().ok()).unwrap_or_default();
 
     if !status.success() {
-        return Err(format!("Python 解析异常退出（{}）：{stderr}", status.code().unwrap_or(-1)));
+        return Err(format!(
+            "Python 解析异常退出（{}）：{stderr}",
+            status.code().unwrap_or(-1)
+        ));
     }
 
     let resp: Value = serde_json::from_str(&stdout)
@@ -212,6 +220,34 @@ fn fallback_native(files: &[String], py_err: String) -> Result<Value, String> {
     Ok(json!({ "ok": true, "count": out.len(), "files": out, "warnings": warnings }))
 }
 
+/// 进度条显示的短名：取末级文件名/目录名
+fn short_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// 从解析响应里汇总「文件数 / 表数 / 图片数」，用于进度条收尾文案
+fn summarize(resp: &Value) -> (usize, usize, usize) {
+    let files = resp.get("files").and_then(|v| v.as_array());
+    let n = resp
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .or_else(|| files.map(|f| f.len()))
+        .unwrap_or(0);
+    let (mut tables, mut images) = (0usize, 0usize);
+    if let Some(fs) = files {
+        for f in fs {
+            tables += f.get("tables_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            images += f.get("images_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        }
+    }
+    (n, tables, images)
+}
+
 /// 统一解析入口（供 Tool 与前端命令复用）
 pub fn run(args: Value) -> Result<Value, String> {
     let raw_path = args
@@ -221,10 +257,22 @@ pub fn run(args: Value) -> Result<Value, String> {
     let path = resolve_path(raw_path);
     let recursive = args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(true);
 
-    let files = collect_files(&path, recursive)?;
+    let pr = Progress::new(format!("解析文档 · {}", short_name(&path))).with_icon("📄");
+    pr.set(3.0, "正在收集待解析文件…");
+
+    let files = match collect_files(&path, recursive) {
+        Ok(f) => f,
+        Err(e) => {
+            pr.fail(&e);
+            return Err(e);
+        }
+    };
     if files.is_empty() {
-        return Err(format!("未找到可解析的文档：{path}"));
+        let e = format!("未找到可解析的文档：{path}");
+        pr.fail(&e);
+        return Err(e);
     }
+    pr.set(6.0, &format!("已收集 {} 个文件，正在启动解析器…", files.len()));
 
     let out_dir = std::env::temp_dir().join(format!("baize_rd_{}", now_nanos()));
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
@@ -240,9 +288,31 @@ pub fn run(args: Value) -> Result<Value, String> {
         "out_dir": out_dir.to_string_lossy(),
     });
 
-    match run_python(&request) {
-        Ok(resp) => Ok(resp),
-        Err(py_err) => fallback_native(&files, py_err),
+    match run_python(&request, Some(&pr)) {
+        Ok(resp) => {
+            let (n, tables, images) = summarize(&resp);
+            pr.done(&format!(
+                "解析完成 · {n} 个文件 · {tables} 张表 · {images} 张图"
+            ));
+            Ok(resp)
+        }
+        Err(py_err) => {
+            // Python 不可用：回退内置抽取，进度条同步反映「已降级」
+            pr.set(90.0, "内置解析器不可用，回退到原生文本抽取…");
+            match fallback_native(&files, py_err) {
+                Ok(v) => {
+                    let (n, tables, images) = summarize(&v);
+                    pr.done(&format!(
+                        "已回退内置抽取 · {n} 个文件 · {tables} 张表 · {images} 张图"
+                    ));
+                    Ok(v)
+                }
+                Err(e) => {
+                    pr.fail(&e);
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

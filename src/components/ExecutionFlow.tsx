@@ -4,8 +4,9 @@ import { useChat } from "../stores/chat";
 import { openTerminalWithCommand } from "../api";
 import type { ThoughtEvent, Todo } from "../types";
 
-// 合并同一安装产生的多条 tool_progress 为最新一条：后端把每条进度节流都写进了 trace，
-// trace 回放（安装完成后的总结回复）时若不合并，会渲染出几十条进度条。
+// 合并同一任务产生的多条 tool_progress 为最新一条：后端把多条进度节流都写进了 trace，
+// trace 回放（任务完成后的总结回复）时若不合并，会渲染出几十条进度条。
+// 适用：软件管家安装、文档解析/生成/转换等所有带进度的后台任务。
 function compactProgress(thoughts: ThoughtEvent[]): ThoughtEvent[] {
   const out: ThoughtEvent[] = [];
   for (const t of thoughts) {
@@ -310,7 +311,7 @@ function FlowLine({ t }: { t: MergedThought }) {
   );
 }
 
-/** 应用头像：优先按官网域名加载真实 favicon，失败或缺失回退首字母色块 */
+/** 应用头像：优先任务自带类型图标（📄/🎞/🔀…），其次按官网域名加载 favicon，最后回退首字母色块 */
 function AppAvatar({ t }: { t: ThoughtEvent }) {
   const [err, setErr] = useState(false);
   const name = (t.label || "").replace(/^安装 · /, "").trim() || "?";
@@ -323,6 +324,13 @@ function AppAvatar({ t }: { t: ThoughtEvent }) {
       return null;
     }
   }, [t.homepage]);
+  if (t.icon) {
+    return (
+      <span className="flow-progress-avatar glyph" aria-hidden>
+        {t.icon}
+      </span>
+    );
+  }
   if (iconUrl && !err) {
     return (
       <img
@@ -369,7 +377,8 @@ function ProgressRing({ pct, phase }: { pct: number; phase?: string }) {
   );
 }
 
-/** 安装进度轨迹：头像 + 名称/厂商/版本 + 圆形进度环 + 实时输出行（软件管家安装时流式渲染） */
+/** 进度轨迹：图标 + 名称/厂商/版本 + 线性进度条 + 百分比 + 实时阶段行。
+    两种来源：软件管家安装（带厂商/版本/官网头像）、后台长任务（文档解析/生成/转换，带类型图标）。 */
 function ProgressLine({ t }: { t: ThoughtEvent }) {
   const pct = Math.max(0, Math.min(100, Math.round(t.progress ?? 0)));
   const failed = t.phase === "failed";
@@ -383,7 +392,16 @@ function ProgressLine({ t }: { t: ThoughtEvent }) {
           <span className="flow-progress-name">{t.label}</span>
           {meta && <span className="flow-progress-meta">{meta}</span>}
         </span>
+        <span className="flow-progress-pct">
+          {failed ? "失败" : done ? "完成" : `${pct}%`}
+        </span>
         <ProgressRing pct={pct} phase={t.phase} />
+      </div>
+      <div className="flow-progress-bar">
+        <div
+          className="flow-progress-bar-fill"
+          style={{ width: `${failed || done ? 100 : pct}%` }}
+        />
       </div>
       {t.detail && <div className="flow-progress-msg">{t.detail}</div>}
     </div>
@@ -448,6 +466,18 @@ export default function ExecutionFlow({
   }, [frozenThoughts, liveThoughts, currentConvId]);
   const todos = frozenTodos ?? liveTodos;
 
+  // 当前仍在推进的后台任务（最近一条未终结的进度事件）：折叠态也在头部显示进度条
+  const liveProgress = useMemo(() => {
+    for (let i = thoughts.length - 1; i >= 0; i--) {
+      const t = thoughts[i];
+      if (t.kind !== "tool_progress") continue;
+      if (t.phase === "done" || t.phase === "failed") return null;
+      return t;
+    }
+    return null;
+  }, [thoughts]);
+  const livePct = Math.round(liveProgress?.progress ?? 0);
+
   // 折叠态头部的单行流程摘要：规划 → markdown_append ✓ → 反思 → 完成
   const summary = useMemo(() => {
     const tokens: string[] = [];
@@ -481,7 +511,17 @@ export default function ExecutionFlow({
             {doneCount}/{todos.length}
           </span>
         )}
-        {!open && summary && <span className="flow-summary">{summary}</span>}
+        {/* 后台任务进度：折叠态也能一眼看到「在做什么、走到哪」 */}
+        {liveProgress && (
+          <span className="flow-mini" title={liveProgress.detail || liveProgress.label}>
+            <span className="flow-mini-label">{liveProgress.label}</span>
+            <span className="flow-mini-bar">
+              <span className="flow-mini-fill" style={{ width: `${livePct}%` }} />
+            </span>
+            <span className="flow-mini-pct">{livePct}%</span>
+          </span>
+        )}
+        {!open && !liveProgress && summary && <span className="flow-summary">{summary}</span>}
         {!done && <span className="think-pulse" />}
         {onReplay && done && (
           <button
@@ -540,7 +580,15 @@ export default function ExecutionFlow({
           {!done && (
             <div className="think-line think-current">
               <span className="flow-node" />
-              <span className="think-label">执行中…</span>
+              {/* 有后台任务在跑就显示它的名字与进度，否则退回「执行中…」光标 */}
+              <span className="think-label">
+                {liveProgress ? `${liveProgress.label} · ${livePct}%` : "执行中…"}
+              </span>
+              {liveProgress && (
+                <span className="flow-mini-bar">
+                  <span className="flow-mini-fill" style={{ width: `${livePct}%` }} />
+                </span>
+              )}
             </div>
           )}
         </div>

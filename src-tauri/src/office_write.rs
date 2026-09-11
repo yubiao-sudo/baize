@@ -11,6 +11,7 @@ use std::io::Write;
 
 use serde_json::{json, Value};
 
+use crate::progress::{self, Progress};
 use crate::tools::{resolve_path, PermissionClass, Tool};
 
 /// 内嵌的 Python 生成脚本（编译期打入二进制，运行时落盘临时目录执行）
@@ -26,8 +27,9 @@ fn now_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-/// 运行 Python sidecar，返回 stdout 解析出的 JSON
-fn run_python(request: &Value) -> Result<Value, String> {
+/// 运行 Python sidecar，返回 stdout 解析出的 JSON。
+/// `progress` 非空时：脚本 stderr 的进度协议行实时转发到执行流；长时间无信号时按「已耗时」发心跳。
+fn run_python(request: &Value, progress: Option<&Progress>) -> Result<Value, String> {
     let script_dir = std::env::temp_dir().join(format!("baize_ow_script_{}", now_nanos()));
     std::fs::create_dir_all(&script_dir).map_err(|e| format!("创建脚本目录失败: {e}"))?;
     let script = script_dir.join("office_write.py");
@@ -54,34 +56,35 @@ fn run_python(request: &Value) -> Result<Value, String> {
     }
     drop(child.stdin.take());
 
-    let out_h = child.stdout.take().map(|mut s| {
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut b = String::new();
-            let _ = s.read_to_string(&mut b);
-            b
-        })
-    });
-    let err_h = child.stderr.take().map(|mut s| {
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut b = String::new();
-            let _ = s.read_to_string(&mut b);
-            b
-        })
-    });
+    let out_h = child.stdout.take().map(crate::progress::drain_stdout);
+    let err_h = child
+        .stderr
+        .take()
+        .map(|s| crate::progress::drain_stderr(s, progress.cloned()));
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(PY_TIMEOUT_SECS);
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(PY_TIMEOUT_SECS);
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break st,
             Ok(None) => {}
             Err(e) => return Err(format!("等待 Python 退出失败: {e}")),
         }
+        if let Some(p) = progress {
+            let elapsed = started.elapsed().as_millis();
+            if p.idle_ms() > 1500 {
+                let hb = progress::heartbeat_pct(elapsed, p.pct().max(12.0), 90.0);
+                p.set(hb, &format!("生成中… 已用时 {}s", elapsed / 1000));
+            }
+        }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("文档生成超时（{PY_TIMEOUT_SECS}s），已终止"));
+            let msg = format!("文档生成超时（{PY_TIMEOUT_SECS}s），已终止");
+            if let Some(p) = progress {
+                p.fail(&msg);
+            }
+            return Err(msg);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -115,8 +118,53 @@ fn run_python(request: &Value) -> Result<Value, String> {
     }
 }
 
-/// docx → pdf：PowerShell COM 走本机 Word，失败回退 WPS（KWps.Application）
+/// 末级文件名（进度条标题用）
+fn file_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// 带进度条执行一次 Python 生成/转换：统一「建句柄 → 执行 → 完成/失败」样板
+fn run_with_progress(
+    label: String,
+    icon: &str,
+    finished: &str,
+    req: &Value,
+) -> Result<Value, String> {
+    let pr = Progress::new(label).with_icon(icon);
+    pr.set(4.0, "正在准备生成器…");
+    match run_python(req, Some(&pr)) {
+        Ok(v) => {
+            pr.done(finished);
+            Ok(v)
+        }
+        Err(e) => {
+            pr.fail(&e);
+            Err(e)
+        }
+    }
+}
+
+/// docx → pdf：PowerShell COM 走本机 Word，失败回退 WPS（KWps.Application）。
+/// COM 引擎不给内部回调，用「心跳计时器」按已耗时缓慢推进（文案如实标注用时）。
 fn docx_to_pdf(src: &str, out: &str) -> Result<Value, String> {
+    let pr = Progress::new(format!("转换 PDF · {}", file_name(src))).with_icon("🔀");
+    pr.set(5.0, "正在启动 Word/WPS 导出引擎…");
+    let result = {
+        let _tick = pr.spawn_ticker(85.0, "正在导出 PDF");
+        docx_to_pdf_com(src, out)
+    };
+    match &result {
+        Ok(_) => pr.done(&format!("已导出 PDF · {}", file_name(out))),
+        Err(e) => pr.fail(e),
+    }
+    result
+}
+
+fn docx_to_pdf_com(src: &str, out: &str) -> Result<Value, String> {
     let ps = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -229,7 +277,12 @@ impl Tool for DocumentWriteTool {
             "theme": args.get("theme").and_then(|v| v.as_str()).unwrap_or("classic"),
             "indent_body": args.get("indent_body").and_then(|v| v.as_bool()).unwrap_or(true),
         });
-        run_python(&req)
+        run_with_progress(
+            format!("生成 Word 文档 · {}", file_name(&path)),
+            "📄",
+            "Word 文档已生成",
+            &req,
+        )
     }
 }
 
@@ -281,7 +334,12 @@ impl Tool for PptxWriteTool {
             "slides": args.get("slides").cloned().unwrap_or(json!([])),
             "content": args.get("content").and_then(|v| v.as_str()),
         });
-        run_python(&req)
+        run_with_progress(
+            format!("生成演示文稿 · {}", file_name(&path)),
+            "🎞",
+            "演示文稿已生成",
+            &req,
+        )
     }
 }
 
@@ -346,7 +404,12 @@ impl Tool for DocumentConvertTool {
                     "author": args.get("author").and_then(|v| v.as_str()),
                     "toc": args.get("toc").and_then(|v| v.as_bool()).unwrap_or(false),
                 });
-                run_python(&req)
+                run_with_progress(
+                    format!("转换 Word · {}", file_name(&src)),
+                    "🔀",
+                    "已转换为 Word 文档",
+                    &req,
+                )
             }
             "docx_to_md" | "pdf_split" | "xlsx_to_csv" | "csv_to_xlsx" => {
                 let src = resolve_path(args["src"].as_str().ok_or("缺少参数 src")?);
@@ -357,7 +420,13 @@ impl Tool for DocumentConvertTool {
                     "out_dir": args.get("out_dir").map(|v| resolve_path(v.as_str().unwrap_or(""))),
                     "sheet": args.get("sheet").and_then(|v| v.as_str()),
                 });
-                run_python(&req)
+                let (label, icon, done) = match op.as_str() {
+                    "docx_to_md" => (format!("转换 Markdown · {}", file_name(&src)), "📄", "已转换为 Markdown"),
+                    "pdf_split" => (format!("拆分 PDF · {}", file_name(&src)), "✂", "PDF 已按页拆分"),
+                    "xlsx_to_csv" => (format!("导出 CSV · {}", file_name(&src)), "📊", "已导出 CSV"),
+                    _ => (format!("生成 Excel · {}", file_name(&src)), "📊", "已生成 Excel"),
+                };
+                run_with_progress(label, icon, done, &req)
             }
             "pdf_merge" => {
                 let srcs: Vec<String> = args["srcs"]
@@ -376,7 +445,12 @@ impl Tool for DocumentConvertTool {
                         .ok_or("pdf_merge 需要输出路径 out")?,
                 );
                 let req = json!({ "op": "pdf_merge", "srcs": srcs, "out": out });
-                run_python(&req)
+                run_with_progress(
+                    format!("合并 PDF · {} 个文件", req["srcs"].as_array().map(|a| a.len()).unwrap_or(0)),
+                    "📎",
+                    "PDF 已合并",
+                    &req,
+                )
             }
             other => Err(format!("不支持的转换操作: {other}")),
         }

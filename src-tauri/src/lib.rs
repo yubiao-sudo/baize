@@ -37,6 +37,7 @@ mod rag;
 mod rag_watch;
 mod read_document;
 mod office_write;
+mod progress; // 统一进度通道：后台长任务（文档解析/生成/转换）向执行流推真实进度条
 mod replay;
 mod jobs;
 mod scheduler;
@@ -1063,6 +1064,9 @@ pub fn run() {
 
             // 后台任务面板：注册事件句柄（进度经 job-update 广播）
             jobs::init(app.handle().clone());
+
+            // 执行流进度通道：文档解析/生成等长任务经 thought(tool_progress) 广播真实进度
+            progress::init(app.handle().clone());
 
             // RAG 目录监听：最近索引目录变更 → 防抖后自动重索引
             {

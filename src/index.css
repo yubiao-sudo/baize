@@ -2410,6 +2410,104 @@ select option:checked {
   word-break: break-word;
 }
 
+/* ── 后台任务线性进度条（文档解析/生成/转换等） ── */
+.flow-progress-title {
+  flex: 1;
+}
+.flow-progress-pct {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #22d3ee;
+}
+.flow-progress.done .flow-progress-pct {
+  color: #22c55e;
+}
+.flow-progress.failed .flow-progress-pct {
+  color: #f59e0b;
+}
+.flow-progress-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.flow-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #22d3ee);
+  box-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
+  transition: width 0.35s ease;
+}
+.flow-progress.done .flow-progress-bar-fill {
+  background: linear-gradient(90deg, #15803d, #22c55e);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+}
+.flow-progress.failed .flow-progress-bar-fill {
+  background: linear-gradient(90deg, #b45309, #f59e0b);
+  box-shadow: none;
+}
+/* 类型图标头像（非软件安装的进度任务：📄 文档 / 🎞 演示 / 🔀 转换 …） */
+.flow-progress-avatar.glyph {
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.35), rgba(34, 211, 238, 0.25));
+}
+
+/* 执行流头部 / 「执行中…」行的迷你进度（折叠态也能看到后台任务在推进） */
+.flow-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+}
+.flow-mini-label {
+  font-size: 11px;
+  color: var(--text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-mini-bar {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 76px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.flow-mini-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #22d3ee);
+  transition: width 0.35s ease;
+}
+.flow-mini-pct {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #22d3ee;
+}
+/* 思考流里的进度百分比 */
+.thought-pct {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #22d3ee;
+}
+
 .chat-input {
   display: flex;
   flex-direction: column;
