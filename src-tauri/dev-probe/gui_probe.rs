@@ -1,5 +1,11 @@
 //! GUI 自动化实测入口（开发用）。
 //!
+//! ⚠️ 本文件必须放在 dev-probe/ 而不是 src/bin/：
+//!    Cargo 会自动发现 src/bin/*.rs 为额外二进制，Tauri 打包器在多 bin 时
+//!    会选错主程序（v0.8.0~v0.8.3 安装包因此装的是探针而非主程序，启动即闪退）。
+//!    需要构建探针时：cargo build --release 时手动移回或用
+//!    `rustc --edition 2021 dev-probe/gui_probe.rs` 之外的方式临时编译。
+//!
 //! 两种模式：
 //! 1. 全链路探针：gui_probe <窗口关键词> [--find 关键词] [--click 按钮名] [--list]
 //! 2. 工具调用（与白泽 agent 完全同构）：gui_probe tool <工具名> '<json 参数>'

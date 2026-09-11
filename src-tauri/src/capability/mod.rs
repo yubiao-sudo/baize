@@ -2438,7 +2438,7 @@ impl Tool for WindowFocusTool {
 }
 
 /// 按工具名构造并执行 GUI 工具（与 lib.rs 注册表同一批工具）。
-/// 供实测入口 bin/gui_probe 使用：外部（如开发调试的 agent 会话）
+/// 供实测入口 dev-probe/gui_probe 使用：外部（如开发调试的 agent 会话）
 /// 传工具名+JSON 参数，走与白泽 agent 完全相同的 Tool::run 执行路径。
 pub fn dispatch_tool(
     capability: &std::sync::Arc<dyn Capability>,
