@@ -192,13 +192,45 @@ impl crate::tools::Tool for PlanConfirmTool {
     }
 }
 
+/// 浏览器意图词（供 GUI 判定与提示词分流共用）：出现这些词说明任务对象是「网页」，
+/// 应走 browser_* / browser_act 通道，而不是桌面 GUI 自动化。
+const BROWSER_WORDS: &[&str] = &[
+    "网页", "网站", "网址", "浏览器", "http", "www.", "搜索", "搜一下", "查一下",
+    "查资料", "调研", "上网", "登录",
+];
+
+/// 「强桌面意图」词：明确要操作本机应用/窗口/文件管理器本身。
+/// 用于把「浏览器任务」与「桌面 GUI 任务」区分开——只有命中这些词才认为
+/// 用户真的要动桌面界面（此时才值得接管屏幕）。
+const DESKTOP_STRONG_WORDS: &[&str] = &[
+    "我的电脑", "资源管理器", "任务栏", "开始菜单", "记事本", "计算器", "画图",
+    "软件界面", "应用界面", "桌面操作", "屏幕操作", "界面操作", "窗口操作", "键盘操作",
+    "剪贴板", "最小化", "置顶", "拖拽", "快捷键",
+];
+
+/// 判定「这条用户消息看起来是不是要动桌面界面」。
+///
+/// 注意：它**只用来决定多注入哪份说明书**（见 `prompt_segments`），不再决定任何行为。
+/// 早先它还被用来在一轮任务开始时无条件接管屏幕，结果「打开知乎并点登录」这类
+/// 纯网页任务也会被抢屏；现在是否接管完全由模型自己调了哪个工具决定。
 fn is_gui_task(message: &str) -> bool {
     const GUI_KEYWORDS: &[&str] = &[
         "点击", "双击", "右键", "拖拽", "按住", "选中", "框选", "鼠标", "shift", "ctrl",
         "键盘操作", "屏幕操作", "界面操作", "桌面操作",
     ];
     let m = message.to_lowercase();
-    GUI_KEYWORDS.iter().any(|k| m.contains(k))
+    let hit = |kws: &[&str]| kws.iter().any(|k| m.contains(k));
+    if !hit(GUI_KEYWORDS) {
+        return false;
+    }
+    // 关键修正：浏览器任务不是桌面 GUI 任务。
+    // 「点击登录按钮」这类说法会命中 GUI 关键词，但操作对象是网页——它由 CDP 直接
+    // 作用在浏览器内部，既不需要阻断用户键鼠，也不需要清屏置顶。早先没有这层排除，
+    // 导致每次浏览网页都被判成 GUI 任务、一起来就接管屏幕。
+    if hit(BROWSER_WORDS) && !hit(DESKTOP_STRONG_WORDS) {
+        return false;
+    }
+    true
 }
 
 // ─────────────── 系统提示词分段（分级注入：按任务语义拼装，纯聊天任务省 2/3 token） ───────────────
@@ -218,8 +250,21 @@ const PROMPT_CORE: &str = r#"你是白泽，一个本地优先的桌面助手。
 回答中可自行对关键的结论、数字、术语、文件路径或需要用户注意的内容用 ==文字== 包裹做高亮强调（例如 ==重点==），其余保持普通文本，不要过度使用。
 当用户请求不清晰、缺少关键参数或存在歧义时，先向用户提出一个简短的澄清问题（例如「你指的是哪个文件？」「要写到哪里？」），等用户回复后再继续，不要擅自假设或直接执行。"#;
 
+/// CHANNEL：两条操作通道的选择总纲，**恒定注入**。
+///
+/// 定位说明：这段只负责把「你手上有哪些通道、怎么选」讲清楚，让选择权真正落在模型
+/// 自己手里。系统不再按用户消息里的关键词预判要不要走 GUI 自动化（「打开/关闭/窗口」
+/// 这类词太宽，会把普通网页任务误判成桌面任务并抢屏）；模型调了哪条通道的工具，
+/// 就是它的决定。
+const PROMPT_CHANNEL: &str = r#"
+【操作通道：由你自己判断走哪条】你有两条互不替代的通道，选择权在你，系统不做关键词预判：
+① 网页通道（优先）：browser_open 把网址显示在白泽内置浏览器标签页；browser_act 用 CDP 驱动真实的桌面 Chrome/Edge，可 goto / click / type / scroll / key / evaluate / content / click_text / highlight，速度快、不占用屏幕、不阻断用户键鼠。
+② 桌面 GUI 通道：mouse_click / click_element / type_text / paste_text / key_press / window_prepare / capture_screen 等，直接操作本机应用界面与系统弹窗，代价是接管屏幕并阻断用户键鼠。
+选择规则：任务对象是「网页」→ 一律走 ①，不要在 ② 里找网页的元素；任务对象是本机应用或系统界面（记事本、微信、安装器、另存为对话框、控制面板等）→ 走 ②；两边都涉及（例如在网页里点「上传」后弹出系统文件选择框）→ 以 ① 为主，只在 ① 确实够不着（受控浏览器起不来、需要操作系统级对话框）时才用 ② 辅助。判断不清时先用 ① 试一次再决定，不要因为「页面上可能有点按钮」就直接上桌面自动化。
+接管是自动的：只有你调用了 ② 里的鼠标/键盘类工具，系统才接管屏幕；纯聊天与纯网页任务全程不接管。"#;
+
 /// GUI：屏幕接管 / 稳定性感知 / 应用操作预案 / 工具清单与交互纪律 / 批量派发 / 撤销
-const PROMPT_GUI: &str = r#"凡涉及操作桌面上的应用程序或窗口的任务（打开/关闭/切换应用与程序窗口、在应用界面里点击输入、管理任务栏等），若发现屏幕尚未接管，必须先调用 takeover 工具接管屏幕再执行 GUI 操作，不要在未接管的情况下直接点击。
+const PROMPT_GUI: &str = r#"【桌面 GUI 通道的适用边界】只有任务对象是**本机应用界面或系统弹窗**（打开/关闭/切换应用与程序窗口、在应用界面里点击输入、管理任务栏、处理「另存为」/权限确认等系统对话框）时才使用本节的工具。任务对象是网页时一律走 browser_* 通道，绝不要用桌面自动化去点网页——那会抢走用户的屏幕还更慢。【接管由系统自动完成，没有 takeover 这个工具】你第一次调用鼠标/键盘类工具（mouse_click / click_at / click_element / type_text / paste_text / key_press / key_down / key_up / mouse_drag / hover / wheel_scroll / middle_click / save_dialog / macro / close_popup）时，系统才会自动接管屏幕、阻断外界键鼠并推送桌面步骤弹幕；纯聊天与纯网页任务全程不接管。因此你不需要也不应该手动申请接管，按需要直接调工具即可（唯一例外：需要提前解除时用 screen_release）。
 【界面稳定性感知（务必遵守，提速关键）】窗口刚打开、点击后界面跳转、页面加载完成后的 1-3 秒内动画/转场尚未结束，此时 find_element/坐标会漂移——用 wait_ui_stable 工具等待界面安定（像素级检测，安定即返回，通常 0.5-2s）再定位，替代拍脑袋 sleep 3 秒：又准又不浪费轮次。规则：launch_app/explorer_open 返回窗口后、批量步骤之间遇到界面跳转、capture_screen(ocr=true) 找不到预期文字时，先 wait_ui_stable 再操作。
 【常见应用操作预案】① 启动应用一律用 launch_app(name)——一次完成开始菜单/UWP 匹配启动并等待窗口出现返回窗口信息，禁止 GUI 点开始菜单搜索、禁止 ps_exec Start-Process；② 浏览器类：Ctrl+L 聚焦地址栏直接输入完整 URL 或搜索词回车，不要从首页一层层点导航；③ 资源管理器：explorer_open(path) 一步打开并定位到文件夹/文件（等待窗口出现），不要逐层双击；也可 Ctrl+L 直接输入完整路径回车；④ 创建文档/写文件内容一律用 write_file 工具（一步原子完成、自动快照可撤销），严禁 GUI 绕记事本多步——记事本/编辑器 GUI 只留给用户明确要求「打开应用操作界面」的场景；确实需要在应用内保存时：Ctrl+S 对已存在文件通常静默保存，弹出「另存为」对话框时用 save_dialog(path) 一步填入完整路径保存（自动处理替换确认弹窗），不要手动定位文件名输入框；编辑器内输入用 paste_text 不要逐字 type_text；⑤ 设置/控制面板类：直接用应用内搜索框搜功能名；⑥ 聊天类（微信/QQ 等）：Ctrl+F 或 Ctrl+K 搜联系人后回车；⑦ 自渲染应用（Electron/Qt）：UIA 树可能为空或不全，优先 screen_elements 的 OCR 行坐标，失败再走键盘导航兜底；⑧ 自绘应用窗口查找加强：list_windows 会列出最小化的后台窗口（minimized=true，聚焦时自动还原）并给出每窗口的 process（进程 exe 名）——窗口标题不含中文关键词时按 process 列匹配（如找「汽水」看 QishuiMusic.exe），聚焦失败先 list_windows 查 process 再用窗口真名/进程名重试。
 当用户要求「打开应用 / 点击 / 输入 / 拖拽 / 按快捷键 / 看屏幕内容」等桌面界面操作时，使用 GUI 自动化工具：key_press 按快捷键（如 win+r、ctrl+s、alt+tab），type_text 输入文本（仅限 ASCII 短文本；输入中文/emoji/长文本一律改用 paste_text 剪贴板粘贴，否则会乱码），mouse_click 点击屏幕坐标，click_element 按名称点击控件（该控件若无无障碍树时，会自动降级：本地 OCR 定位文字 → Set-of-Marks 视觉标注框选 → 视觉模型猜坐标，点击后还会自动检测界面是否变化），capture_screen 截屏（加 ocr=true 直接返回画面文字，或加 question 让本地视觉模型描述截图），mouse_drag 拖拽，wheel_scroll 滚轮滚动（clicks 正=上/右负=下/左，可传 x/y 先把光标移到目标区域；长页面/列表滚动一律用它，不要拖滚动条），hover 悬停（展开悬停才出现的菜单/子菜单后再点击其中项），middle_click 中键（浏览器/编辑器关闭标签页、后台新标签打开链接），close_popup 关闭弹窗（打开应用后若有广告/更新/欢迎/协议等弹窗，默认 mode=close 点关闭/稍后/跳过/取消按钮；协议类弹窗用 mode=confirm 点确定/同意）。【交互纪律（必须遵守）】双击一律用 mouse_click 传 count=2——连续两次独立单击间隔过长，系统不会识别为双击，严禁用两次单击模拟；列表类界面（音乐/文件/搜索结果）的正确交互是先 hover 行让操作按钮浮现再点按钮，或点一下列表建立键盘焦点后用方向键+Enter 导航选择；find_element/ground_element 在页面动画/加载期间坐标会漂移，界面刚发生变化时先等待 1-2 秒再定位；自渲染应用（Electron/Qt 等 UIA 树为空）且 OCR 定位也失败时，兜底走键盘导航（点列表区域建立焦点 → 方向键 → Enter）。执行任何 GUI 操作前，必须先完成「清屏准备」：直接调用一次 window_prepare（name=目标窗口标题关键词，如「汽水音乐」）——它会一次完成最小化其余无关窗口、聚焦目标窗口并验证前台切换成功、按需置顶，并返回验证结果（最小化数量/聚焦成败/置顶成败）；接管屏幕时系统已按任务语义自动最小化无关窗口，不要再用 list_windows → window_minimize_all → window_focus → window_set_topmost 的多步组合（浪费轮次），仅当 window_prepare 返回聚焦失败或未找到窗口时才用 list_windows 排查。步骤弹幕在接管后自动推送每个工具调用，无需手动 show_step（只在需要主动补充提示文字时才用）；操作全部结束后用 screen_release 解除接管（任务结束时系统也会自动解除）。进入目标应用后，优先调用一次 screen_elements 一次性拿到全屏元素清单（UIA 可交互控件 + OCR 文字行合并，含屏幕物理坐标；自渲染应用 UIA 为空时自动只剩 OCR 行），基于它直接把整套操作规划成有序步骤批量派发，不要反复截屏/逐个 find_element——这张清单就是批量规划的依据。批量派发时以多个工具调用一次性发出（同一轮内按顺序执行，批量第一个调用必须是 set_expected_state 写明一句可核验的「预期状态」，例如 set_expected_state("记事本标题变为 todo.txt 且正文含三行文字")；批量结尾放一次 capture_screen），系统会在批量执行完毕后自动截屏核验是否符合预期并把结果回传给你——校验不符时立即停止批量推进，退回逐步模式修正，不要把「界面有变化」当成「符合预期」；对含 删除/清空/格式化/卸载/发送 字样的点击目标，一次只派发一个调用（系统会强制逐次审批并暂停批量），确认成功后再进行下一步；批量中某步失败或界面与预期不符时，再退回逐步模式（截屏观察 → 单步修正）。需要撤销已执行的 GUI 操作时用 gui_undo：action=last 清空最近文本输入、toggle 重击最近点击（开关类翻转）、back 返回上一界面、file 撤销文件操作、steps 逆序回退最近 n 步可逆操作；删除/发送类不可逆操作无法回退，只能靠事前审批拦截。不要在元素地图已明确、步骤确定的情况下每个操作之间都单独截屏观察——批量执行是 GUI 任务提速的关键。
@@ -235,16 +280,35 @@ const PROMPT_GAME: &str = r#"【游戏自动化（回合制/半即时通用，�
 /// MUSIC：音乐应用交互（连带注入 GUI 段）
 const PROMPT_MUSIC: &str = r#"【音乐播放器交互（务必遵守，踩过坑）】汽水音乐等 Electron 自渲染音乐应用（UIA 树为空）播放歌曲的正确姿势：先用 screen_elements 拿到元素坐标清单（它的坐标是精确的，禁止让视觉模型在截图里报坐标——视觉坐标有 ±10-20px 误差），定位到目标歌曲所在的行后按以下顺序尝试：① mouse_click(x=行中心x, y=行中心y, count=2) 双击该行直接播放；② mouse_click 传 button=right 右键该行，弹出上下文菜单后再用 screen_elements 定位「播放」菜单项并点击它；③ hover(x,y) 悬停该行等 1 秒让行首播放按钮浮现，再点那个按钮；④ 首选可靠路径：screen_elements 的输出里 type=Image、名字是「Image图标」、y 与歌曲行相同的元素就是行首播放按钮（Rust 已算好精确中心坐标 cx/cy），先 hover 该行让按钮进入可点状态，再 mouse_click 那个 cx/cy 即播放。严禁对歌曲行做两次独立单击（间隔超时不算双击）。系统的单击/双击注入已拟人化：自动「两段式逼近移动 + hover 停留 160ms + 双击内部 90ms 紧连」，与真人点击无异；若双击仍无效，问题在落点或该行交互方式，直接转②④路径，不要怀疑点击本身。每次尝试后必须验证播放是否真正开始：capture_screen(ocr=true) 查看出现「暂停按钮/播放中/进度条走动」，或再调 screen_elements 对比界面变化；验证无反应就换下一种方式，不要在同一坐标反复重试。"#;
 
-/// BROWSER：浏览器工具选型与通道唯一性
-const PROMPT_BROWSER: &str = r#"当用户要求「登录网站 / 操作网页 / 网页截图 / 读取网页内容」等浏览器交互时，使用 browser_act 工具（action 可选 goto 跳转、click 点击、type 输入、wait 等待、screenshot 截图、evaluate 执行 JS、content 读文本）。
-当用户要求「打开网页 / 打开 XX 网站 / 打开链接 / 用白泽浏览器打开 XX」时，调用 browser_open 工具（kind 填 url，content 填完整网址如 https://example.com），把网页显示在内置的「白泽·浏览器」标签页里；若该网站拒绝内嵌导致打不开，改用 browser_navigate 工具在独立的系统浏览器窗口中打开。
-【浏览器通道唯一性（必须遵守）】一次「打开某网站」的请求只允许使用一个通道：普通打开→browser_open；明确要「桌面浏览器/受控浏览器」→仅用 browser_act 的 goto/new_tab；内嵌被拒需要独立窗口→仅用 browser_navigate。严禁对同一请求叠加调用 browser_open + browser_navigate / browser_act。"#;
+/// BROWSER：浏览器工具选型、通道唯一性、与桌面 GUI 自动化的边界
+const PROMPT_BROWSER: &str = r#"当用户要求「登录网站 / 操作网页 / 网页截图 / 读取网页内容」等浏览器交互时，使用 browser_act 工具（action 可选 goto 跳转、click 点击、type 输入、wait 等待、screenshot 截图、evaluate 执行 JS、content 读文本、click_text 按可见文字定位点击、highlight 只框出元素不点击、scan 把当前页面或指定模块的可交互元素用编号线框全部标出来、click_mark 按 scan 的编号点击、handle_dialog 处理页面弹出的 JS 对话框、tidy_tabs 清理白泽自己开的空白标签页、upload 上传文件、set_download_dir / downloads 管理下载目录）。click / type / click_text / highlight 会在**网页页面内**用一条红色实线框出目标元素（线框直接注入页面、随操作即时出现，点击后仍停留约 1 秒），用户能看到白泽「指」的是哪个元素——它是页内定位，不是屏幕像素定位，也不会出现在别的窗口上。
+【不确定该点哪时：先 scan 列编号，再 click_mark 点编号】当用户说「点某个功能模块里的按钮」这类**位置靠描述、文字不确定**的指令，或者你看着页面文字拿不准点哪个时，用 scan（可带 scope 限定模块，如「侧边栏」「工具栏」「评论区」）把可交互元素用编号线框标出来，返回值 items 里每条带编号、标签、可见文字、位置；确认要哪个就用 click_mark 带 index 点它。scan 一次 evaluate 就完成（不截图、不跑 OCR、不调视觉模型，几十毫秒），所以**不要**为了「看看有什么可点」去截图或调 look。编号只在最近一次 scan 有效（页面变了会被清掉），点击失败就重新 scan。清单只含当前视口内元素，返回值里的 off_view 会告诉你视口外上方/下方各还有几个可交互元素——需要往下找就用 scroll 带 selector / target **定位式滚动**（滚到目标就停）再 scan，不要用 amount 盲滚。
+【点击之后不要等页面加载完（连贯性关键）】点完一个交互，下一步**直接发**，同一轮里批量派发——后端已经不等资源全部加载（图片/埋点/长轮询很多站点永远等不完），而你的下一个动作自己会等它需要的元素出现。不要用 wait 去「等页面完全显示」，那正是用户抱怨的「点一下卡半天」。只有两种情况才 wait：① 页面明确有固定时长的动画/倒计时要等；② 依赖异步结果出现而你没有具体元素可等。默认答案是**不等**。
+【提速关键：同一轮里批量派发，不要一步一等】浏览器操作慢，主要是慢在「每做一步就等一次完整推理」。凡是**已经能确定**的操作，就在同一个回合里一次性发出多个 browser_act 调用（系统按顺序依次执行，只算一次模型往返）。例如「打开网站 → 点登录 → 填账号 → 点提交」应当一轮发出 4~5 个调用：goto、click_text、type、key(Enter)、screenshot。规则：① 序列首步是 goto 时，后面的 click/type 可以放心跟在同一轮（goto 会等页面加载完成才轮到下一步）；② 每轮批量末尾放一次 screenshot 或 content 用于核对；③ 只有「下一步点哪里取决于上一步返回内容」时才必须分轮；④ 批量中某步失败时才退回逐步模式（一轮一步）修正。
+【定位不要额外花动作】click_text / highlight 会**先在 DOM 里按文字定位**（一次 evaluate，通常十几毫秒），命中就直接点，不需要你先截屏、也不需要先调 look 看页面。反过来：不要为了「看清页面」反复调 look / screenshot——每次截图 0.2s 起、OCR 更慢，这是典型的自我拖慢。只有 DOM 定位失败（文字是图片、在 iframe 里、纯图标按钮）时系统才自动回落到 OCR / 视觉定位。
+【浏览器任务不接管屏幕（务必遵守）】浏览器操作由 CDP 直接作用于浏览器内部，不阻断用户键鼠：全程不要做 window_prepare / window_minimize_all / window_focus 之类的「清屏准备」，也不要调 show_step。屏幕上也不会出现覆盖层方框——元素线框画在网页里。那些纪律是给桌面 GUI 任务（操作本机应用界面）用的，用在浏览器任务上属于误接管。
+【浏览器来源与能力边界】browser_act 默认启动白泽自己的受控实例（用机主已装的 Chrome/Edge 程序 + 白泽专属 profile，是一个新窗口、不是机主正在用的那个）；若机主以自己的浏览器加 --remote-debugging-port=9222 启动，也会自动直连那个窗口（action=state 的 origin 字段说明当前是哪种）。机主手动打开的、没开调试端口的浏览器窗口，CDP 碰不到——那种情况才轮到 GUI 自动化。
+【CDP 够不着时才降级到 GUI 自动化（唯一的降级条件）】browser_act 的返回值带「可降级」标注时（受控浏览器起不来/未安装、浏览器崩溃、需要操作系统级对话框如文件选择/另存为/打印），说明这一步确实超出 CDP 能力：此时改用桌面 GUI 自动化辅助（screen_elements 看屏幕拿坐标 → click_element / mouse_click / paste_text），系统会自动进入屏幕接管。除此之外的一切失败（页面里找不到元素、选择器写错、等待超时、页面还没加载完）都属于页面内问题，继续用 browser_act 修正，绝对不要动屏幕。
+【每一步都会告诉你「现在在哪个标签页」】browser_act 每一步的返回值都带 tab_id / page_url / page_title——那是**本步实际操作的**那个标签页，不是你记忆里的那个。动手前先核对一眼：若不是你要的页面，用 switch_tab 切回去或重新 goto，绝不在错的页面上继续点——「在错的页面上点对了元素」比点不到更糟，而且用户完全看不出来。点击/按键/执行 JS 若让浏览器多开了一个标签页（target=_blank 新窗口、登录跳转流程、广告弹窗），返回值会多出 new_tabs 字段并在 note 里说明；此时白泽的操作对象**仍留在原标签页**、并已自动切回前台（页面内的红色定位线框也画在它上面）：确实要继续处理新页面就 switch_tab，那只是无关弹窗就用 close_tab 关掉再继续。不确定当前在哪，先 state / tabs 查，不要凭印象猜。
+【标签页被关掉时会明确告知】如果你原先操作的标签页已经不存在（用户手动关了、页面自己 close 了），返回值里会有 note 说明「本次动作落在新建的空白标签页上」——看到这句就先用 tabs 看清现有页面，再 switch_tab / goto 回目标页，不要在空白页上继续操作。
+【不要无意识滚动页面】定位和点击**不会**主动滚页面：只有目标确实不在视口里时才会滚，而且滚最小距离。所以滚动只应发生在「找按钮 / 找内容」这种确实需要的时候，且优先用 scroll 的 selector / target 定位式滚动；不要为了「看看页面上有什么」而滚，也不要在动作做完后把页面滚回顶部/滚回原处——那会顺手把用户正在看的上下文带走。如果用户抱怨「页面自己乱滑」，先检查是不是你在无谓地调 scroll。
+【标签页卫生：少开一个是一个，收尾该关就关】① new_tab 会自动复用白泽自己留下的空白标签页（返回值 reused=true），不要为了「换个页面看看」反复 new_tab；② 返回值 note 提示有多余空白标签页时，用 tidy_tabs 一次清掉（它只关白泽自己开的空白页，机主自己开的页面一律不动）；③ 一个任务做完要主动决定：这个标签页是你为它开的（tabs 里 ours=true）、任务已结束且不再需要，就用 close_tab 关掉它（省略 tab_id 就是关当前操作的那个标签页），别把一堆标签页留给机主；④ 机主自己开的页面（tabs 里 ours=false）永远不要关。
+【页面弹出 JS 对话框（alert / confirm / prompt）时】对话框会**阻塞该标签页的脚本**：在它被处理掉之前，之后所有的点击/输入/执行 JS 都会被挡住。所以当返回值里出现 dialog 字段、或某一步报「有一个未处理的 JS 对话框挡着」时，唯一正确的下一步是先调 handle_dialog（accept=true 点「确定」、false 点「取消」；prompt 类型用 text 填内容），处理完再继续原本的操作。系统不会替你按——「确定」可能是不可逆的（如「确认删除」），由你按对话框文案和任务目标判断；拿不准就先 dismiss（取消）并告知用户。
+【文件上传与下载】上传用 upload（selector 指 file 输入框，通常是 input[type=file]；files 是文件绝对路径，可传数组），它直接把文件交给页面、不弹系统文件选择器。若找不到输入框，多半要先点一下上传按钮让 input 进入 DOM：先 click_text / click_mark 点它，再 upload；若点按钮直接弹出了系统的文件选择窗口（CDP 够不着的原生对话框），才轮到 GUI 自动化。下载：要固定下载位置先 set_download_dir（默认是系统的「下载」文件夹），触发下载后用 downloads 看目录里最近的文件（in_progress=true 表示还在写、还没下完），不要靠「猜文件名」判断下载成功没有。
+当用户要求「打开网页 / 打开 XX 网站 / 打开链接 / 用白泽浏览器打开 XX」时，调用 browser_open 工具（kind 填 url，content 填完整网址如 https://example.com），把网页显示在内置的「白泽·浏览器」标签页里。
+【内嵌可用性已自动感知】browser_open 打开网址（kind=url）时后端会自动探测该站点能否被 iframe 内嵌，返回值里的 embed.status 是确定性结论：ok=可内嵌；blocked=确定打不开（embed.reason 是具体原因，如 X-Frame-Options: DENY / CSP frame-ancestors / 非 HTML 内容），此时内置浏览器会直接显示原因并在**受控桌面浏览器**中自动打开该页面——所以看到 blocked 不需要再调 browser_navigate 去「换个窗口」，直接按 embed.reason 告诉用户原因，后续要操作页面就用 browser_act；unknown=探测失败（网络问题），仍按普通页面处理。
+【内置浏览器的标签页也会切走】browser_open 每开一个新标签页，它就成为内置浏览器的**当前标签页**，原来那个被置为非激活。返回值里有 active_tab（新的当前页）和 previous_tab（你刚才在操作的那个）——如果原来那个页面还要继续用，先 browser_switch 切回去再操作，不要在没确认当前标签页的情况下继续发指令。browser_close 关掉当前标签页后，返回值会告诉你接下来哪个标签页变成当前页；不确定时用 browser_tabs 看一眼（带 active 标记的就是当前页）。
+【浏览器通道唯一性（必须遵守）】一次「打开某网站」的请求只允许使用一个通道：普通打开→browser_open；明确要「桌面浏览器/受控浏览器」或需要白泽继续操控页面→仅用 browser_act 的 goto/new_tab；用户明确要「独立的系统浏览器窗口」→仅用 browser_navigate。严禁对同一请求叠加调用 browser_open + browser_navigate / browser_act。"#;
 
 /// SOFTWARE：软件管家 + 系统环境配置
 const PROMPT_SOFTWARE: &str = r#"当用户要求「查找软件 / 搜索软件 / 帮我装 XX / 安装某软件 / 卸载某软件」时，用软件管家工具集：先 env_check 探测环境（包管理器/运行时/权限），再 software_search 搜索（query 填软件关键词），从返回结果里取 id 和 name（软件显示名）。安装前先调用 disk_info 检测磁盘空间与装机习惯、拿到推荐安装盘符，并在回复里明确告诉用户「将安装到 X 盘（理由）」。然后用 software_install 安装（必填 id，尽量带上 name）或 software_uninstall 卸载；判断某软件是否已安装 / 查找其安装位置，一律用 software_locate（注册表+UWP 商店应用+开始菜单快捷方式三路秒级定位，返回版本/厂商/安装路径）——严禁用全盘搜索判断（Get-ChildItem -Recurse、dir /s 等，又慢又不准）；查完整已装清单用 software_list，看某个包详情用 software_info。安装会智能避开系统盘 C:，自动装到空间充足且符合你装机习惯的盘。
 当用户要求「配置系统环境 / 设置环境变量 / 添加 PATH / 设置开机自启」时，先 system_get 读取现状（env/path/startup），再用 system_set 执行（action 可选 env_set / env_unset / path_add / path_remove / startup_add / startup_remove）。高亮可安装的包 id 用 ==id==。"#;
 
-/// 按用户消息关键词挑选本轮需注入的提示词分段（CORE 恒定，不在此列）
+/// 按用户消息关键词挑选本轮要**多注入**哪几份场景说明书。
+///
+/// CORE 与 CHANNEL 恒定注入（不在此列）。关键词在这里的唯一作用是「多花几百 token
+/// 把对应预案讲细一点」，它不决定系统行为——是否接管屏幕、走哪条通道，全看模型
+/// 自己调用了哪个工具。
 fn prompt_segments(message: &str) -> Vec<&'static str> {
     let m = message.to_lowercase();
     let hit = |kws: &[&str]| kws.iter().any(|k| m.contains(k));
@@ -262,10 +326,6 @@ fn prompt_segments(message: &str) -> Vec<&'static str> {
     const MUSIC_WORDS: &[&str] = &[
         "音乐", "歌曲", "歌单", "汽水", "网易云", "播放", "切歌", "下一首", "放首歌",
     ];
-    const BROWSER_WORDS: &[&str] = &[
-        "网页", "网站", "网址", "浏览器", "http", "www.", "搜索", "搜一下", "查一下",
-        "查资料", "调研", "上网", "登录",
-    ];
     const SOFTWARE_WORDS: &[&str] = &[
         "安装", "卸载", "软件", "环境变量", "path", "开机自启", "装个", "装一下", "装上",
     ];
@@ -278,15 +338,27 @@ fn prompt_segments(message: &str) -> Vec<&'static str> {
         segs.push(PROMPT_GUI);
         segs.push(PROMPT_MUSIC);
     }
-    if (is_gui_task(message) || hit(GUI_WORDS)) && !segs.contains(&PROMPT_GUI) {
-        segs.insert(0, PROMPT_GUI);
+
+    // 浏览器任务与桌面 GUI 任务的分流（重要）：
+    // GUI_WORDS 里的「打开 / 启动 / 关闭 / 窗口 / 按钮 / 菜单」过于宽泛，
+    // 「打开知乎并点击登录」这种纯网页任务也会命中。这里的分流**只影响多注入哪份
+    // 说明书**（多花几百 token 而已），不影响任何行为——是否进入 GUI 自动化由模型
+    // 自己调不调 GUI 工具决定，系统不按关键词抢屏。
+    let is_browser = hit(BROWSER_WORDS);
+    let desktop_intent = hit(DESKTOP_STRONG_WORDS);
+    let wants_gui = (is_gui_task(message) || hit(GUI_WORDS)) && !(is_browser && !desktop_intent);
+    if wants_gui && !segs.contains(&PROMPT_GUI) {
+        segs.push(PROMPT_GUI);
     }
-    if hit(BROWSER_WORDS) {
+    if is_browser {
         segs.push(PROMPT_BROWSER);
     }
     if hit(SOFTWARE_WORDS) {
         segs.push(PROMPT_SOFTWARE);
     }
+    // 通道总纲恒定注入：模型必须始终知道「两条通道都在、怎么选」，
+    // 否则纯聊天消息下它连自己有浏览器能力都不知道。
+    segs.insert(0, PROMPT_CHANNEL);
     segs
 }
 
@@ -617,22 +689,18 @@ impl<'a> AgentLoop<'a> {
 
         let tools = self.mode_tools();
 
-        // GUI 任务：自动接管屏幕（阻断外部输入 + 最小化主窗口 + 桌面弹幕）。
+        // 屏幕接管**不再**由用户消息的关键词预判。
+        //
+        // 早先这里按 is_gui_task(用户消息) 判定，任务一开始就无条件接管屏幕。
+        // 「打开/启动/关闭/窗口/按钮/菜单」这类词太宽（GUI_WORDS 的同名问题），
+        // 「打开知乎并点击登录」这种纯网页任务也会中招——屏幕被抢走、外界键鼠被阻断，
+        // 用户看到的就是「只是让它开个网页，怎么整台机器都被占了」。
+        //
+        // 现在判定权交回模型自己：它选择调用哪个通道的工具，就是它的决定。
+        // 只有它真的调用了「在屏幕上动手」的 GUI 交互工具时才接管
+        // （见下方 GUI_AUTO_TAKEOVER_TOOLS）；纯聊天 / 纯网页任务全程不接管。
         // 无论正常结束/停止/取消，退出时统一由 TakeoverGuard 释放接管。
-        // 注意：这里不最小化其它窗口——目标窗口的防遮挡由模型按需调用
-        // window_minimize_all / window_focus / window_set_topmost 完成（见 system 提示）。
-        let gui_task = is_gui_task(message);
-        let mut takeover_guard = if gui_task {
-            self.thought(
-                "takeover",
-                "屏幕接管",
-                "已接管屏幕并阻断外界键鼠输入，按 Ctrl+Shift+F12 可紧急解除",
-            );
-            crate::takeover::engage_screen(self.app, Some(message));
-            Some(TakeoverGuard(self.app))
-        } else {
-            None
-        };
+        let mut takeover_guard: Option<TakeoverGuard> = None;
 
         // 轮次不再有上限：仅靠循环检测（陷入重复才终止）与用户取消来结束
         let mut loop_detector = LoopDetector::new();
@@ -782,21 +850,30 @@ impl<'a> AgentLoop<'a> {
                 self.thought("tool_call", &format!("调用工具 · {name}"), &args.to_string());
                 println!("[工具调用] {name} {}", args);
 
-                // GUI 交互工具触发自动接管：消息没命中 GUI 关键词、但模型实际
-                // 开始做界面操作时，同样阻断外界键鼠并弹出步骤弹幕
+                // 屏幕接管**唯一的触发点**：模型真的动手操作桌面界面时。
+                //
+                // 判定依据从「用户消息里的关键词」换成了「模型实际调用了什么工具」——
+                // 模型选了桌面 GUI 工具，就等于它自己判断这件事需要桌面自动化；
+                // 它选了 browser_* 或只聊天，就永远不会有接管。
+                //
+                // 白名单只收「真的在屏幕上动手」的工具。窗口管理 / 纯观察类
+                // （window_focus / window_set_topmost / window_minimize_all /
+                //   window_prepare / wait_ui_stable / show_step / capture_screen /
+                //   screen_elements）故意不收：它们常被当作 GUI 任务的辅助动作，
+                // 浏览器任务里也用来把浏览器窗口提到前台，拿它们当接管触发条件
+                // 会造成「只是看一眼屏幕就接管了」的误判。接管一旦被 click_* 等
+                // 真实操作触发，这些辅助工具照常可用。
                 if takeover_guard.is_none() && !crate::takeover::is_active() {
                     const GUI_AUTO_TAKEOVER_TOOLS: &[&str] = &[
-                        "click_element", "click_at", "mouse_click", "mouse_drag",
-                        "key_press", "key_down", "key_up", "type_text", "paste_text",
-                        "save_dialog", "wait_ui_stable", "macro",
-                        "close_popup", "takeover", "window_minimize_all",
-                        "window_focus", "window_set_topmost", "window_prepare", "show_step",
+                        "click_element", "click_at", "mouse_click", "mouse_drag", "middle_click",
+                        "hover", "wheel_scroll", "key_press", "key_down", "key_up", "type_text",
+                        "paste_text", "save_dialog", "macro", "close_popup",
                     ];
                     if GUI_AUTO_TAKEOVER_TOOLS.contains(&name.as_str()) {
                         self.thought(
                             "takeover",
                             "屏幕接管",
-                            "GUI 操作触发自动接管并阻断外界键鼠输入（Ctrl+Shift+F12 解除）",
+                            "白泽开始操作桌面界面，已接管屏幕并阻断外界键鼠输入（Ctrl+Shift+F12 解除）",
                         );
                         crate::takeover::engage_screen(self.app, Some(message));
                         takeover_guard = Some(TakeoverGuard(self.app));

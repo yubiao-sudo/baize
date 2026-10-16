@@ -303,6 +303,16 @@ export interface SearchResult {
   summary: string;
 }
 
+// 内置浏览器标签页的内嵌可用性判定（打开网址时对响应头探测得出，非启发式猜测）
+export interface EmbedCheck {
+  /** ok=可正常内嵌 | blocked=确定被拒绝/不适用内嵌 | unknown=探测失败，需回退启发式 */
+  status: "ok" | "blocked" | "unknown";
+  /** 人类可读原因（blocked / unknown 时存在） */
+  reason?: string;
+  /** 命中的具体信号：响应头原文或失败阶段 */
+  signal?: string;
+}
+
 // 浏览器标签页
 export interface Tab {
   id: string;
@@ -310,6 +320,8 @@ export interface Tab {
   title: string;
   content: string;
   active: boolean;
+  /** 仅 url 标签页：内嵌可用性判定（探测得出；undefined 表示未探测/旧数据） */
+  embed?: EmbedCheck | null;
 }
 
 export interface BrowserState {
@@ -326,6 +338,21 @@ export interface ChromeTabInfo {
   url: string;
   title: string;
   active: boolean;
+  /** true = 白泽自己开的页面（可以清理）；false = 机主自己开的（只读，不要关） */
+  ours?: boolean;
+  /** true = 空白页（about:blank / 新标签页） */
+  blank?: boolean;
+  /** true = 这个标签页上挂着一个未处理的 JS 对话框（alert/confirm），会阻塞脚本 */
+  dialog?: boolean;
+}
+
+/** browser_act tabs 动作返回的标签页概览（用于面板上的「清理空白」提示） */
+export interface ChromeTabsSummary {
+  total: number;
+  ours: number;
+  user: number;
+  blank: number;
+  cleanable: number;
 }
 
 // 内置 Markdown 文档窗口状态（与后端 markdown::MarkdownState 对齐）

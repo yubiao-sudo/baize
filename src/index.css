@@ -5723,6 +5723,67 @@ select option:checked {
   100% { opacity: 0; transform: scale(1.15); }
 }
 
+/* 目标元素定位方框：Browser Use 风格的实线选框 + 四角角标 + 文字标签。
+   用于把「白泽即将点击/输入的是哪个元素」直接画在屏幕/页面上。
+
+   注意：这里刻意只用「入场动画」，不让动画 forwards 到 opacity:0。
+   覆盖窗是 visible=false 创建后再 show 的，元素可能在窗口可见之前就已挂载并
+   把动画跑完；若结束时 opacity 归零，窗口显示时方框就是全透明的（等于没有）。
+   改为入场动画 + 静态 opacity:1 后，无论动画时间轴走到哪，框都必然可见；
+   消失交给 JS（加 .fading 淡出后从 DOM 移除）。 */
+.halo-target-box {
+  position: absolute;
+  border: 2px solid rgba(56, 189, 248, 0.95);
+  border-radius: 6px;
+  box-shadow:
+    0 0 14px rgba(56, 189, 248, 0.5),
+    inset 0 0 14px rgba(56, 189, 248, 0.16);
+  opacity: 1;
+  animation: halo-target-in 0.22s ease-out;
+  transition: opacity 0.25s ease-out;
+  pointer-events: none;
+}
+
+.halo-target-box.fading {
+  opacity: 0;
+}
+
+.halo-target-corner {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border: 0 solid #f8fafc;
+  filter: drop-shadow(0 0 4px rgba(248, 250, 252, 0.8));
+}
+.halo-target-corner.tl { top: -3px; left: -3px; border-top-width: 3px; border-left-width: 3px; }
+.halo-target-corner.tr { top: -3px; right: -3px; border-top-width: 3px; border-right-width: 3px; }
+.halo-target-corner.bl { bottom: -3px; left: -3px; border-bottom-width: 3px; border-left-width: 3px; }
+.halo-target-corner.br { bottom: -3px; right: -3px; border-bottom-width: 3px; border-right-width: 3px; }
+
+.halo-target-label {
+  position: absolute;
+  top: 100%;
+  left: -2px;
+  margin-top: 5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: rgba(8, 12, 20, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.65);
+  color: #e6f9ff;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.35);
+}
+
+@keyframes halo-target-in {
+  0% { opacity: 0; transform: scale(1.10); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
 /* 接管状态静态横幅：始终显示「正在执行 GUI 自动化任务」提示 */
 .step-banner {
   position: absolute;
@@ -6688,6 +6749,55 @@ select option:checked {
   font-size: 13px; padding: 7px 16px; border-radius: 8px; cursor: pointer;
 }
 .iframe-handoff-btn:hover { background: rgba(34,211,238,0.2); }
+
+/* 内嵌被拒（探测确认 X-Frame-Options / CSP frame-ancestors / 非 HTML 内容）：
+   不渲染 iframe（白屏无意义），直接给出原因 + 已自动改用受控浏览器的状态 */
+.browser-embed-blocked {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 28px 26px; text-align: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(251, 146, 60, 0.08), transparent 62%),
+    var(--panel, #0b0d12);
+}
+.embed-blocked-icon { font-size: 26px; opacity: 0.9; }
+.embed-blocked-title { font-size: 14px; font-weight: 600; color: #fbbf24; }
+.embed-blocked-reason {
+  font-size: 13px; color: var(--text, #e5e7eb); line-height: 1.7; max-width: 460px;
+}
+.embed-blocked-signal {
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 11.5px; color: #94a3b8;
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px; padding: 4px 9px;
+  max-width: 92%; overflow-wrap: anywhere;
+}
+.embed-blocked-hint {
+  font-size: 12.5px; line-height: 1.7; max-width: 460px;
+  padding: 7px 12px; border-radius: 8px;
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  background: rgba(34, 211, 238, 0.07);
+  color: #a5f3fc;
+}
+.embed-blocked-actions { display: flex; gap: 10px; margin-top: 2px; }
+.embed-blocked-btn {
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  background: rgba(34, 211, 238, 0.1);
+  color: #67e8f9;
+  font-size: 13px; padding: 7px 16px; border-radius: 8px; cursor: pointer;
+}
+.embed-blocked-btn:hover { background: rgba(34, 211, 238, 0.2); }
+.embed-blocked-btn.ghost {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: transparent; color: var(--text-dim, #94a3b8);
+}
+.embed-blocked-btn.ghost:hover { background: rgba(148, 163, 184, 0.12); }
+
+/* 标签栏上的内嵌状态角标：不切标签也能看出哪个页面打不开 */
+.browser-tab-warn {
+  font-size: 11px; color: #fbbf24; flex: none;
+}
 
 /* 文档窗口打印视图：隐藏工具栏/目录/标签页，正文铺满整页 */
 @media print {

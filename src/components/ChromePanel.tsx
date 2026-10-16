@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { browserAct } from "../api";
-import type { ChromeTabInfo } from "../types";
+import type { ChromeTabInfo, ChromeTabsSummary } from "../types";
 
 type LogEntry = { ts: number; text: string; ok: boolean };
 
@@ -34,6 +34,13 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
     null
   );
   const [log, setLog] = useState<LogEntry[]>([]);
+  /** scan 结果：页面上已用编号线框标出的可交互元素（点编号即 click_mark） */
+  const [marks, setMarks] = useState<{ n: number; tag: string; text: string }[]>([]);
+  const [markScope, setMarkScope] = useState("");
+  /** 视口外还有多少可交互元素——提示「要不要滚下去找」，而不是盲滚一遍 */
+  const [offView, setOffView] = useState<{ above: number; below: number } | null>(null);
+  /** 标签页概览：白泽自己开的 / 机主自己开的 / 空白可清理 */
+  const [tabSummary, setTabSummary] = useState<ChromeTabsSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [auto, setAuto] = useState(false);
@@ -72,6 +79,7 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
     if (!r) return;
     const list = (r as { tabs?: ChromeTabInfo[] }).tabs ?? [];
     setTabs(list);
+    setTabSummary((r as { summary?: ChromeTabsSummary }).summary ?? null);
     const active = list.find((t) => t.active);
     setActiveId(active ? active.id : list.length > 0 ? list[list.length - 1].id : "");
     return list;
@@ -150,6 +158,41 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
     await new Promise((r) => setTimeout(r, 300));
     await refresh();
   };
+  /** 只定位不点击：在网页里把目标元素用一条实线框出来，确认「指的就是它」 */
+  const highlight = async () => {
+    const t = target.trim();
+    if (!t) return;
+    await run({ action: "highlight", target: t }, `定位「${t}」（已在网页里框出）`);
+    await new Promise((r) => setTimeout(r, 300));
+    await refresh();
+  };
+  /**
+   * 扫描当前页面（或指定模块）的可交互元素：后端在网页里一次性标出编号线框并回传清单。
+   * 纯 DOM 枚举 + 页内画框，不截图、不跑 OCR，通常几十毫秒。
+   */
+  const scan = async () => {
+    const scope = target.trim();
+    const r = await run(
+      scope ? { action: "scan", scope } : { action: "scan" },
+      scope ? `扫描「${scope}」内的可交互元素` : "扫描当前视口内可交互元素"
+    );
+    if (!r) return;
+    const items = (r as { items?: { n: number; tag: string; text: string }[] }).items ?? [];
+    setMarks(items);
+    setMarkScope(String((r as { scope?: string }).scope ?? ""));
+    const off = (r as { off_view?: { above: number; below: number } }).off_view ?? null;
+    setOffView(off);
+    await refresh();
+  };
+  /** 按编号点击（编号与元素绑定，不会点错） */
+  const clickMark = async (n: number) => {
+    await run({ action: "click_mark", index: n }, `点击编号 ${n}`);
+    await new Promise((r) => setTimeout(r, 300));
+    // 页面可能已经变了：旧编号作废，清掉清单免得误点
+    setMarks([]);
+    setOffView(null);
+    await refresh();
+  };
   const switchTab = async (id: string) => {
     await run({ action: "switch_tab", tab_id: id }, `切换标签页`);
     setActiveId(id);
@@ -157,6 +200,17 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
   };
   const closeTab = async (id: string) => {
     await run({ action: "close_tab", tab_id: id }, "关闭标签页");
+    await loadTabs();
+    await look();
+  };
+  /**
+   * 收尾清理：一次关掉「白泽自己开的空白标签页」，给浏览器减负。
+   * 机主自己开的页面（ours=false）后端一律不动，所以这里不需要二次确认。
+   */
+  const tidyTabs = async () => {
+    const r = await run({ action: "tidy_tabs" }, "清理空白标签页");
+    const n = (r as { closed_count?: number } | null)?.closed_count ?? 0;
+    pushLog(n > 0 ? `已清理 ${n} 个空白标签页` : "没有可清理的空白标签页", true);
     await loadTabs();
     await look();
   };
@@ -253,10 +307,78 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
             <button className="software-primary" onClick={() => void clickText()} disabled={busy}>
               点击控件
             </button>
+            <button
+              className="software-action"
+              onClick={() => void highlight()}
+              disabled={busy}
+              title="只把目标元素用一条线框在网页里，不点击"
+            >
+              仅定位
+            </button>
+            <button
+              className="software-action"
+              onClick={() => void scan()}
+              disabled={busy}
+              title="把页面（或输入框里那个模块）的可交互元素全部编号框出，点编号即点击"
+            >
+              扫描元素
+            </button>
             <span style={{ fontSize: 10, color: "var(--text-faint)", whiteSpace: "nowrap" }}>
-              看 → 点闭环
+              看 → 点闭环 · 定位在网页内画线
             </span>
           </div>
+
+          {/* 扫描结果：页面上已标出编号线框，点这里任一编号即点击对应元素 */}
+          {marks.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span className="software-kv" style={{ whiteSpace: "nowrap" }}>
+                  可交互元素 {marks.length} 个
+                </span>
+                <span style={{ fontSize: 10, color: "var(--text-faint)" }}>{markScope}</span>
+                {offView && (offView.above > 0 || offView.below > 0) && (
+                  <span style={{ fontSize: 10, color: "var(--text-faint)" }}>
+                    视口外还有 ↑{offView.above} ↓{offView.below}
+                  </span>
+                )}
+                <span style={{ flex: 1 }} />
+                <button
+                  className="software-action"
+                  style={{ minWidth: 0, padding: "1px 6px" }}
+                  onClick={() => {
+                    setMarks([]);
+                    setOffView(null);
+                  }}
+                  title="只清掉这里的清单；页面上的线框会自己消失"
+                >
+                  收起
+                </button>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 4,
+                  maxHeight: 96,
+                  overflowY: "auto",
+                }}
+              >
+                {marks.map((m) => (
+                  <button
+                    key={m.n}
+                    className="software-action"
+                    style={{ minWidth: 0, padding: "2px 6px", fontSize: 11 }}
+                    disabled={busy}
+                    onClick={() => void clickMark(m.n)}
+                    title={`${m.tag}${m.text ? `：${m.text}` : ""}（点击即按编号点击该元素）`}
+                  >
+                    <span style={{ color: "var(--cyan)", fontFamily: "monospace" }}>{m.n}</span>
+                    {m.text ? ` ${m.text.slice(0, 12)}` : ` ${m.tag}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 主体 */}
@@ -284,10 +406,33 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
               <span className="software-sec-title" style={{ margin: 0, flex: 1 }}>
                 标签页列表
               </span>
+              <button
+                className="software-action"
+                onClick={() => void tidyTabs()}
+                disabled={busy || !tabSummary || tabSummary.cleanable === 0}
+                title="一次关掉白泽自己开的空白标签页（机主自己开的页面不会被关）"
+              >
+                清理空白
+              </button>
               <button className="software-action" onClick={() => void loadTabs()} disabled={busy} title="刷新列表">
                 刷新
               </button>
             </div>
+            {tabSummary && (
+              <div
+                style={{
+                  padding: "5px 10px",
+                  fontSize: 10,
+                  color: "var(--text-faint)",
+                  borderBottom: "1px solid var(--border-soft)",
+                }}
+              >
+                共 {tabSummary.total} 个 · 白泽开的 {tabSummary.ours} · 机主的 {tabSummary.user}
+                {tabSummary.cleanable > 0 && (
+                  <span style={{ color: "var(--cyan)" }}> · 可清理 {tabSummary.cleanable}</span>
+                )}
+              </div>
+            )}
             <div style={{ flex: 1, overflow: "auto", padding: 6 }}>
               {tabs.length === 0 ? (
                 <div style={{ color: "var(--text-faint)", fontSize: 12, padding: 10 }}>
@@ -325,6 +470,51 @@ export default function ChromePanel({ onClose }: { onClose: () => void }) {
                     >
                       {t.title || t.url || "(空)"}
                     </span>
+                    {t.dialog && (
+                      <span
+                        title="这个标签页上有一个未处理的对话框（alert/confirm），会挡住后续操作"
+                        style={{
+                          fontSize: 9,
+                          padding: "0 4px",
+                          borderRadius: 3,
+                          background: "rgba(248,113,113,0.18)",
+                          color: "var(--danger)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        对话框
+                      </span>
+                    )}
+                    {t.blank && (
+                      <span
+                        title="空白页：白泽开的可以直接清理"
+                        style={{
+                          fontSize: 9,
+                          padding: "0 4px",
+                          borderRadius: 3,
+                          background: "rgba(148,163,184,0.18)",
+                          color: "var(--text-faint)",
+                          flexShrink: 0,
+                        }}
+                      >
+                        空
+                      </span>
+                    )}
+                    {t.ours === false && (
+                      <span
+                        title="机主自己开的页面：白泽不会操作也不会关闭它"
+                        style={{
+                          fontSize: 9,
+                          padding: "0 4px",
+                          borderRadius: 3,
+                          background: "rgba(250,204,21,0.16)",
+                          color: "#eab308",
+                          flexShrink: 0,
+                        }}
+                      >
+                        机主
+                      </span>
+                    )}
                     <button
                       className="browser-tab-close"
                       style={{ fontSize: 14 }}

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
@@ -483,9 +483,117 @@ pub fn hide_step_window(app: &AppHandle) {
 
 // ───────────────── 目标应用光圈覆盖层（halo） ─────────────────
 
+/// 覆盖层页面是否已订阅 `halo-event`。
+///
+/// 覆盖窗首次创建后，WebView 需要数百毫秒到两秒才加载完页面并挂载 React；
+/// 这段窗口期内 emit 的事件会被**静默丢弃**——这正是「元素定位方框第一次完全不显示」
+/// 的根因。此标志由覆盖层页面挂载完成后调用 `halo_overlay_ready` 置位；
+/// 未就绪时事件改为入队缓存，页面就绪后一次性重放。
+static HALO_READY: AtomicBool = AtomicBool::new(false);
+/// 未送达覆盖层的事件队列：(时间戳毫秒, 事件体)。只保留最近 5 秒、最多 12 条。
+static HALO_PENDING: OnceLock<Mutex<Vec<(u64, Value)>>> = OnceLock::new();
+/// 标记代号：每次元素标记自增，自动隐藏线程据此判断期间是否出现新标记（有则让位）
+static HALO_MARK_GEN: AtomicU64 = AtomicU64::new(0);
+/// 连续「等不到覆盖层就绪」的次数：覆盖层真的不可用（透明窗被系统拦下等）时用它短路，
+/// 避免之后每次交互都白等满超时。
+static HALO_READY_MISSES: AtomicU32 = AtomicU32::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn halo_pending_cell() -> &'static Mutex<Vec<(u64, Value)>> {
+    HALO_PENDING.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn halo_push_pending(ev: &Value) {
+    if let Ok(mut g) = halo_pending_cell().lock() {
+        let now = now_ms();
+        g.push((now, ev.clone()));
+        g.retain(|(t, _)| now.saturating_sub(*t) < 5000);
+        let len = g.len();
+        if len > 12 {
+            g.drain(0..len - 12);
+        }
+        // 落盘留痕：方框「看不见」时，这条日志能区分「事件没发出去」和「发出去了但没渲染」
+        diag_log(&format!(
+            "[光圈] 覆盖层未就绪，事件暂存（队列 {} 条）type={}",
+            g.len(),
+            ev.get("type").and_then(|t| t.as_str()).unwrap_or("?")
+        ));
+    }
+}
+
+/// 事件投递唯一入口：覆盖层未就绪（窗口未创建 / 页面仍在加载）时入队，就绪后重放。
+fn halo_emit(app: &AppHandle, ev: Value) {
+    // 窗口是否存在要同步判断：ensure_halo_window 是异步投递到主线程的，
+    // 若在这里异步等它建完，事件已经发出去了。
+    if app.get_webview_window("halo").is_none() {
+        HALO_READY.store(false, Ordering::SeqCst);
+        halo_push_pending(&ev);
+        return;
+    }
+    if HALO_READY.load(Ordering::SeqCst) {
+        if let Err(e) = app.emit("halo-event", &ev) {
+            diag_log(&format!("[光圈] 事件广播失败({e})，转入暂存"));
+            HALO_READY.store(false, Ordering::SeqCst);
+            halo_push_pending(&ev);
+        }
+    } else {
+        halo_push_pending(&ev);
+    }
+}
+
+/// 覆盖层就绪信号：页面订阅完成后自报，并领取未送达事件重放（返回事件数组）。
+#[tauri::command]
+pub fn halo_overlay_ready() -> Value {
+    HALO_READY.store(true, Ordering::SeqCst);
+    let mut out: Vec<Value> = Vec::new();
+    if let Ok(mut g) = halo_pending_cell().lock() {
+        let now = now_ms();
+        for (t, ev) in g.drain(..) {
+            if now.saturating_sub(t) < 4000 {
+                out.push(ev);
+            }
+        }
+    }
+    if !out.is_empty() {
+        diag_log(&format!("[光圈] 覆盖层就绪，重放暂存事件 {} 条", out.len()));
+    }
+    json!(out)
+}
+
+/// 等待覆盖层可显示：交互前调用，确保方框真的画上屏了再去点击。
+/// 返回 true = 页面已订阅（事件已送达，方框即将渲染）。
+pub fn halo_wait_ready(timeout: std::time::Duration) -> bool {
+    let t0 = now_ms();
+    let limit = timeout.as_millis() as u64;
+    loop {
+        if HALO_READY.load(Ordering::SeqCst) {
+            HALO_READY_MISSES.store(0, Ordering::SeqCst);
+            return true;
+        }
+        if now_ms().saturating_sub(t0) >= limit {
+            HALO_READY_MISSES.fetch_add(1, Ordering::SeqCst);
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+}
+
+/// 已连续多少次等不到覆盖层就绪（调用方据此把后续等待缩短，避免反复白等）
+pub fn halo_ready_misses() -> u32 {
+    HALO_READY_MISSES.load(Ordering::SeqCst)
+}
+
 /// 全屏透明穿透覆盖窗：渲染「目标应用边缘光圈」与「组件点击光环」。
 /// 事件协议（halo-event）：{type:"window", rect:[x,y,w,h], title} 圈住目标应用；
-/// {type:"flash", x, y, w?, h?} 在被点组件位置闪一圈光环；{type:"clear"} 清除。
+/// {type:"flash", x, y, w?, h?} 在被点组件位置闪一圈光环；
+/// {type:"rect", rect:[x,y,w,h], label} 画出目标元素定位方框（Browser Use 风格选框 + 标签）；
+/// {type:"clear"} 清除。坐标一律为物理屏幕像素，覆盖层按自身 dpr 换算成 CSS 坐标。
 pub fn ensure_halo_window(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -571,15 +679,56 @@ pub fn halo_target_window(app: &AppHandle, rect: [i32; 4], title: &str) {
     }
     ensure_halo_window(app);
     position_halo_on(app, (rect[0] + rect[2] / 2).max(0), (rect[1] + rect[3] / 2).max(0));
-    if let Err(e) = app.emit("halo-event", event) {
-        eprintln!("[光圈] 事件发送失败: {e}");
-    }
+    halo_emit(app, event);
 }
 
 /// 组件点击光环：在物理屏幕坐标 (x, y) 处闪一圈光环
 pub fn halo_flash_at(app: &AppHandle, x: i32, y: i32) {
     ensure_halo_window(app);
-    let _ = app.emit("halo-event", json!({ "type": "flash", "x": x, "y": y }));
+    halo_emit(app, json!({ "type": "flash", "x": x, "y": y }));
+}
+
+/// 元素定位方框：在物理屏幕坐标的矩形 rect=[x,y,w,h] 上画出「Browser Use 风格」的
+/// 目标元素选框 + 文字标签，用于把「即将操作哪个元素」可视化为页面/屏幕上的实框。
+/// 非接管模式下，标记消散后自动隐藏覆盖层（透明置顶窗不常驻，避免干挂一整个会话）；
+/// 接管模式下覆盖层由 engage/disengage 生命周期管理，不做自动隐藏。
+pub fn halo_mark_rect(app: &AppHandle, rect: [i32; 4], label: &str) {
+    if rect[2] <= 0 || rect[3] <= 0 {
+        return;
+    }
+    ensure_halo_window(app);
+    position_halo_on(app, (rect[0] + rect[2] / 2).max(0), (rect[1] + rect[3] / 2).max(0));
+    let event = json!({
+        "type": "rect",
+        "rect": rect,
+        "x": rect[0],
+        "y": rect[1],
+        "w": rect[2],
+        "h": rect[3],
+        "label": label,
+    });
+    diag_log(&format!("[光圈] 元素方框 rect={rect:?} label={label}"));
+    halo_emit(app, event);
+
+    // 标记代号：期间出现新标记时旧隐藏线程让位，避免把刚画的框提前收掉
+    let gen = HALO_MARK_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+
+    if crate::takeover::is_active() {
+        return;
+    }
+    // 非接管模式：等覆盖层真正就绪（首次创建要等页面加载）再起算可见时长，
+    // 否则「标记 → 页面加载 → 显示」还没走完就被隐藏，方框一闪都不闪。
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let t0 = now_ms();
+        while !HALO_READY.load(Ordering::SeqCst) && now_ms().saturating_sub(t0) < 6000 {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(4500));
+        if HALO_MARK_GEN.load(Ordering::SeqCst) == gen && !crate::takeover::is_active() {
+            halo_clear(&handle);
+        }
+    });
 }
 
 /// 供覆盖层页面挂载时补拉最近的目标光圈事件（可能为 null）

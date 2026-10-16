@@ -5,6 +5,7 @@ import type {
   BrowserState,
   ChatMsg,
   Conversation,
+  EmbedCheck,
   EscalationLevelEvent,
   EscalationUpdate,
   MarkdownState,
@@ -294,12 +295,14 @@ export async function onDocReady(
   return unlisten;
 }
 
-/** 订阅 GUI 目标光圈事件：{type:"window",rect,title} 环绕目标应用；{type:"flash",x,y} 点击光环 */
+/** 订阅 GUI 目标光圈事件：{type:"window",rect,title} 环绕目标应用；
+    {type:"flash",x,y} 点击光环；{type:"rect",rect,label} 目标元素定位方框 */
 export async function onHaloEvent(
   cb: (e: {
-    type: "window" | "flash" | "clear";
+    type: "window" | "flash" | "rect" | "clear";
     rect?: number[];
     title?: string;
+    label?: string;
     x?: number;
     y?: number;
     w?: number;
@@ -307,9 +310,10 @@ export async function onHaloEvent(
   }) => void
 ): Promise<() => void> {
   const unlisten = await listen<{
-    type: "window" | "flash" | "clear";
+    type: "window" | "flash" | "rect" | "clear";
     rect?: number[];
     title?: string;
+    label?: string;
     x?: number;
     y?: number;
     w?: number;
@@ -320,7 +324,7 @@ export async function onHaloEvent(
 
 /** 补拉最近一次「目标窗口」光圈事件（覆盖层页面晚于事件挂载时补齐，避免首次点亮丢失） */
 export async function getHaloLast(): Promise<{
-  type: "window" | "flash" | "clear";
+  type: "window" | "flash" | "rect" | "clear";
   rect?: number[];
   title?: string;
 } | null> {
@@ -328,6 +332,28 @@ export async function getHaloLast(): Promise<{
     return await invoke("halo_get_last");
   } catch {
     return null;
+  }
+}
+
+/** 覆盖层就绪握手：页面完成 halo-event 订阅后调用，领取并重放「订阅之前」错过的事件。
+ *  覆盖窗首次创建时页面加载要数百毫秒，这期间后端发出的元素方框事件会被静默丢弃——
+ *  后端把它们暂存起来，这里一次性取回重放，保证「第一次点击也能看到方框」。 */
+export async function haloOverlayReady(): Promise<
+  Array<{
+    type: "window" | "flash" | "rect" | "clear";
+    rect?: number[];
+    title?: string;
+    label?: string;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+  }>
+> {
+  try {
+    return await invoke("halo_overlay_ready");
+  } catch {
+    return [];
   }
 }
 
@@ -769,6 +795,19 @@ export async function closeBrowserTab(id: string): Promise<boolean> {
 /** 在白泽内置浏览器中打开一个网页标签页（搜索结果页点击卡片 → 内跳，结果页保留可切回） */
 export async function openUrlTab(url: string): Promise<unknown> {
   return invoke("browser_open_url_tab", { url });
+}
+
+/**
+ * 探测某网址能否被内置 iframe 内嵌（读响应头的 X-Frame-Options /
+ * CSP frame-ancestors / Content-Type 得出确定性结论）。
+ * 打开标签页时后端已自动探测，此接口用于「重新检测」与历史标签页复核；
+ * 传 tabId 时结果会写回该标签页并广播。
+ */
+export async function browserCheckEmbed(
+  url: string,
+  tabId?: string
+): Promise<{ ok: boolean; url: string; embed: EmbedCheck }> {
+  return invoke("browser_check_embed", { url, tabId: tabId ?? null });
 }
 
 /** 在独立 WebView 窗口打开网页（白泽文档外链用，文档本体不被导航替换） */

@@ -57,6 +57,12 @@ pub fn touch_activity() {
     LAST_ACTIVITY.store(now, Ordering::SeqCst);
 }
 
+/// 全局 AppHandle 取用（供无 AppHandle 持有的模块，如 browser.rs 的 CDP 操作，
+/// 在需要向覆盖层（halo）派发视觉标记时使用）。幂等，未初始化时返回 None。
+pub fn app_handle() -> Option<AppHandle> {
+    APP_HANDLE.get().cloned()
+}
+
 // 虚拟键码：左右 Ctrl / Shift 以及 F12（vkCode 为 DWORD，与 u32 对应）
 const VK_LCONTROL: u32 = 0xA2;
 const VK_RCONTROL: u32 = 0xA3;

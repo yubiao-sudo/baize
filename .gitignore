@@ -36,3 +36,7 @@ src-tauri/gen/
 
 # Vite 临时时间戳文件
 vite.config.ts.timestamp-*.mjs
+
+# 本地工作区（AURORA 前端试验目录 + 会话记忆），不入库
+frontend/
+.workbuddy/
