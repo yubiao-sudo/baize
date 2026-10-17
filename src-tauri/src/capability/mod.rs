@@ -434,6 +434,34 @@ pub fn normalize_target(s: &str) -> String {
         .collect()
 }
 
+/// 把「组合键序列」拆成多步：`"ctrl+a delete"` → `["ctrl+a", "delete"]`。
+///
+/// 键盘一次只能按住一组修饰键，而很多常用操作天然是两步（全选后删除、复制后粘贴、
+/// 搜索后清空）。拆成两次工具调用要多花一轮模型往返，所以允许一次调用内用空格分隔
+/// 顺序执行。`+` 两侧带空格的写法（`"ctrl + a"`）会被并回同一个组合键，不算新的一步。
+pub fn split_key_sequence(keys: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut join_next = false;
+    for seg in keys.split_whitespace() {
+        if seg == "+" {
+            if let Some(last) = out.last_mut() {
+                last.push('+');
+                join_next = true;
+            }
+            continue;
+        }
+        if join_next {
+            if let Some(last) = out.last_mut() {
+                last.push_str(seg);
+            }
+            join_next = false;
+            continue;
+        }
+        out.push(seg.to_string());
+    }
+    out
+}
+
 /// 剥离目标描述中的控件类型词（「搜索按钮」→「搜索」）
 fn strip_kind_words(t: &str) -> String {
     let mut s = t.to_string();
@@ -1417,14 +1445,16 @@ impl Tool for TypeTextTool {
         "type_text"
     }
     fn description(&self) -> &str {
-        "向当前焦点输入文本（写操作，会请求授权）。中文/emoji 走系统 UNICODE 注入通道，\
-         大多数输入框可用；个别自绘/游戏输入框会忽略注入，此时请改用 paste_text（剪贴板通道，兼容性更强）"
+        "向当前焦点输入文本（写操作，会请求授权）。ASCII 走虚拟键、中文/emoji 走系统 UNICODE 注入，\
+         大多数输入框可用；个别自绘/游戏输入框会忽略注入，此时请改用 paste_text（剪贴板通道，兼容性更强）。\
+         clear=true 时会先 Ctrl+A 全选再删除，用新文本覆盖原有内容（默认是追加）"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "text": { "type": "string", "description": "要输入的文本" }
+                "text": { "type": "string", "description": "要输入的文本" },
+                "clear": { "type": "boolean", "description": "是否先清空当前输入框原有内容（默认 false 为在光标处追加）" }
             },
             "required": ["text"]
         })
@@ -1434,11 +1464,22 @@ impl Tool for TypeTextTool {
     }
     fn run(&self, args: Value) -> Result<Value, String> {
         let text = args["text"].as_str().ok_or("缺少参数 text")?;
+        let cleared = args["clear"].as_bool().unwrap_or(false);
+        if cleared {
+            // 全选 + 删除：不依赖输入框是否有 value，也不受组合字符影响
+            self.capability
+                .act(&Action::KeyPress { keys: "ctrl+a".into() })
+                .map_err(|e| format!("全选失败: {e}"))?;
+            self.capability
+                .act(&Action::KeyPress { keys: "delete".into() })
+                .or_else(|_| self.capability.act(&Action::KeyPress { keys: "backspace".into() }))
+                .map_err(|e| format!("清空失败: {e}"))?;
+        }
         let res = self
             .capability
             .act(&Action::TypeText { text: text.to_string() })
             .map_err(|e| e.to_string())?;
-        Ok(json!({ "ok": res.ok, "description": res.description }))
+        Ok(json!({ "ok": res.ok, "description": res.description, "cleared": cleared }))
     }
 }
 
@@ -1870,13 +1911,17 @@ impl Tool for KeyPressTool {
         "key_press"
     }
     fn description(&self) -> &str {
-        "按下键盘组合键或单个键，如 ctrl+s、alt+tab、enter（写操作，会请求授权）"
+        "按下键盘组合键或单个键，如 ctrl+s、alt+tab、enter。\
+         支持一次调用内多步序列（用空格分隔），如 \"ctrl+a delete\"（全选后删除）、\
+         \"ctrl+c alt+tab ctrl+v\"（复制后切窗口粘贴）；\
+         支持符号键：ctrl++ / ctrl+plus、ctrl+-、shift+!、ctrl+;；\
+         修饰键可用左右变体 lctrl/rctrl/lshift/rshift/lalt/ralt（写操作，会请求授权）"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "keys": { "type": "string", "description": "组合键，用 + 连接，如 ctrl+s、alt+tab、ctrl+shift+esc" }
+                "keys": { "type": "string", "description": "组合键，用 + 连接，如 ctrl+s、alt+tab、ctrl+shift+esc；多步用空格分隔，如 ctrl+a delete" }
             },
             "required": ["keys"]
         })
@@ -1912,7 +1957,7 @@ impl Tool for KeyDownTool {
         "key_down"
     }
     fn description(&self) -> &str {
-        "按住某个键不放，需配合 key_up 抬起。支持修饰键(ctrl/shift/alt/win)、字母(a-z)、数字(0-9)、F1-F24、方向键(up/down/left/right)、home/end/page_up/page_down/insert/delete/enter/tab/esc、小键盘(numpad0-9/numpad_add等)、媒体键(volume_up/volume_down/volume_mute/media_play_pause等)。用于长按、按住修饰键配合鼠标多选等精细操作（写操作，会请求授权）"
+        "按住某个键不放，需配合 key_up 抬起。支持修饰键(ctrl/shift/alt/win，可用左右变体 lctrl/rctrl/lshift/rshift/lalt/ralt)、字母(a-z)、数字(0-9)、F1-F24、方向键(up/down/left/right)、home/end/page_up/page_down/insert/delete/enter/tab/esc、符号键(plus/minus/comma/period/slash/semicolon/quote/bracketleft/bracketright/backslash 或直接写 + - , . / ; ' [ ] \\)、小键盘(numpad0-9/numpad_add等)、媒体键(volume_up/volume_down/volume_mute/media_play_pause等)。用于长按、按住修饰键配合鼠标多选等精细操作（写操作，会请求授权）"
     }
     fn schema(&self) -> Value {
         json!({

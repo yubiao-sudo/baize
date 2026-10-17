@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use headless_chrome::browser::tab::ModifierKey;
 use regex::Regex;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
@@ -2598,6 +2599,124 @@ fn browser_alive() -> bool {
     }
 }
 
+/// 浏览器组合键解析：把 `ctrl+shift+a` / `Control+A` / `shift+tab` / `ctrl++`
+/// 拆成（修饰键列表，主键名）。
+///
+/// **为什么需要这一层**：headless_chrome 的 `press_key` 是**单键**精确查表
+/// （`get_key_definition` 拿整个字符串去 `key == key` 比对），传 `Control+A` 直接报
+/// 「按键找不到」——浏览器通道此前完全没有组合键能力，根因就在这里。组合键必须走
+/// `press_key_with_modifiers`，键名沿用 puppeteer 的美国键盘布局表。
+fn parse_browser_chord(raw: &str) -> Result<(Vec<ModifierKey>, String), String> {
+    let mut k = raw.trim();
+    if k.is_empty() {
+        return Err("按键组合为空".into());
+    }
+    // "ctrl++" 结尾的两个加号里，后一个是主键本身而不是分隔符
+    let mut literal_plus = false;
+    if k.ends_with("++") {
+        literal_plus = true;
+        k = &k[..k.len() - 1];
+    }
+    let mut parts: Vec<&str> = k
+        .split('+')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if literal_plus {
+        parts.push("+");
+    }
+    if parts.is_empty() {
+        return Err(format!("无法解析按键「{raw}」"));
+    }
+
+    let mut mods: Vec<ModifierKey> = Vec::new();
+    for p in &parts[..parts.len() - 1] {
+        let l = p.to_ascii_lowercase();
+        mods.push(match l.as_str() {
+            "ctrl" | "control" | "ctl" => ModifierKey::Ctrl,
+            "shift" => ModifierKey::Shift,
+            "alt" | "option" | "opt" => ModifierKey::Alt,
+            "cmd" | "command" | "meta" | "win" | "super" => ModifierKey::Meta,
+            _ => {
+                return Err(format!(
+                    "「{p}」不是修饰键。组合键写法是 修饰键+主键（ctrl/shift/alt/cmd），\
+                     一次只能按一个主键；多步请用空格分隔，例如 \"ctrl+a delete\""
+                ))
+            }
+        });
+    }
+    let mut main = normalize_browser_key(parts[parts.len() - 1]);
+    // 带 Shift 敲字母时用大写键名：键表里 "A" 的 text 是 "A"，"a" 的 text 是 "a"，
+    // 用错会把「Shift+A」敲成小写 a（页面看到 shiftKey=true 但输入的是 a）。
+    if mods.iter().any(|m| matches!(*m, ModifierKey::Shift)) && main.len() == 1 {
+        let c = main.chars().next().unwrap_or(' ');
+        if c.is_ascii_alphabetic() {
+            main = c.to_ascii_uppercase().to_string();
+        }
+    }
+    Ok((mods, main))
+}
+
+/// 把常见键名写法归一成键表里的名字（`esc`→Escape、`up`→ArrowUp、`space`→" "、
+/// `f5`→F5）。字母按单字符处理：键表里大小写都有，统一成小写（配合 Shift 修饰键
+/// 才能敲出大写，直接用大写名会绕过修饰键、连快捷键语义一起变）。
+fn normalize_browser_key(raw: &str) -> String {
+    let l = raw.to_ascii_lowercase();
+    let named = match l.as_str() {
+        "space" | "spacebar" | "blank" => Some(" "),
+        "enter" | "return" => Some("Enter"),
+        "tab" => Some("Tab"),
+        "esc" | "escape" => Some("Escape"),
+        "backspace" | "back" => Some("Backspace"),
+        "delete" | "del" => Some("Delete"),
+        "insert" | "ins" => Some("Insert"),
+        "up" | "arrowup" => Some("ArrowUp"),
+        "down" | "arrowdown" => Some("ArrowDown"),
+        "left" | "arrowleft" => Some("ArrowLeft"),
+        "right" | "arrowright" => Some("ArrowRight"),
+        "pageup" | "page_up" | "pgup" => Some("PageUp"),
+        "pagedown" | "page_down" | "pgdn" => Some("PageDown"),
+        "home" => Some("Home"),
+        "end" => Some("End"),
+        "capslock" => Some("CapsLock"),
+        "printscreen" | "prtsc" => Some("PrintScreen"),
+        _ => None,
+    };
+    if let Some(n) = named {
+        return n.to_string();
+    }
+    if let Some(num) = l.strip_prefix('f') {
+        if let Ok(f) = num.parse::<u8>() {
+            if (1..=24).contains(&f) {
+                return format!("F{f}");
+            }
+        }
+    }
+    raw.to_string()
+}
+
+/// 读当前焦点元素的 (标签名, 值长度, 值尾部)。用于「整串写入后有没有真的进去」的
+/// 自检——不读的话，自定义编辑器吞掉 insertText 时模型会以为填成功了。
+fn active_value_probe(tab: &headless_chrome::Tab) -> Option<(String, usize, String)> {
+    const PROBE_JS: &str = r#"(() => {
+  const a = document.activeElement;
+  if (!a) return JSON.stringify({tag:'NONE', len:0, tail:''});
+  const t = a.tagName || '';
+  let v = '';
+  if (typeof a.value === 'string') v = a.value;
+  else if (a.isContentEditable) v = a.innerText || '';
+  return JSON.stringify({tag:t, len:v.length, tail:v.slice(-80)});
+})()"#;
+    let raw = tab.evaluate(PROBE_JS, false).ok()?;
+    let s = raw.value.as_ref()?.as_str()?.to_string();
+    let v: Value = serde_json::from_str(&s).ok()?;
+    Some((
+        v["tag"].as_str().unwrap_or("").to_string(),
+        v["len"].as_u64().unwrap_or(0) as usize,
+        v["tail"].as_str().unwrap_or("").to_string(),
+    ))
+}
+
 /// 已经登记过的标签页 target id，用来判断「本次动作期间是不是冒出了新标签页」。
 /// 用「已见集合」而不是「上次快照」：首次同步会把机主原本开着的标签页一并补录进来，
 /// 那一批不能算新开——登记过一次之后就不会再被误报成弹窗。
@@ -3218,7 +3337,7 @@ impl Tool for BrowserActTool {
         "browser_act"
     }
     fn description(&self) -> &str {
-        "驱动可见的桌面谷歌浏览器执行完整交互操作（持久化登录态，多标签页）：goto 跳转、click 点击、type 输入、wait 等待、screenshot 截图、evaluate 执行 JS、content 读取页面文本、new_tab 新建标签页、tabs 列出标签页、switch_tab 切换标签页、close_tab 关闭标签页、scroll 滚动、key 按键、reload 刷新、back 后退、forward 前进、state 感知浏览器状态、look 感知当前页面（截图+OCR 文本）、click_text 按可见文字定位并点击（看→点闭环）、highlight 只把目标元素框出来不点击（给用户看清指代）、scan 把当前页面或指定模块的可交互元素用编号线框全部标出来（返回编号清单）、click_mark 按 scan 的编号点击、handle_dialog 处理页面弹出的 JS 对话框、tidy_tabs 收尾清理白泽自己开的空白标签页、upload 直接给文件输入框塞文件（绕过系统文件选择器）、set_download_dir / downloads 设置并查看下载目录。这是白泽操作桌面谷歌浏览器的统一入口。用户提到「桌面浏览器/受控浏览器」时只使用本工具打开，不要叠加 browser_open / browser_navigate。click / type / click_text / highlight 会在**网页页面内**用一条红色实线框出目标元素（线框直接注入页面、随操作即时出现，点击后仍在页面上停留约 1 秒，用户能看清白泽动的是哪个元素），不要指望屏幕上有额外的覆盖层方框。\
+        "驱动可见的桌面谷歌浏览器执行完整交互操作（持久化登录态，多标签页）：goto 跳转、click 点击、type 输入、wait 等待、screenshot 截图、evaluate 执行 JS、content 读取页面文本、new_tab 新建标签页、tabs 列出标签页、switch_tab 切换标签页、close_tab 关闭标签页、scroll 滚动、key 按键（支持组合键与多步，如 ctrl+a、ctrl+enter、ctrl+a Backspace）、reload 刷新、back 后退、forward 前进、state 感知浏览器状态、look 感知当前页面（截图+OCR 文本）、click_text 按可见文字定位并点击（看→点闭环）、highlight 只把目标元素框出来不点击（给用户看清指代）、scan 把当前页面或指定模块的可交互元素用编号线框全部标出来（返回编号清单）、click_mark 按 scan 的编号点击、handle_dialog 处理页面弹出的 JS 对话框、tidy_tabs 收尾清理白泽自己开的空白标签页、upload 直接给文件输入框塞文件（绕过系统文件选择器）、set_download_dir / downloads 设置并查看下载目录。这是白泽操作桌面谷歌浏览器的统一入口。用户提到「桌面浏览器/受控浏览器」时只使用本工具打开，不要叠加 browser_open / browser_navigate。click / type / click_text / highlight 会在**网页页面内**用一条红色实线框出目标元素（线框直接注入页面、随操作即时出现，点击后仍在页面上停留约 1 秒，用户能看清白泽动的是哪个元素），不要指望屏幕上有额外的覆盖层方框。\
 【每一步都会告诉你「现在在哪个标签页」】每一步返回值都带 tab_id / page_url / page_title，那是**本步实际操作**的标签页：动手前先核对一眼是不是你要的页面，不是就用 switch_tab 切回去或重新 goto。点击/按键/执行 JS 若让浏览器多开了一个标签页（target=_blank、登录跳转、广告弹窗），返回值会多出 new_tabs 并在 note 里说明；此时你的操作对象**仍在原标签页**且已重新切回前台（页面内的红色线框也画在它上面）——确实要处理新页面就 switch_tab，无关弹窗用 close_tab 关掉。原来操作的标签页若已被关掉，note 会说明「本次落在新建的空白标签页上」，先 tabs 看清现有页面再回目标页。失败时返回信息里也会带 [本步页面]，别把「在错的页面上找不到元素」当成页面本身有问题。\
 【提速：同轮批量派发】把已经能确定的操作在==同一轮==里一次性发出多个 browser_act 调用（系统按顺序执行，只算一次模型往返）；序列首步是 goto 时后面可以放心跟 click/type。每做一步就单独等一轮，是浏览器操作慢的主因。\
 【定位零成本】click_text / highlight 先在 DOM 里按文字定位（一次 evaluate，通常十几毫秒），命中即点，不需要先截图、也不需要先 look 看页面；反过来也不要为了看清页面反复调 look / screenshot（每次截图 0.2s 起，OCR 更慢）。只有 DOM 定位失败（文字是图片 / 在 iframe 里 / 纯图标按钮）时才自动回落 OCR 与视觉定位。\
@@ -3233,7 +3352,7 @@ impl Tool for BrowserActTool {
                 "action": { "type": "string", "enum": ["goto", "click", "type", "wait", "screenshot", "evaluate", "content", "new_tab", "tabs", "switch_tab", "close_tab", "tidy_tabs", "scroll", "key", "reload", "back", "forward", "state", "look", "click_text", "highlight", "scan", "click_mark", "handle_dialog", "upload", "set_download_dir", "downloads"], "description": "操作类型" },
                 "url": { "type": "string", "description": "goto / new_tab 时的目标 URL" },
                 "selector": { "type": "string", "description": "click / type / highlight / upload / scroll 时的 CSS 选择器（highlight 与 target 二选一；upload 指 file 输入框；scroll 指要滚到视口内的元素）" },
-                "text": { "type": "string", "description": "type 时输入的文本；handle_dialog 且对话框是 prompt 时填入的内容" },
+                "text": { "type": "string", "description": "type 时输入的文本（整串一次写入，支持中文/emoji；传空串 + clear=true 即清空输入框）；handle_dialog 且对话框是 prompt 时填入的内容" },
                 "target": { "type": "string", "description": "click_text / highlight / scroll 时要定位的控件可见文字或描述，如「登录」「搜索」「下一步」" },
                 "scope": { "type": "string", "description": "scan 时限定范围：某个模块/区域的名称或描述（如「侧边栏」「搜索区」「评论区」「工具栏」，也可用其 id / aria-label / class 片段）。留空表示扫描整个视口" },
                 "limit": { "type": "number", "description": "scan 时最多标出多少个元素（默认 40，上限 80）；downloads 时最多列几个文件（默认 8）" },
@@ -3241,7 +3360,8 @@ impl Tool for BrowserActTool {
                 "js": { "type": "string", "description": "evaluate 时的 JS 表达式" },
                 "seconds": { "type": "number", "description": "wait 时等待秒数（默认 1）" },
                 "tab_id": { "type": "string", "description": "目标标签页 target id（tabs 返回）。switch_tab 必填；close_tab 可省略（省略=关掉当前操作的那个标签页）；tidy_tabs 用它指定「保留哪一个」；goto / click / type / scroll / key / reload / back / forward / screenshot / evaluate / content / look / click_text 可选，默认作用于当前活跃标签页" },
-                "key": { "type": "string", "description": "key 时按下的键名，如 Enter、Tab、ArrowDown、ArrowUp、Escape、Backspace 等" },
+                "key": { "type": "string", "description": "key 时按下的键，支持组合键与多步：Enter、Tab、Escape、ArrowDown、Backspace、ctrl+a、shift+Tab、ctrl+enter；多步用空格分隔，如 ctrl+a Backspace" },
+                "clear": { "type": "boolean", "description": "type 时是否先清空输入框原有内容（默认 false 为追加）。填同一输入框第二次时要传 true，否则会越填越长" },
                 "amount": { "type": "number", "description": "scroll 时盲滚的像素，正数向下、负数向上（默认 500）。**能给出 selector 或 target 就别用它**——定位式滚动不会把页面丢到你没在看的地方" },
                 "accept": { "type": "boolean", "description": "handle_dialog 时是否点「确定」（true 确定 / false 取消，默认 true）" },
                 "files": { "type": "string", "description": "upload 时要上传的文件绝对路径；多个文件用数组" },
@@ -3316,6 +3436,7 @@ impl Tool for BrowserActTool {
                 let tab = resolve_tab(tab_id)?;
                 let sel = args["selector"].as_str().ok_or("缺少参数 selector")?;
                 let text = args["text"].as_str().unwrap_or("");
+                let clear = args["clear"].as_bool().unwrap_or(false);
                 // 同 click：快速探测，iframe 内元素交由上层深度填充兜底
                 let el = tab
                     .wait_for_element_with_custom_timeout(sel, Duration::from_secs(3))
@@ -3324,10 +3445,55 @@ impl Tool for BrowserActTool {
                 if mark_selector_css(&tab, sel, MARK_HOLD_ACT).is_some() {
                     std::thread::sleep(MARK_LEAD);
                 }
-                // 先聚焦元素，再输入文本（headless_chrome 的 type_str 作用于当前焦点）
+                // 先聚焦元素，再输入文本（输入一律作用于当前焦点）
                 el.click().map_err(|e| format!("聚焦失败: {e}"))?;
-                tab.type_str(text).map_err(|e| format!("输入失败: {e}"))?;
-                Ok(json!({ "ok": true }))
+
+                // clear：先全选，后续整串写入会替换掉选区。比逐个退格快，
+                // 也不受输入法/emoji 影响（退格对组合字符会拆成半个）
+                if clear {
+                    tab.press_key_with_modifiers("a", Some(&[ModifierKey::Ctrl]))
+                        .map_err(|e| format!("全选失败: {e}"))?;
+                    if text.is_empty() {
+                        tab.press_key("Backspace")
+                            .map_err(|e| format!("清空失败: {e}"))?;
+                    }
+                }
+
+                let mut mode = "insert_text";
+                let before = active_value_probe(&tab);
+                if !text.is_empty() {
+                    // 快路径：一次 Input.insertText 写入整串（逐字符是每个字符 1~2 次 CDP
+                    // 调用，长文本会明显慢），并且天然支持中文与 emoji。
+                    tab.send_character(text).map_err(|e| format!("输入失败: {e}"))?;
+                    // 自检：自定义编辑器可能吞掉 insertText。只有「值长度完全没变、
+                    // 且尾部也找不到输入内容」才回落逐字符——避免已经写进去却重复输入。
+                    if let (Some((tag, before_len, _)), Some((_, after_len, tail))) =
+                        (before, active_value_probe(&tab))
+                    {
+                        let probe: String = text
+                            .chars()
+                            .rev()
+                            .take(24)
+                            .collect::<Vec<char>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
+                        let flat = |s: &str| -> String {
+                            s.chars().filter(|c| !c.is_whitespace()).collect()
+                        };
+                        let tail_flat = flat(&tail);
+                        let probe_flat = flat(&probe);
+                        if tag != "IFRAME"
+                            && after_len == before_len
+                            && !tail_flat.contains(probe_flat.as_str())
+                        {
+                            tab.type_str(text)
+                                .map_err(|e| format!("输入失败（回落逐字符）: {e}"))?;
+                            mode = "keys";
+                        }
+                    }
+                }
+                Ok(json!({ "ok": true, "cleared": clear, "mode": mode }))
             }
             // 只标记不点击：把目标元素框出来，给用户看清「白泽正在看/指的是哪个元素」
             // （用带标签的块：这几处早期命中要直接结束分支，但不能用 return 跳过
@@ -3843,8 +4009,27 @@ impl Tool for BrowserActTool {
             "key" => {
                 let tab = resolve_tab(tab_id)?;
                 let key = args["key"].as_str().ok_or("缺少参数 key")?;
-                tab.press_key(key).map_err(|e| format!("按键失败: {e}"))?;
-                Ok(json!({ "ok": true }))
+                // 组合键（ctrl+a）+ 多步序列（"ctrl+a delete"）都在这里一次敲完：
+                // 每多一次工具调用就多一轮模型往返，键盘操作最容易因此变慢。
+                let steps = crate::capability::split_key_sequence(key);
+                if steps.is_empty() {
+                    return Err("key 为空".into());
+                }
+                let mut pressed: Vec<String> = Vec::new();
+                for (i, step) in steps.iter().enumerate() {
+                    let (mods, main) = parse_browser_chord(step)?;
+                    let res = if mods.is_empty() {
+                        tab.press_key(&main)
+                    } else {
+                        tab.press_key_with_modifiers(&main, Some(&mods))
+                    };
+                    res.map_err(|e| format!("按键失败（{step}）: {e}"))?;
+                    pressed.push(step.clone());
+                    if i + 1 < steps.len() {
+                        std::thread::sleep(Duration::from_millis(40));
+                    }
+                }
+                Ok(json!({ "ok": true, "pressed": pressed }))
             }
             "reload" => {
                 let tab = resolve_tab(tab_id)?;

@@ -9,7 +9,8 @@ use uiautomation::inputs::Keyboard;
 use uiautomation::types::TreeScope;
 use uiautomation::{UIElement, UIAutomation};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
-    self, keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+    self, keybd_event, VkKeyScanW, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC,
+    VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW;
 use ::windows::Win32::UI::WindowsAndMessaging::{
@@ -38,46 +39,193 @@ const UIA_WALK_TIMEOUT_MS: u64 = 8000;
 /// observe（read_screen 全树构建）遍历比 interactive_map 更重，超时放宽到 12s
 const OBSERVE_TIMEOUT_MS: u64 = 12000;
 
-/// 组合键注入（虚拟键码路径）：keys 按 + 分割，全部部件可解析为虚拟键码时，
-/// 用 keybd_event 注入（修饰键按下 → 末键敲击 → 修饰键逆序抬起），返回 Some(())。
-/// uiautomation crate 的 send_keys 虚拟键表不含小键盘(numpad*)/媒体键(volume_up 等)，
-/// 传给它的 {NUMPAD0} 会报 "Error Input Format"，normalize_keys 对表外键也只透传原文
-/// （"numpad1" 会被当 7 个字符打进输入框）。因此 key_press 优先走本路径，
-/// 任一部件无法解析（如 "+" 号键）时返回 None 交回 send_keys 通道。
-fn send_keys_via_vk(keys: &str) -> Option<()> {
-    let parts: Vec<&str> = keys
-        .split('+')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.is_empty() {
+/// 组合键解析结果（三态）。刻意区分「解析不了」与「写法有误」：
+/// 前者交回 uiautomation 的 send_keys 文本通道，后者直接报错——
+/// 否则 ctrl+ab 这种笔误会静默退化成「把键名当文本打出去」。
+enum Chord {
+    /// 可注入：要按住的修饰键（按下顺序）+ 主键
+    Keys(Vec<VIRTUAL_KEY>, VIRTUAL_KEY),
+    /// 键名不在表内 → 交回 send_keys（支持 {Ctrl}v 这类写法与普通文本）
+    Fallback,
+    /// 写法有误（例如给了两个主键）→ 报错，不静默降级
+    Invalid(String),
+}
+
+fn is_modifier_vk(vk: VIRTUAL_KEY) -> bool {
+    matches!(vk.0, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
+}
+
+/// 符号键的写法归一：既接受字符本身（`+`、`!`），也接受单词（`plus`、`exclaim`）。
+/// 单词别名是为了让模型能写 `ctrl+plus`——`ctrl++` 这种写法太容易被转义搞坏。
+fn symbol_alias(name: &str) -> Option<char> {
+    let mut it = name.chars();
+    if let (Some(c), None) = (it.next(), it.next()) {
+        return Some(c);
+    }
+    let c = match name.to_ascii_lowercase().as_str() {
+        "plus" => '+',
+        "minus" => '-',
+        "equal" | "equals" => '=',
+        "comma" => ',',
+        "period" | "dot" => '.',
+        "slash" => '/',
+        "backslash" => '\\',
+        "semicolon" => ';',
+        "quote" | "apostrophe" => '\'',
+        "bracketleft" | "lbracket" | "leftbracket" => '[',
+        "bracketright" | "rbracket" | "rightbracket" => ']',
+        "backquote" | "grave" | "backtick" => '`',
+        "tilde" => '~',
+        "exclaim" | "bang" => '!',
+        "at" => '@',
+        "hash" => '#',
+        "dollar" => '$',
+        "percent" => '%',
+        "caret" => '^',
+        "ampersand" => '&',
+        "asterisk" | "star" => '*',
+        "lparen" | "leftparen" => '(',
+        "rparen" | "rightparen" => ')',
+        "underscore" => '_',
+        "colon" => ':',
+        "doublequote" => '"',
+        "less" | "lt" => '<',
+        "greater" | "gt" => '>',
+        "question" => '?',
+        "pipe" => '|',
+        "lbrace" | "leftbrace" => '{',
+        "rbrace" | "rightbrace" => '}',
+        "space" | "spacebar" => ' ',
+        _ => return None,
+    };
+    Some(c)
+}
+
+/// 字符 → (虚拟键码, 该字符在当前键盘布局下需要的修饰状态位)。
+/// 状态位由 `VkKeyScanW` 给出（1=Shift 2=Ctrl 4=Alt），所以 `!`、`+`、`:`、
+/// 大写 `A` 这类「必须带 Shift 才是它」的字符才能按对，而不是按成相邻的键。
+fn char_key(name: &str) -> Option<(VIRTUAL_KEY, u8)> {
+    let ch = symbol_alias(name)?;
+    if !ch.is_ascii() {
         return None;
     }
-    let vks: Vec<VIRTUAL_KEY> = parts.iter().map(|p| str_to_vk(p)).collect::<Option<Vec<_>>>()?;
+    let packed = unsafe { VkKeyScanW(ch as u16) };
+    if packed == -1 {
+        return None;
+    }
+    let p = packed as u16;
+    Some((VIRTUAL_KEY(p & 0xFF), (p >> 8) as u8))
+}
+
+/// key_down / key_up 用的键名解析：先查键名表，再按字符解析（"A"、"!"、";"）。
+/// 按住/抬起一次只发一个虚拟键，字符自带的状态位不会自动补——要按出符号本身用 key_press。
+fn resolve_any_key(name: &str) -> Option<VIRTUAL_KEY> {
+    str_to_vk(name).or_else(|| char_key(name).map(|(vk, _)| vk))
+}
+
+/// 注入一组修饰键 + 主键。
+/// 修饰键按下后必须留间隔：零间隔批量事件（ctrl down 与 t down 同批到达）
+/// 在 Chromium 系应用（Chrome/Edge/Electron）上快捷键不触发——实测 ctrl+t/ctrl+l
+/// 全部被吞而单键 f5 正常；真实键盘击键天然有时间差。同时填入扫描码
+/// （scan=0 的合成键在部分 Chromium 版本同样被忽略）。
+fn inject_chord(mods: &[VIRTUAL_KEY], main: VIRTUAL_KEY) {
     unsafe {
-        // 修饰键按下后必须留间隔：零间隔批量事件（ctrl down 与 t down 同批到达）
-        // 在 Chromium 系应用（Chrome/Edge/Electron）上快捷键不触发——实测 ctrl+t/ctrl+l
-        // 全部被吞而单键 f5 正常；真实键盘击键天然有时间差。同时填入扫描码
-        // （scan=0 的合成键在部分 Chromium 版本同样被忽略）。
-        for vk in &vks[..vks.len() - 1] {
+        for vk in mods {
             let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
             keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYDOWN, 0);
             std::thread::sleep(std::time::Duration::from_millis(30));
         }
-        let last = vks.last().unwrap();
-        let last_sc = MapVirtualKeyW(last.0 as u32, MAPVK_VK_TO_VSC);
-        keybd_event(last.0 as u8, last_sc as u8, KEYEVENTF_KEYDOWN, 0);
+        let sc = MapVirtualKeyW(main.0 as u32, MAPVK_VK_TO_VSC);
+        keybd_event(main.0 as u8, sc as u8, KEYEVENTF_KEYDOWN, 0);
         std::thread::sleep(std::time::Duration::from_millis(20));
-        keybd_event(last.0 as u8, last_sc as u8, KEYEVENTF_KEYUP, 0);
+        keybd_event(main.0 as u8, sc as u8, KEYEVENTF_KEYUP, 0);
         std::thread::sleep(std::time::Duration::from_millis(30));
-        for vk in vks[..vks.len() - 1].iter().rev() {
+        for vk in mods.iter().rev() {
             let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
             keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYUP, 0);
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
     }
-    Some(())
 }
+
+/// 解析单个组合键（多步序列由调用方先拆开）
+fn parse_chord(keys: &str) -> Chord {
+    let mut k = keys.trim();
+    if k.is_empty() {
+        return Chord::Fallback;
+    }
+    // "ctrl++" 结尾两个加号里，后一个是主键本身而不是分隔符
+    let mut literal_plus = false;
+    if k.ends_with("++") {
+        literal_plus = true;
+        k = &k[..k.len() - 1];
+    }
+    let mut parts: Vec<&str> = k
+        .split('+')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if literal_plus {
+        parts.push("+");
+    }
+    if parts.is_empty() {
+        return Chord::Fallback;
+    }
+
+    let mut mods: Vec<VIRTUAL_KEY> = Vec::new();
+    for p in &parts[..parts.len() - 1] {
+        match str_to_vk(p) {
+            Some(vk) if is_modifier_vk(vk) => mods.push(vk),
+            Some(_) => {
+                return Chord::Invalid(format!(
+                    "「{p}」不是修饰键。组合键写法是 修饰键+主键（如 ctrl+s），一次只能按一个主键；\
+                     多步请用空格分隔，例如 \"ctrl+a delete\""
+                ))
+            }
+            None => return Chord::Fallback,
+        }
+    }
+
+    // 主键：先按字符/符号别名解析（会带出该字符需要的 Shift 等状态），再查键名表
+    let main_raw = parts[parts.len() - 1];
+    let main = if let Some((vk, state)) = char_key(main_raw) {
+        if state & 1 != 0 {
+            mods.push(VK_SHIFT);
+        }
+        if state & 2 != 0 {
+            mods.push(VK_CONTROL);
+        }
+        if state & 4 != 0 {
+            mods.push(VK_MENU);
+        }
+        vk
+    } else {
+        match str_to_vk(main_raw) {
+            Some(vk) => vk,
+            None => return Chord::Fallback,
+        }
+    };
+    Chord::Keys(mods, main)
+}
+
+/// 按一步键（可以是组合键）。Invalid 直接报错，Fallback 走 send_keys 文本通道。
+fn press_step(step: &str) -> Result<(), String> {
+    match parse_chord(step) {
+        Chord::Keys(mods, main) => {
+            inject_chord(&mods, main);
+            Ok(())
+        }
+        Chord::Fallback => Keyboard::new()
+            .send_keys(&normalize_keys(step))
+            .map_err(|e| format!("按键失败: {e}")),
+        Chord::Invalid(msg) => Err(msg),
+    }
+}
+
+/// 说明：uiautomation crate 的 send_keys 虚拟键表不含小键盘(numpad*)/媒体键
+/// (volume_up 等)，传给它的 {NUMPAD0} 会报 "Error Input Format"，normalize_keys
+/// 对表外键也只透传原文（"numpad1" 会被当 7 个字符打进输入框）。因此 key_press
+/// 一律优先走上面的虚拟键码路径（press_step），解析不了才回退 send_keys。
 
 pub struct WindowsCapability {
     /// setup 阶段经 capability::init_capability_app 注入（光圈事件需要）
@@ -572,29 +720,32 @@ impl Capability for WindowsCapability {
                 })
             }
             Action::KeyPress { keys } => {
-                // 优先虚拟键码注入：覆盖小键盘/媒体键等 send_keys 虚拟键表外的键，
-                // 任意部件无法解析（如 "+" 字符键）再回退 send_keys 混合通道
-                if send_keys_via_vk(keys).is_some() {
-                    Ok(ActionResult {
-                        ok: true,
-                        description: format!("按键: {keys}"),
-                    })
-                } else {
-                    let normalized = normalize_keys(keys);
-                    Keyboard::new()
-                        .send_keys(&normalized)
-                        .map_err(|e| CapError::InvalidState(format!("按键失败: {e}")))?;
-                    Ok(ActionResult {
-                        ok: true,
-                        description: format!("按键: {keys}"),
-                    })
+                // 支持多步序列：一次调用里按顺序敲完（如 "ctrl+a delete"），
+                // 省掉「选定再删除」这类常见两步操作的一次模型往返。
+                let steps = crate::capability::split_key_sequence(keys);
+                if steps.is_empty() {
+                    return Err(CapError::InvalidState("keys 为空".into()));
                 }
+                for (i, step) in steps.iter().enumerate() {
+                    press_step(step).map_err(CapError::InvalidState)?;
+                    if i + 1 < steps.len() {
+                        // 两步之间留一点间隔，避免前一步的界面响应还没到就发下一步
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
+                }
+                Ok(ActionResult {
+                    ok: true,
+                    description: format!("按键: {keys}"),
+                })
             }
             Action::KeyDown { key } => {
-                let vk = str_to_vk(key)
+                // 补扫描码：key_press 早就填了，key_down/key_up 之前传的是 0——
+                // scan=0 的合成键在部分 Chromium 版本会被忽略，导致「按住 Shift 多选」失效
+                let vk = resolve_any_key(key)
                     .ok_or_else(|| CapError::InvalidState(format!("未知键名: {key}")))?;
                 unsafe {
-                    keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYDOWN, 0);
+                    let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
+                    keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYDOWN, 0);
                 }
                 Ok(ActionResult {
                     ok: true,
@@ -602,10 +753,11 @@ impl Capability for WindowsCapability {
                 })
             }
             Action::KeyUp { key } => {
-                let vk = str_to_vk(key)
+                let vk = resolve_any_key(key)
                     .ok_or_else(|| CapError::InvalidState(format!("未知键名: {key}")))?;
                 unsafe {
-                    keybd_event(vk.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+                    let sc = MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC);
+                    keybd_event(vk.0 as u8, sc as u8, KEYEVENTF_KEYUP, 0);
                 }
                 Ok(ActionResult {
                     ok: true,
@@ -1289,16 +1441,16 @@ fn str_to_vk(name: &str) -> Option<VIRTUAL_KEY> {
     let n = name.trim().to_ascii_lowercase();
     let vk = match n.as_str() {
         // 修饰键
-        "ctrl" | "control" => VK_CONTROL,
+        "ctrl" | "control" | "ctl" => VK_CONTROL,
         "lctrl" | "lcontrol" => VK_LCONTROL,
         "rctrl" | "rcontrol" => VK_RCONTROL,
-        "alt" | "menu" => VK_MENU,
-        "lalt" | "lmenu" => VK_LMENU,
-        "ralt" | "rmenu" => VK_RMENU,
+        "alt" | "menu" | "option" | "opt" => VK_MENU,
+        "lalt" | "lmenu" | "loption" => VK_LMENU,
+        "ralt" | "rmenu" | "roption" => VK_RMENU,
         "shift" => VK_SHIFT,
         "lshift" => VK_LSHIFT,
         "rshift" => VK_RSHIFT,
-        "win" | "meta" | "lwin" | "lwindows" => VK_LWIN,
+        "win" | "meta" | "cmd" | "command" | "super" | "lwin" | "lwindows" => VK_LWIN,
         "rwin" | "rwindows" => VK_RWIN,
         // 常用键
         "enter" | "return" => VK_RETURN,
@@ -1335,6 +1487,19 @@ fn str_to_vk(name: &str) -> Option<VIRTUAL_KEY> {
         "numpad_multiply" => VK_MULTIPLY,
         "numpad_divide" => VK_DIVIDE,
         "numpad_decimal" => VK_DECIMAL,
+        // 符号键（OEM）：既接受符号本身，也接受单词别名。这里给的是「物理键」，
+        // 符号本身需要 Shift 的部分（如 "+" "?" ":"）由 char_key 在 key_press 里补齐
+        "+" | "plus" | "=" | "equal" | "equals" => VK_OEM_PLUS,
+        "-" | "minus" | "_" | "underscore" => VK_OEM_MINUS,
+        "," | "comma" => VK_OEM_COMMA,
+        "." | "period" | "dot" => VK_OEM_PERIOD,
+        "/" | "slash" | "?" | "question" => VK_OEM_2,
+        ";" | "semicolon" | ":" | "colon" => VK_OEM_1,
+        "'" | "quote" | "apostrophe" | "\"" | "doublequote" => VK_OEM_7,
+        "[" | "bracketleft" | "lbracket" | "leftbracket" => VK_OEM_4,
+        "]" | "bracketright" | "rbracket" | "rightbracket" => VK_OEM_6,
+        "\\" | "backslash" | "|" | "pipe" => VK_OEM_5,
+        "`" | "backquote" | "grave" | "backtick" | "~" | "tilde" => VK_OEM_3,
         _ => {
             // 单字母 / 单数字
             if n.len() == 1 {
@@ -1370,34 +1535,60 @@ fn str_to_vk(name: &str) -> Option<VIRTUAL_KEY> {
 
 #[cfg(test)]
 mod key_tests {
-    use super::send_keys_via_vk;
-    use super::str_to_vk;
+    use super::{char_key, parse_chord, str_to_vk, Chord, VIRTUAL_KEY};
 
-    /// send_keys 的虚拟键表不含小键盘/媒体键——这些键名必须全部能被
+    /// 解析出「修饰键 + 主键」即视为可注入
+    fn chord(keys: &str) -> Option<(Vec<VIRTUAL_KEY>, VIRTUAL_KEY)> {
+        match parse_chord(keys) {
+            Chord::Keys(mods, main) => Some((mods, main)),
+            _ => None,
+        }
+    }
+
+    /// send_keys 的虚拟键表不含小键盘/媒体键/符号键——这些键名必须全部能被
     /// str_to_vk 解析（key_press 才能走虚拟键码路径，而不是把键名当文本打出去）
     #[test]
-    fn str_to_vk_covers_numpad_and_media() {
+    fn str_to_vk_covers_numpad_media_and_symbols() {
         for key in [
             "numpad0", "numpad5", "numpad9", "numpad_add", "numpad_subtract",
             "numpad_multiply", "numpad_divide", "numpad_decimal",
             "volume_up", "volume_down", "volume_mute", "media_play_pause",
             "media_next", "media_prev", "media_stop",
+            ";", "=", "[", "]", "\\", "/", "-", ",", ".", "'", "`",
         ] {
             assert!(str_to_vk(key).is_some(), "str_to_vk 缺少键名: {key}");
         }
     }
 
-    /// 组合键解析：全部件可解析 → 走虚拟键码路径；含未注册符号 → 回退 send_keys
+    /// 组合键解析：修饰键 + 主键；符号键自动补 Shift；两个主键属于写法错误
     #[test]
-    fn combo_and_fallback_paths() {
-        assert!(send_keys_via_vk("ctrl+shift+esc").is_some());
-        assert!(send_keys_via_vk("alt+tab").is_some());
-        assert!(send_keys_via_vk("numpad1").is_some());
-        assert!(send_keys_via_vk("volume_mute").is_some());
-        assert!(send_keys_via_vk("ctrl+f5").is_some());
-        // "+" 键不在 str_to_vk 表中 → 返回 None 交回 normalize_keys+send_keys 通道
-        assert!(send_keys_via_vk("ctrl++").is_none());
-        assert!(send_keys_via_vk("").is_none());
+    fn combos_and_symbol_keys() {
+        assert!(chord("ctrl+shift+esc").is_some());
+        assert!(chord("alt+tab").is_some());
+        assert!(chord("numpad1").is_some());
+        assert!(chord("volume_mute").is_some());
+        assert!(chord("ctrl+f5").is_some());
+        // "+" 是 Shift+=，必须自动补出 Shift，否则敲出来是 "="
+        let (mods, main) = chord("ctrl++").expect("ctrl++ 应可解析");
+        assert_eq!(main.0, VIRTUAL_KEY(0xBB).0, "+ 应映射到 VK_OEM_PLUS");
+        assert!(mods.iter().any(|m| m.0 == 0x10), "ctrl++ 应自动带 Shift");
+        assert!(chord("ctrl+plus").is_some(), "单词别名 plus 也应可解析");
+        // 大写字母同理（否则 key_press(\"A\") 会敲出小写 a）
+        let (mods_a, _) = chord("A").expect("A 应可解析");
+        assert!(mods_a.iter().any(|m| m.0 == 0x10), "大写 A 应自动带 Shift");
+        // 两个主键 → 明确报错，不能静默把键名当文本打出去
+        assert!(matches!(parse_chord("ctrl+a+b"), Chord::Invalid(_)));
+        assert!(chord("").is_none());
+    }
+
+    /// 字符解析要能用当前键盘布局算出修饰位（'!' 需要 Shift+1）
+    #[test]
+    fn char_key_reports_shift_state() {
+        let (_, state) = char_key("!").expect("! 应可解析");
+        assert!(state & 1 != 0, "! 需要 Shift");
+        let (vk, state) = char_key("a").expect("a 应可解析");
+        assert_eq!(state & 1, 0, "小写 a 不需要 Shift");
+        assert_eq!(vk.0, 0x41);
     }
 }
 
@@ -1696,11 +1887,15 @@ pub fn macro_impl(steps: &Value) -> Result<Value, String> {
                 let keys = s["keys"]
                     .as_str()
                     .ok_or_else(|| format!("第 {} 步缺少 keys", i + 1))?;
-                // 与 act(KeyPress) 一致：优先虚拟键码注入（小键盘/媒体键可用的前提）
-                if send_keys_via_vk(keys).is_none() {
-                    Keyboard::new()
-                        .send_keys(&normalize_keys(keys))
-                        .map_err(|e| format!("第 {} 步按键失败: {e}", i + 1))?;
+                // 与 act(KeyPress) 一致：虚拟键码注入优先，写错的组合键直接报错
+                // （不再静默退化成「把键名当文本打出去」），多步序列一次敲完
+                let steps = crate::capability::split_key_sequence(keys);
+                for (j, step) in steps.iter().enumerate() {
+                    press_step(step)
+                        .map_err(|e| format!("第 {} 步按键失败（{step}）: {e}", i + 1))?;
+                    if j + 1 < steps.len() {
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                    }
                 }
                 executed.push(format!("key:{keys}"));
             }
