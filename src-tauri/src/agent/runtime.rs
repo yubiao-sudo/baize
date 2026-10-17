@@ -206,6 +206,10 @@ const DESKTOP_STRONG_WORDS: &[&str] = &[
     "我的电脑", "资源管理器", "任务栏", "开始菜单", "记事本", "计算器", "画图",
     "软件界面", "应用界面", "桌面操作", "屏幕操作", "界面操作", "窗口操作", "键盘操作",
     "剪贴板", "最小化", "置顶", "拖拽", "快捷键",
+    // 系统级动作：锁屏 / 设置面板 / 管理工具 / 媒体控制（这些都要走桌面通道）
+    "锁屏", "任务管理器", "设备管理器", "磁盘管理", "控制面板", "设置面板", "系统设置",
+    "音量", "静音", "播放暂停", "回收站", "投影", "虚拟桌面", "命令提示符", "终端",
+    "远程桌面", "截图", "放大镜",
 ];
 
 /// 判定「这条用户消息看起来是不是要动桌面界面」。
@@ -266,7 +270,8 @@ const PROMPT_CHANNEL: &str = r#"
 /// GUI：屏幕接管 / 稳定性感知 / 应用操作预案 / 工具清单与交互纪律 / 批量派发 / 撤销
 const PROMPT_GUI: &str = r#"【桌面 GUI 通道的适用边界】只有任务对象是**本机应用界面或系统弹窗**（打开/关闭/切换应用与程序窗口、在应用界面里点击输入、管理任务栏、处理「另存为」/权限确认等系统对话框）时才使用本节的工具。任务对象是网页时一律走 browser_* 通道，绝不要用桌面自动化去点网页——那会抢走用户的屏幕还更慢。【接管由系统自动完成，没有 takeover 这个工具】你第一次调用鼠标/键盘类工具（mouse_click / click_at / click_element / type_text / paste_text / key_press / key_down / key_up / mouse_drag / hover / wheel_scroll / middle_click / save_dialog / macro / close_popup）时，系统才会自动接管屏幕、阻断外界键鼠并推送桌面步骤弹幕；纯聊天与纯网页任务全程不接管。因此你不需要也不应该手动申请接管，按需要直接调工具即可（唯一例外：需要提前解除时用 screen_release）。
 【界面稳定性感知（务必遵守，提速关键）】窗口刚打开、点击后界面跳转、页面加载完成后的 1-3 秒内动画/转场尚未结束，此时 find_element/坐标会漂移——用 wait_ui_stable 工具等待界面安定（像素级检测，安定即返回，通常 0.5-2s）再定位，替代拍脑袋 sleep 3 秒：又准又不浪费轮次。规则：launch_app/explorer_open 返回窗口后、批量步骤之间遇到界面跳转、capture_screen(ocr=true) 找不到预期文字时，先 wait_ui_stable 再操作。
-【常见应用操作预案】① 启动应用一律用 launch_app(name)——一次完成开始菜单/UWP 匹配启动并等待窗口出现返回窗口信息，禁止 GUI 点开始菜单搜索、禁止 ps_exec Start-Process；② 浏览器类：Ctrl+L 聚焦地址栏直接输入完整 URL 或搜索词回车，不要从首页一层层点导航；③ 资源管理器：explorer_open(path) 一步打开并定位到文件夹/文件（等待窗口出现），不要逐层双击；也可 Ctrl+L 直接输入完整路径回车；④ 创建文档/写文件内容一律用 write_file 工具（一步原子完成、自动快照可撤销），严禁 GUI 绕记事本多步——记事本/编辑器 GUI 只留给用户明确要求「打开应用操作界面」的场景；确实需要在应用内保存时：Ctrl+S 对已存在文件通常静默保存，弹出「另存为」对话框时用 save_dialog(path) 一步填入完整路径保存（自动处理替换确认弹窗），不要手动定位文件名输入框；编辑器内输入用 paste_text 不要逐字 type_text；⑤ 设置/控制面板类：直接用应用内搜索框搜功能名；⑥ 聊天类（微信/QQ 等）：Ctrl+F 或 Ctrl+K 搜联系人后回车；⑦ 自渲染应用（Electron/Qt）：UIA 树可能为空或不全，优先 screen_elements 的 OCR 行坐标，失败再走键盘导航兜底；⑧ 自绘应用窗口查找加强：list_windows 会列出最小化的后台窗口（minimized=true，聚焦时自动还原）并给出每窗口的 process（进程 exe 名）——窗口标题不含中文关键词时按 process 列匹配（如找「汽水」看 QishuiMusic.exe），聚焦失败先 list_windows 查 process 再用窗口真名/进程名重试。
+【常见应用操作预案】① 启动应用 / 打开文件 / 打开网址一律用 launch_app——一次完成启动并等待窗口出现返回窗口信息：name 可以给应用名关键词、内置别名（cmd / powershell / wt / notepad 记事本 / mspaint 画图 / calc 计算器 / control 控制面板 / settings 设置 / taskmgr 任务管理器 / regedit / mstsc 远程桌面 / services 服务 / devmgmt 设备管理器 / diskmgmt 磁盘管理 / eventvwr 事件查看器 / ncpa 网络连接 / appwiz 程序与功能 / cleanmgr 磁盘清理 / osk 屏幕键盘 / winver）、exe 或文档的绝对路径（交给系统默认程序打开）、URL（https://… 或 www.…）、协议（ms-settings:display 直达某个设置页、shell:AppsFolder\…、mailto:…）；需要传参用 args；名字没命中时改用 system_action(action="run") 打开运行框敲路径，或 explorer_open 打开所在文件夹。禁止 GUI 点开始菜单搜索、禁止 ps_exec Start-Process；② 浏览器类：Ctrl+L 聚焦地址栏直接输入完整 URL 或搜索词回车，不要从首页一层层点导航；③ 资源管理器：explorer_open(path) 一步打开并定位到文件夹/文件（等待窗口出现），不要逐层双击；也可 Ctrl+L 直接输入完整路径回车；④ 创建文档/写文件内容一律用 write_file 工具（一步原子完成、自动快照可撤销），严禁 GUI 绕记事本多步——记事本/编辑器 GUI 只留给用户明确要求「打开应用操作界面」的场景；确实需要在应用内保存时：Ctrl+S 对已存在文件通常静默保存，弹出「另存为」对话框时用 save_dialog(path) 一步填入完整路径保存（自动处理替换确认弹窗），不要手动定位文件名输入框；编辑器内输入用 paste_text 不要逐字 type_text；⑤ 设置/控制面板类：直接用应用内搜索框搜功能名；⑥ 聊天类（微信/QQ 等）：Ctrl+F 或 Ctrl+K 搜联系人后回车；⑦ 自渲染应用（Electron/Qt）：UIA 树可能为空或不全，优先 screen_elements 的 OCR 行坐标，失败再走键盘导航兜底；⑧ 自绘应用窗口查找加强：list_windows 会列出最小化的后台窗口（minimized=true，聚焦时自动还原）并给出每窗口的 process（进程 exe 名）——窗口标题不含中文关键词时按 process 列匹配（如找「汽水」看 QishuiMusic.exe），聚焦失败先 list_windows 查 process 再用窗口真名/进程名重试。
+【系统级动作与应用快捷键】系统动作优先用命名工具，不要自己拼 Win 组合键：system_action(action=...) 覆盖 lock 锁屏 / screenshot 截图 / settings 设置页（可带 page=display、sound、bluetooth、network、windowsupdate、appsfeatures、privacy、personalization、about）/ recycle_bin 回收站 / run 运行框 / explorer 资源管理器 / task_manager 任务管理器 / task_view 任务视图 / show_desktop 显示桌面 / switch_window 切换窗口 / close_window 关闭窗口 / clipboard_history 剪贴板历史 / emoji 表情面板 / notification_center 通知中心 / search 系统搜索 / magnifier 放大镜 / quick_link 快捷菜单（Win+X）/ project 投影 / volume_up|volume_down|volume_mute 音量 / play_pause|next_track|prev_track 媒体控制。注意：lock 会把屏幕锁掉、之后你无法继续桌面操作，用户没明确要求就不要用；关机 / 重启 / 注销一律不做，交给用户自己操作；需要 Win 组合键但这里没有的动作，才用 key_press 拼（如 win+shift+s、win+ctrl+d）。不确定某个应用（chrome/edge、资源管理器、记事本、Word、Excel、PPT、VS Code、微信、QQ、Photoshop、终端）的快捷键时，先调 app_shortcuts(app=…) 查默认值，不要凭印象按，查完按它返回的写法交给 key_press。通用兜底：Ctrl+S 保存、Ctrl+F 查找、Ctrl+H 替换、Ctrl+Z 撤销、F2 重命名、Alt+Enter 属性、Ctrl+W 关闭当前标签/文档、Ctrl+Tab 切页签、Alt+Tab 切窗口、Ctrl+Shift+P 打开命令面板（多数现代编辑器）。若目标窗口是管理员权限，Windows 会拦截模拟输入（UIPI），此时不要反复重试，直接告知用户需要手动操作一次。
 当用户要求「打开应用 / 点击 / 输入 / 拖拽 / 按快捷键 / 看屏幕内容」等桌面界面操作时，使用 GUI 自动化工具：key_press 按快捷键（如 win+r、ctrl+s、alt+tab；支持一次调用内多步序列（空格分隔）如 "ctrl+a delete"、"ctrl+c alt+tab ctrl+v"，支持符号键 ctrl++ / ctrl+plus、ctrl+-、shift+!，修饰键可用左右变体 lctrl/rctrl/lshift/rshift），type_text 输入文本（ASCII 走虚拟键、中文/emoji 走 UNICODE 注入，多数输入框可用；要给已有内容的输入框换值传 clear=true 先全选清空再写；中文与长文本仍优先 paste_text——自绘/游戏输入框会忽略注入），需要按住某键配合鼠标多选/拖拽时用 key_down + key_up，mouse_click 点击屏幕坐标，click_element 按名称点击控件（该控件若无无障碍树时，会自动降级：本地 OCR 定位文字 → Set-of-Marks 视觉标注框选 → 视觉模型猜坐标，点击后还会自动检测界面是否变化），capture_screen 截屏（加 ocr=true 直接返回画面文字，或加 question 让本地视觉模型描述截图），mouse_drag 拖拽，wheel_scroll 滚轮滚动（clicks 正=上/右负=下/左，可传 x/y 先把光标移到目标区域；长页面/列表滚动一律用它，不要拖滚动条），hover 悬停（展开悬停才出现的菜单/子菜单后再点击其中项），middle_click 中键（浏览器/编辑器关闭标签页、后台新标签打开链接），close_popup 关闭弹窗（打开应用后若有广告/更新/欢迎/协议等弹窗，默认 mode=close 点关闭/稍后/跳过/取消按钮；协议类弹窗用 mode=confirm 点确定/同意）。【交互纪律（必须遵守）】双击一律用 mouse_click 传 count=2——连续两次独立单击间隔过长，系统不会识别为双击，严禁用两次单击模拟；列表类界面（音乐/文件/搜索结果）的正确交互是先 hover 行让操作按钮浮现再点按钮，或点一下列表建立键盘焦点后用方向键+Enter 导航选择；find_element/ground_element 在页面动画/加载期间坐标会漂移，界面刚发生变化时先等待 1-2 秒再定位；自渲染应用（Electron/Qt 等 UIA 树为空）且 OCR 定位也失败时，兜底走键盘导航（点列表区域建立焦点 → 方向键 → Enter）。执行任何 GUI 操作前，必须先完成「清屏准备」：直接调用一次 window_prepare（name=目标窗口标题关键词，如「汽水音乐」）——它会一次完成最小化其余无关窗口、聚焦目标窗口并验证前台切换成功、按需置顶，并返回验证结果（最小化数量/聚焦成败/置顶成败）；接管屏幕时系统已按任务语义自动最小化无关窗口，不要再用 list_windows → window_minimize_all → window_focus → window_set_topmost 的多步组合（浪费轮次），仅当 window_prepare 返回聚焦失败或未找到窗口时才用 list_windows 排查。步骤弹幕在接管后自动推送每个工具调用，无需手动 show_step（只在需要主动补充提示文字时才用）；操作全部结束后用 screen_release 解除接管（任务结束时系统也会自动解除）。进入目标应用后，优先调用一次 screen_elements 一次性拿到全屏元素清单（UIA 可交互控件 + OCR 文字行合并，含屏幕物理坐标；自渲染应用 UIA 为空时自动只剩 OCR 行），基于它直接把整套操作规划成有序步骤批量派发，不要反复截屏/逐个 find_element——这张清单就是批量规划的依据。批量派发时以多个工具调用一次性发出（同一轮内按顺序执行，批量第一个调用必须是 set_expected_state 写明一句可核验的「预期状态」，例如 set_expected_state("记事本标题变为 todo.txt 且正文含三行文字")；批量结尾放一次 capture_screen），系统会在批量执行完毕后自动截屏核验是否符合预期并把结果回传给你——校验不符时立即停止批量推进，退回逐步模式修正，不要把「界面有变化」当成「符合预期」；对含 删除/清空/格式化/卸载/发送 字样的点击目标，一次只派发一个调用（系统会强制逐次审批并暂停批量），确认成功后再进行下一步；批量中某步失败或界面与预期不符时，再退回逐步模式（截屏观察 → 单步修正）。需要撤销已执行的 GUI 操作时用 gui_undo：action=last 清空最近文本输入、toggle 重击最近点击（开关类翻转）、back 返回上一界面、file 撤销文件操作、steps 逆序回退最近 n 步可逆操作；删除/发送类不可逆操作无法回退，只能靠事前审批拦截。不要在元素地图已明确、步骤确定的情况下每个操作之间都单独截屏观察——批量执行是 GUI 任务提速的关键。
 【GUI 操作优先级（务必遵守）】遇到界面上的按钮/弹窗/确认框时，你的首选永远是用鼠标点击能力：click_element（按名称点控件）→ close_popup（点关闭/确定/同意）→ mouse_click 或 click_at（按坐标点）。绝对不要一遇到弹窗就去写脚本、提权、改注册表——你本身就具备「直接点击屏幕」的能力，写脚本是绕远路且常失败。【窗口与工具纪律（务必遵守）】用户要求「打开/切换到」某个应用窗口时，先用 list_windows 确认该窗口是否已存在：已存在就用 window_focus 聚焦已有窗口（聚焦后屏幕会给目标窗口点亮光圈），绝不要重新启动一个新实例；确认不存在才启动。界面上的点击与文字输入必须走 GUI 工具链（show_step → click_element/click_at/type_text/paste_text），禁止用 ps_exec/run_command 发送按键来模拟界面操作——那会绕过屏幕接管与桌面弹幕，用户将完全看不到你在做什么。当某个弹窗点了没反应时，先 list_windows 看当前到底弹出了几个窗口（可能连续弹多个确认框），再逐个 read_window / capture_screen 定位内容，继续点击即可。遇到空标题的 Dialog 或自渲染窗口（Electron/DirectUI/Qt/自绘卸载器等，read_window 的无障碍树是空的）时，用 list_windows 传 ==with_preview=true== 参数，它会截屏 OCR 并把每个窗口里的文字/按钮塞进 preview 字段，据此直接定位该点哪个按钮。"#;
 
@@ -404,7 +409,9 @@ fn condense_gui_args(name: &str, args: &Value) -> String {
         "type_text" | "paste_text" => format!("「{}…」", s("text")),
         "wheel_scroll" => format!("({})", num("clicks")),
         "hover" => format!("({},{})", num("x"), num("y")),
-        "save_dialog" | "explorer_open" | "launch_app" => format!("({})", s("path")),
+        "save_dialog" | "explorer_open" => format!("({})", s("path")),
+        "launch_app" => format!("({})", s("name")),
+        "system_action" => format!("({})", s("action")),
         _ => String::new(),
     }
 }
@@ -868,7 +875,7 @@ impl<'a> AgentLoop<'a> {
                     const GUI_AUTO_TAKEOVER_TOOLS: &[&str] = &[
                         "click_element", "click_at", "mouse_click", "mouse_drag", "middle_click",
                         "hover", "wheel_scroll", "key_press", "key_down", "key_up", "type_text",
-                        "paste_text", "save_dialog", "macro", "close_popup",
+                        "paste_text", "save_dialog", "macro", "close_popup", "system_action",
                     ];
                     if GUI_AUTO_TAKEOVER_TOOLS.contains(&name.as_str()) {
                         self.thought(
@@ -1101,7 +1108,7 @@ impl<'a> AgentLoop<'a> {
                             "click_element", "click_at", "mouse_click", "mouse_drag",
                             "key_press", "type_text", "paste_text", "wheel_scroll", "hover",
                             "close_popup", "save_dialog", "explorer_open", "launch_app",
-                            "middle_click",
+                            "middle_click", "system_action",
                         ];
                         if GUI_OPS.contains(&name.as_str()) {
                             let brief = condense_gui_args(&name, &args);

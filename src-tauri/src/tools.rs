@@ -802,6 +802,68 @@ fn find_uwp_app(name: &str) -> Option<(String, String)> {
     None
 }
 
+/// 内置系统程序别名：这些程序在开始菜单索引里经常找不到（控制台程序、.msc 管理单元、
+/// 控制面板项），但 Windows 自己认得。返回 (启动目标, 用于等窗的标题关键词)。
+fn builtin_alias(name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    let n = name
+        .trim()
+        .trim_matches('"')
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    let v = match n.as_str() {
+        // 控制台 / 终端
+        "cmd" | "命令提示符" | "命令窗口" => ("cmd", Some("命令提示符")),
+        "powershell" | "ps" => ("powershell", Some("PowerShell")),
+        "pwsh" => ("pwsh", Some("PowerShell")),
+        "wt" | "terminal" | "windowsterminal" | "终端" | "windows终端" => ("wt", Some("终端")),
+        // 常用小程序
+        "notepad" | "记事本" => ("notepad", Some("记事本")),
+        "mspaint" | "paint" | "画图" => ("mspaint", Some("画图")),
+        "calc" | "calculator" | "计算器" => ("calc", Some("计算器")),
+        "explorer" | "资源管理器" | "文件资源管理器" | "此电脑" => ("explorer", None),
+        "control" | "控制面板" => ("control", Some("控制面板")),
+        "settings" | "设置" | "windowssettings" => ("ms-settings:", Some("设置")),
+        "taskmgr" | "taskmanager" | "任务管理器" => ("taskmgr", Some("任务管理器")),
+        "regedit" | "注册表" | "注册表编辑器" => ("regedit", Some("注册表编辑器")),
+        "mstsc" | "远程桌面" => ("mstsc", Some("远程桌面")),
+        "winver" | "关于windows" => ("winver", None),
+        "osk" | "屏幕键盘" => ("osk", Some("屏幕键盘")),
+        "charmap" | "字符映射表" => ("charmap", None),
+        "cleanmgr" | "磁盘清理" => ("cleanmgr", Some("磁盘清理")),
+        // 管理单元（.msc / .cpl 必须带扩展名，否则 start 不认）
+        "services" | "服务" => ("services.msc", Some("服务")),
+        "devmgmt" | "设备管理器" => ("devmgmt.msc", Some("设备管理器")),
+        "diskmgmt" | "磁盘管理" => ("diskmgmt.msc", Some("磁盘管理")),
+        "eventvwr" | "事件查看器" => ("eventvwr.msc", Some("事件查看器")),
+        "ncpa" | "网络连接" => ("ncpa.cpl", Some("网络连接")),
+        "appwiz" | "程序和功能" | "卸载程序" => ("appwiz.cpl", Some("程序和功能")),
+        "sysdm" | "系统属性" => ("sysdm.cpl", Some("系统属性")),
+        // 浏览器（开始菜单里通常有，这里只是兜底；别带 .exe，交给 App Paths 解析）
+        "chrome" | "谷歌浏览器" => ("chrome", None),
+        "msedge" | "edge" | "浏览器" => ("msedge", None),
+        "firefox" | "火狐" => ("firefox", None),
+        _ => return None,
+    };
+    Some(v)
+}
+
+/// 判断是不是 URI / 协议目标（ms-settings:display、shell:AppsFolder\…、mailto:…）
+/// 盘符（`C:\`、`D:/`）不算协议
+fn is_uri_target(s: &str) -> bool {
+    match s.find(':') {
+        Some(i) if i > 0 => {
+            let head = &s[..i];
+            let drive = head.len() == 1 && head.chars().all(|c| c.is_ascii_alphabetic());
+            !drive
+                && head
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+        }
+        _ => false,
+    }
+}
+
 pub struct LaunchAppTool;
 
 impl Tool for LaunchAppTool {
@@ -809,16 +871,22 @@ impl Tool for LaunchAppTool {
         "launch_app"
     }
     fn description(&self) -> &str {
-        "启动桌面应用（首选方式，一次调用完成）：从开始菜单索引（含 UWP 商店应用）按名称匹配并启动，\
-         然后轮询等待应用窗口出现（最长 wait_secs 秒），返回窗口标题与位置——拿到窗口信息即可直接接 \
-         window_prepare/screen_elements 规划操作，无需再 GUI 点开始菜单或 ps_exec Start-Process"
+        "启动桌面应用 / 打开文件 / 打开网址（一步完成并等待窗口出现，返回窗口位置）。\
+         name 支持四种写法：① 应用名关键词（汽水音乐、记事本、Calculator）；\
+         ② 内置别名（cmd / powershell / wt / notepad / mspaint / calc / control 控制面板 / settings 设置 / \
+         taskmgr 任务管理器 / regedit / mstsc 远程桌面 / services 服务 / devmgmt 设备管理器 / diskmgmt 磁盘管理 / \
+         ncpa 网络连接 / appwiz 程序与功能 / cleanmgr 磁盘清理 / osk 屏幕键盘）；\
+         ③ 绝对路径（exe / .lnk / .bat / 文档 / 文件夹，交给系统默认程序打开）；\
+         ④ URL（https://… 或 www.…）与协议（ms-settings:display、shell:AppsFolder\\…、mailto:…）。\
+         比 GUI 点开始菜单快得多，不要再用 ps_exec Start-Process 或手点开始菜单代替"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "应用名称关键词，如 \"汽水音乐\"、\"记事本\"、\"Calculator\"" },
-                "wait_secs": { "type": "number", "description": "等待窗口出现的秒数，默认 12" }
+                "name": { "type": "string", "description": "应用名 / 内置别名 / 绝对路径 / URL / 协议目标" },
+                "args": { "type": "string", "description": "可选：传给被启动程序的命令行参数（原样附加），如文件路径、--flag" },
+                "wait_secs": { "type": "number", "description": "等待窗口出现的秒数，默认 12；URL/协议类目标无标题可匹配，会自动跳过等待" }
             },
             "required": ["name"]
         })
@@ -829,65 +897,161 @@ impl Tool for LaunchAppTool {
     fn run(&self, args: Value) -> Result<Value, String> {
         let name = args["name"]
             .as_str()
-            .map(|s| s.trim())
+            .map(|s| s.trim().trim_matches('"'))
             .filter(|s| !s.is_empty())
             .ok_or("缺少 name 参数")?;
+        let extra = args["args"].as_str().unwrap_or("").trim().to_string();
         let wait_secs = args["wait_secs"].as_u64().unwrap_or(12).clamp(2, 30);
         let ql = name.to_lowercase();
 
-        // 1) 开始菜单 .lnk 匹配（最短名最贴近）
-        let apps = start_menu_apps();
-        let matched = apps
-            .iter()
-            .filter(|(n, _)| n.contains(&ql) || ql.contains(n.as_str()))
-            .min_by_key(|(n, _)| n.len())
-            .cloned();
-
-        let via = if let Some((_, p)) = matched {
-            let r = silent_command("cmd")
-                .args(["/c", "start", "", &p.to_string_lossy()])
-                .spawn();
-            match r {
-                Ok(_) => "start_menu".to_string(),
-                Err(e) => return Err(format!("启动失败: {e}")),
+        // 目标分类：路径 → URL → 协议 URI → 内置别名 → 开始菜单 → UWP
+        let looks_path = name.contains('\\')
+            || name.contains('/')
+            || (name.len() > 2 && name.as_bytes()[1] == b':');
+        let (mut target, mut via, window_kw, poll_window, launched): (
+            String,
+            String,
+            Option<String>,
+            bool,
+            bool,
+        ) = if looks_path {
+            let p = resolve_path(name);
+            if !std::path::Path::new(&p).exists() {
+                return Err(format!("路径不存在: {p}"));
             }
-        } else if let Some((app_name, app_id)) = find_uwp_app(name) {
-            // 2) UWP 回退
-            let arg = format!("shell:AppsFolder\\{app_id}");
-            let mut cmd = silent_command("explorer.exe");
-            cmd.args([&arg]);
-            let r = cmd.spawn();
-            match r {
-                Ok(_) => format!("uwp:{app_name}"),
-                Err(e) => return Err(format!("UWP 启动失败: {e}")),
-            }
+            let stem = std::path::Path::new(&p)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            (p, "path".into(), stem, true, false)
+        } else if name.starts_with("http://")
+            || name.starts_with("https://")
+            || name.starts_with("www.")
+        {
+            let url = if name.starts_with("www.") {
+                format!("https://{name}")
+            } else {
+                name.to_string()
+            };
+            (url, "url".into(), None, false, false)
+        } else if is_uri_target(name) {
+            (name.to_string(), "uri".into(), None, false, false)
+        } else if let Some((t, kw)) = builtin_alias(name) {
+            (
+                t.to_string(),
+                "alias".into(),
+                kw.map(|s| s.to_string()),
+                kw.is_some(),
+                false,
+            )
         } else {
-            return Err(format!(
-                "开始菜单与 UWP 应用列表中未找到「{name}」，可让用户手动安装，或改用 ps_exec 启动已知路径"
-            ));
+            // 开始菜单 .lnk 匹配（最短名最贴近）
+            let apps = start_menu_apps();
+            let matched = apps
+                .iter()
+                .filter(|(n, _)| n.contains(&ql) || ql.contains(n.as_str()))
+                .min_by_key(|(n, _)| n.len())
+                .cloned();
+            if let Some((_, p)) = matched {
+                crate::desktop_ops::shell_start_with(&p.to_string_lossy(), &extra)?;
+                (
+                    p.to_string_lossy().to_string(),
+                    "start_menu".into(),
+                    Some(name.to_string()),
+                    true,
+                    true,
+                )
+            } else if let Some((app_name, app_id)) = find_uwp_app(name) {
+                // UWP 回退：shell:AppsFolder 协议交给系统启动
+                let mut cmd = silent_command("explorer.exe");
+                cmd.arg(format!("shell:AppsFolder\\{app_id}"));
+                cmd.spawn().map_err(|e| format!("UWP 启动失败: {e}"))?;
+                (
+                    format!("shell:AppsFolder\\{app_id}"),
+                    format!("uwp:{app_name}"),
+                    Some(app_name),
+                    true,
+                    true,
+                )
+            } else {
+                return Err(format!(
+                    "没找到「{name}」：开始菜单与 UWP 列表里都没有。可选：① 给 exe 的绝对路径；\
+                     ② system_action(action=\"run\") 打开运行框再敲路径；③ explorer_open 打开所在文件夹"
+                ));
+            }
         };
 
-        // 3) 等待窗口出现（标题包含应用名关键词即视为就绪）
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+        // 开始菜单 / UWP 分支已在上面启动过，其余走统一的 shell start
+        if !launched {
+            crate::desktop_ops::shell_start_with(&target, &extra)?;
+        }
+
+        // 等窗口出现（URL / 协议类没有可匹配标题，直接跳过，避免白等十几秒）
         let mut window: Option<[i32; 4]> = None;
-        while std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(600));
-            if let Some(rect) = crate::capability::windows::find_window_rect(name) {
-                window = Some(rect);
-                break;
+        if poll_window {
+            // 别名类（notepad / calc / chrome…）都是秒开，先给短的等待窗口，
+            // 没起来就走下面的开始菜单兜底，别把 12 秒耗在一条可能失败的路径上
+            let first_wait = if via == "alias" {
+                wait_secs.min(4)
+            } else {
+                wait_secs
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(first_wait);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let mut hit = None;
+                if let Some(kw) = window_kw.as_deref() {
+                    hit = crate::capability::windows::find_window_rect(kw);
+                }
+                if hit.is_none() {
+                    hit = crate::capability::windows::find_window_rect(name);
+                }
+                if hit.is_some() {
+                    window = hit;
+                    break;
+                }
+            }
+        }
+
+        // 别名兜底：命令发出去了但窗口没出现（App Paths / PATH 里没有这个命令），
+        // 退回开始菜单索引再试一次——比直接回报「未出现」有用得多
+        if window.is_none() && poll_window && via == "alias" {
+            let matched = start_menu_apps()
+                .iter()
+                .filter(|(n, _)| n.contains(&ql) || ql.contains(n.as_str()))
+                .min_by_key(|(n, _)| n.len())
+                .cloned();
+            if let Some((_, p)) = matched {
+                if crate::desktop_ops::shell_start_with(&p.to_string_lossy(), &extra).is_ok() {
+                    target = p.to_string_lossy().to_string();
+                    via = "alias->start_menu".into();
+                    let deadline = std::time::Instant::now()
+                        + std::time::Duration::from_secs(wait_secs.min(6));
+                    while std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                        if let Some(rect) = crate::capability::windows::find_window_rect(name) {
+                            window = Some(rect);
+                            break;
+                        }
+                    }
+                }
             }
         }
 
         Ok(json!({
             "ok": true,
             "via": via,
+            "target": target,
+            "args": if extra.is_empty() { Value::Null } else { json!(extra) },
             "window_ready": window.is_some(),
             "window_rect": window,
             "note": if window.is_some() {
                 "窗口已出现，可直接 window_prepare 清屏 + screen_elements 规划操作"
-            } else {
+            } else if poll_window {
                 "已发出启动命令但窗口尚未出现（可能仍在加载），可稍后 list_windows 确认"
-            },
+            } else {
+                "已交给系统默认程序打开（URL / 协议类不保证有可匹配标题的窗口）"
+            }
         }))
     }
 }

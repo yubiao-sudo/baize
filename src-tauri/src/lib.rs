@@ -5,6 +5,7 @@ mod browser;
 mod calendar;
 pub mod capability; // [探针/外部集成可见] GUI 能力层（含 bin/gui_probe 实测探针）
 mod clipboard;
+mod desktop_ops; // 系统级动作（锁屏/设置页/截图/任务管理器…）+ 常见应用快捷键查询
 mod commands;
 mod crashlog; // SEH 级崩溃诊断：段错误等未处理异常写 %TEMP%\baize-crash-<pid>-*.log
 mod datapipeline;
@@ -300,6 +301,9 @@ impl AppState {
         tools.register(Box::new(agent::ChatCardTool));
         // 快捷启动应用：开始菜单索引 + UWP + 等窗返回（GUI 任务提速）
         tools.register(Box::new(tools::LaunchAppTool));
+        // 系统级命名动作（锁屏 / 设置页 / 截图 / 任务管理器…）与常见应用快捷键查询
+        tools.register(Box::new(desktop_ops::SystemActionTool::new(capability.clone())));
+        tools.register(Box::new(desktop_ops::AppShortcutsTool));
         tools.register(Box::new(tools::ExplorerOpenTool));
         tools.register(Box::new(capability::CaptureScreenTool::new(capability.clone())));
         // 全屏元素标注：UIA 控件 + OCR 文字行一次汇总（批量规划 GUI 步骤用）

@@ -134,6 +134,7 @@ pub fn is_gui_action_tool(name: &str) -> bool {
             | "window_set_topmost"
             | "window_focus"
             | "window_prepare"
+            | "system_action"
     )
 }
 
