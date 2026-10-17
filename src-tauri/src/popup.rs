@@ -127,7 +127,7 @@ impl Tool for ClosePopupTool {
             let found = if search_all {
                 self.capability.find_anywhere(kw)
             } else {
-                self.capability.find(kw)
+                self.capability.find(kw, None)
             };
             if let Ok(matches) = found {
                 for m in &matches {

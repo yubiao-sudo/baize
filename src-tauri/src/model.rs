@@ -1758,7 +1758,10 @@ mod tests {
         let hay = b"data: {\"a\":1}\n\ndata: [DONE]\n\n";
         assert_eq!(find_subsequence(hay, b"\n\n"), Some(13));
         assert_eq!(find_subsequence(hay, b"\r\n"), None);
-        assert_eq!(find_subsequence(hay, b""), Some(0));
+        // 空分隔符刻意返回 None（不是直觉上的 Some(0)）：
+        // 唯一调用点是 `while let Some(pos) = find_subsequence(..)` 的 SSE 分帧循环，
+        // 返回 Some 会因每次都在同一位置命中而原地死循环。
+        assert_eq!(find_subsequence(hay, b""), None);
     }
 
     #[test]

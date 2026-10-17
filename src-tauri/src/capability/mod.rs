@@ -22,12 +22,15 @@ pub trait Capability: Send + Sync {
     fn observe(&self, req: &ObserveReq) -> Result<Observation, CapError>;
     fn capture_screen(&self) -> Result<ScreenshotInfo, CapError>;
     fn act(&self, action: &Action) -> Result<ActionResult, CapError>;
-    /// 三级接地一级：按名称模糊查找控件，返回匹配项（名称 + 位置）
-    fn find(&self, target: &str) -> Result<Vec<ElementMatch>, CapError>;
+    /// 三级接地一级：按名称模糊查找控件，返回匹配项（名称 + 位置）。
+    /// `window` = Some(标题/进程名关键词) 限定在该窗口内搜索；None = 当前前台窗口。
+    fn find(&self, target: &str, window: Option<&str>) -> Result<Vec<ElementMatch>, CapError>;
     /// 跨所有顶层窗口查找控件（而非仅前台窗口），用于定位弹出对话框里的按钮
     fn find_anywhere(&self, target: &str) -> Result<Vec<ElementMatch>, CapError>;
-    /// 三级接地一级：按名称查找并语义点击控件（无需坐标）
-    fn click_element(&self, target: &str) -> Result<ActionResult, CapError>;
+    /// 三级接地一级：按名称查找并语义点击控件（无需坐标）。
+    /// `window` 语义同 find：指定窗口内搜索，None = 前台窗口。
+    fn click_element(&self, target: &str, window: Option<&str>)
+        -> Result<ActionResult, CapError>;
     /// 可交互元素地图：枚举目标窗口的可交互控件（名称/类型/中心坐标），
     /// 供「先分析应用结构 → 一轮批量派发操作」的两阶段 GUI 模式使用
     fn interactive_map(&self, _window: Option<String>) -> Result<Value, CapError> {
@@ -258,9 +261,14 @@ fn node_text(node: &A11yNode, depth: usize) -> String {
 /// 一级：a11y 无障碍树定位；二级：截图 + 本地 OCR 文字定位；
 /// 三级：Set-of-Marks 视觉标注选号；四级：截图 + 视觉模型猜坐标（仅无文字时走）。
 /// 所有截图内坐标统一加上所在显示器的物理偏移，保证与 SendInput 绝对坐标对齐。
-pub fn ground(capability: &dyn Capability, target: &str) -> Result<Rect, CapError> {
+/// `window` 只作用于一级 a11y（限定窗口内查找）；OCR/SOM/视觉模型是屏幕级的，靠调用方先聚焦。
+pub fn ground(
+    capability: &dyn Capability,
+    target: &str,
+    window: Option<&str>,
+) -> Result<Rect, CapError> {
     let info = capability.capture_screen()?;
-    ground_on_screenshot(capability, target, &info)
+    ground_on_screenshot(capability, target, &info, window)
 }
 
 /// 在已截取的截图上接地（供点击者的前后截图复用，避免重复截屏）；
@@ -272,10 +280,11 @@ pub fn ground_on_screenshot(
     capability: &dyn Capability,
     target: &str,
     info: &ScreenshotInfo,
+    window: Option<&str>,
 ) -> Result<Rect, CapError> {
     // 一级：a11y 语义查找（无需截图；find 已按分数降序）
     let mut a11y_best: Option<(u32, Rect)> = None;
-    if let Ok(matches) = capability.find(target) {
+    if let Ok(matches) = capability.find(target, window) {
         for m in matches {
             if let Some(bbox) = m.bbox {
                 a11y_best = Some((m.score, bbox));
@@ -1499,13 +1508,14 @@ impl Tool for FindElementTool {
         "find_element"
     }
     fn description(&self) -> &str {
-        "按名称模糊查找当前窗口中的控件，返回匹配项的名称和位置（只读）。注意：页面动画/加载期间坐标会漂移，界面刚变化时先等 1-2 秒再调用；同一目标多次调用结果不一致说明界面还在变化"
+        "按名称模糊查找窗口中的控件，返回匹配项的名称和位置（只读）。不填 window 时只搜当前前台窗口；要操作非前台应用（或前台窗口 UIA 树读不全）务必填 window 指定目标窗口。注意：页面动画/加载期间坐标会漂移，界面刚变化时先等 1-2 秒再调用"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "控件名称（模糊匹配）" }
+                "name": { "type": "string", "description": "控件名称（模糊匹配）" },
+                "window": { "type": "string", "description": "窗口标题或进程名关键词（模糊匹配）。不填=当前前台窗口；建议显式指定，避免前台被抢导致读不到控件" }
             },
             "required": ["name"]
         })
@@ -1515,7 +1525,11 @@ impl Tool for FindElementTool {
     }
     fn run(&self, args: Value) -> Result<Value, String> {
         let name = args["name"].as_str().ok_or("缺少参数 name")?;
-        let matches = self.capability.find(name).map_err(|e| e.to_string())?;
+        let window = args["window"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let matches = self
+            .capability
+            .find(name, window)
+            .map_err(|e| e.to_string())?;
         let arr: Vec<Value> = matches
             .into_iter()
             .map(|m| {
@@ -1530,7 +1544,7 @@ impl Tool for FindElementTool {
             // 空结果降级指引：自渲染窗口 UIA 可能读不到，给出替代路线而不是让模型干等
             return Ok(json!({
                 "matches": [],
-                "note": "未找到匹配控件。可能是自渲染窗口（Electron 首次访问/游戏/自绘）UIA 读不到：等待 1-2 秒重试，或改用 screen_elements（UIA+OCR 一次汇总）、capture_screen 后 ground_on_screenshot 按文字视觉定位再 click_at；也可调用 app_profile 查看窗口类型与推荐策略"
+                "note": "未找到匹配控件。先确认目标窗口是对的：传入 window（标题/进程名关键词）再试一次；也可能是自渲染窗口（Electron/WebView2 首次访问/游戏/自绘）UIA 读不到——等待 1-2 秒重试，或改用 screen_elements（UIA+OCR 一次汇总）、capture_screen 后 ground_on_screenshot 按文字视觉定位再 click_at；也可调用 app_profile 查看窗口类型与推荐策略"
             }));
         }
         Ok(json!(arr))
@@ -1553,13 +1567,14 @@ impl Tool for ClickElementTool {
         "click_element"
     }
     fn description(&self) -> &str {
-        "按名称查找并点击当前窗口中的控件（写操作，会请求授权）"
+        "按名称查找并点击窗口中的控件（写操作，会请求授权）。不填 window 时只搜当前前台窗口；操作非前台应用时务必填 window"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "控件名称（模糊匹配）" }
+                "name": { "type": "string", "description": "控件名称（模糊匹配）" },
+                "window": { "type": "string", "description": "窗口标题或进程名关键词（模糊匹配）。不填=当前前台窗口；建议显式指定" }
             },
             "required": ["name"]
         })
@@ -1569,7 +1584,11 @@ impl Tool for ClickElementTool {
     }
     fn run(&self, args: Value) -> Result<Value, String> {
         let name = args["name"].as_str().ok_or("缺少参数 name")?;
-        let res = self.capability.click_element(name).map_err(|e| e.to_string())?;
+        let window = args["window"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let res = self
+            .capability
+            .click_element(name, window)
+            .map_err(|e| e.to_string())?;
         Ok(json!({ "ok": res.ok, "description": res.description }))
     }
 }
@@ -1590,13 +1609,14 @@ impl Tool for GroundElementTool {
         "ground_element"
     }
     fn description(&self) -> &str {
-        "按名称定位控件并返回其中心坐标（三级接地一级，只读；配合 click_at 使用）。注意：页面动画/加载期间坐标会漂移，界面刚变化时先等 1-2 秒再调用"
+        "按名称定位控件并返回其中心坐标（三级接地一级，只读；配合 click_at 使用）。不填 window 时只在当前前台窗口查找；建议显式传 window。注意：页面动画/加载期间坐标会漂移，界面刚变化时先等 1-2 秒再调用"
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": { "type": "string", "description": "控件名称（模糊匹配）" }
+                "name": { "type": "string", "description": "控件名称（模糊匹配）" },
+                "window": { "type": "string", "description": "窗口标题或进程名关键词（模糊匹配）。不填=当前前台窗口；建议显式指定" }
             },
             "required": ["name"]
         })
@@ -1606,7 +1626,8 @@ impl Tool for GroundElementTool {
     }
     fn run(&self, args: Value) -> Result<Value, String> {
         let name = args["name"].as_str().ok_or("缺少参数 name")?;
-        let rect = ground(self.capability.as_ref(), name).map_err(|e| e.to_string())?;
+        let window = args["window"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let rect = ground(self.capability.as_ref(), name, window).map_err(|e| e.to_string())?;
         let cx = rect.x + rect.width / 2.0;
         let cy = rect.y + rect.height / 2.0;
         Ok(json!({

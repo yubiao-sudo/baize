@@ -43,6 +43,10 @@ pub async fn chat(
     let attachments_json = serde_json::to_string(&attachments).ok();
     state.store.add_message(&conv_id, "user", &message, attachments_json.as_deref())?;
 
+    // 本轮开始：开一份流式草稿（进程中途被掐断时，下次启动能把已生成的部分补回来）
+    crate::draft::begin(state.store.clone(), &conv_id);
+    crate::hangwatch::mark("对话 · 等待模型响应");
+
     // 会话归属的项目：注入模型上下文（白泽由此「知道」当前项目），并在思考流中展示
     let project = state.store.project_of_conversation(&conv_id).ok().flatten();
     if let Some(p) = &project {
@@ -97,10 +101,21 @@ pub async fn chat(
         );
     }
 
-    let answer = Supervisor::new(&app, &state)
+    let answer = match Supervisor::new(&app, &state)
         .with_project(project)
         .run(&agent_input, history)
-        .await?;
+        .await
+    {
+        Ok(a) => a,
+        // 本轮以明确错误结束（模型报错/用户停止）：界面已经告知用户，草稿不该在下次
+        // 启动时冒出来冒充「被中断」——清掉，保持与旧行为一致。
+        Err(e) => {
+            crate::draft::finish();
+            crate::hangwatch::mark("空闲");
+            return Err(e);
+        }
+    };
+
 
     // 停止后跳过记忆/固化等后续处理（避免再触发模型请求）
     if !state.cancel.load(Ordering::SeqCst) {
@@ -186,6 +201,9 @@ pub async fn chat(
     }
 
     state.store.add_message(&conv_id, "assistant", &answer, None)?;
+    // 完整回复已落库，草稿使命结束
+    crate::draft::finish();
+    crate::hangwatch::mark("空闲");
 
     // 固化执行流（thoughts + todos）到本条 assistant 消息，任务结束后仍可展开回看
     {
@@ -1922,8 +1940,182 @@ pub fn clear_rag(state: State<'_, AppState>) -> Result<bool, String> {
 
 #[tauri::command]
 pub fn search_rag(state: State<'_, AppState>, query: String) -> Value {
-    let hits = state.rag.search(&query, 5);
-    json!({ "count": hits.len(), "hits": hits })
+    let top_k = crate::kb::KbConfig::load(&state.store).top_k;
+    let answer = state.rag.search(&query, top_k);
+    answer.to_json()
+}
+
+// ---------------- 远程知识库（knowledge-fabric 底座） ----------------
+
+/// 读取知识库接入配置（**不含令牌**，只告诉前端有没有）
+#[tauri::command]
+pub fn kb_config_get(state: State<'_, AppState>) -> Value {
+    let cfg = crate::kb::KbConfig::load(&state.store);
+    let has_token = crate::kb::load_token(&state.store).is_some();
+    cfg.to_json(has_token)
+}
+
+/// 保存知识库接入配置。令牌不在这里传——走 `kb_exchange_code` 或 `kb_set_token`。
+///
+/// `rename_all = "snake_case"`：Tauri 默认按 camelCase 取参数（`baseUrl`），
+/// 而前端传的是 `base_url`，于是报
+/// `invalid args `baseUrl` ... missing required key baseUrl`。
+/// 显式声明后 **TS 字段名 === Rust 字段名**，不再需要脑内转换。
+#[tauri::command(rename_all = "snake_case")]
+pub fn kb_config_set(
+    state: State<'_, AppState>,
+    mode: String,
+    base_url: String,
+    ingest_url: String,
+    tenant: String,
+    kb: String,
+    profile: String,
+    top_k: usize,
+    timeout_ms: u64,
+    fallback_local: bool,
+) -> Result<Value, String> {
+    let mode = mode.trim().to_lowercase();
+    if !matches!(mode.as_str(), "off" | "local" | "remote" | "hybrid") {
+        return Err(format!("未知的检索模式: {mode}（可选 off/local/remote/hybrid）"));
+    }
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    let ingest_url = ingest_url.trim().trim_end_matches('/').to_string();
+    if matches!(mode.as_str(), "remote" | "hybrid") && base_url.is_empty() {
+        return Err("远程模式下必须填写底座服务地址".into());
+    }
+    let cfg = crate::kb::KbConfig {
+        mode,
+        base_url,
+        // 留空则回落到默认摄入地址，避免老配置升级后无从摄入
+        ingest_url: if ingest_url.is_empty() {
+            crate::kb::KbConfig::default().ingest_url
+        } else {
+            ingest_url
+        },
+        tenant: tenant.trim().to_string(),
+        kb: kb.trim().to_string(),
+        profile: if profile.trim().is_empty() {
+            "hybrid_rerank".to_string()
+        } else {
+            profile.trim().to_string()
+        },
+        top_k: top_k.clamp(1, 50),
+        timeout_ms: timeout_ms.clamp(1000, 120_000),
+        fallback_local,
+    };
+    cfg.save(&state.store)?;
+    let has_token = crate::kb::load_token(&state.store).is_some();
+    Ok(cfg.to_json(has_token))
+}
+
+/// 用接入码连接底座：兑换长期令牌并**加密存入 vault**。
+///
+/// 这是「填服务地址 + 抄 8 位随机码」这一步的落点——前端只需要两个输入框。
+/// 同样用 snake_case 对齐前端字段名（见 `kb_config_set` 的说明）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn kb_exchange_code(
+    state: State<'_, AppState>,
+    base_url: String,
+    code: String,
+) -> Result<Value, String> {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Err("请先填写底座服务地址".into());
+    }
+    let code = code.trim().to_string();
+    let timeout = crate::kb::KbConfig::load(&state.store).timeout_ms;
+
+    // 兑换是阻塞 HTTP，放到阻塞线程里
+    let base_for_task = base.clone();
+    let info = tokio::task::spawn_blocking(move || {
+        crate::kb::exchange_code(&base_for_task, &code, timeout)
+    })
+    .await
+    .map_err(|e| format!("兑换任务异常: {e}"))??;
+
+    let token = info
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("底座没有返回 token")?
+        .to_string();
+    crate::kb::save_token(&state.store, &token)?;
+
+    // 顺手把地址与租户写进配置（租户来自兑换结果，避免手填不一致）
+    let mut cfg = crate::kb::KbConfig::load(&state.store);
+    cfg.base_url = base;
+    if let Some(t) = info.get("tenant").and_then(|v| v.as_str()) {
+        if !t.is_empty() {
+            cfg.tenant = t.to_string();
+        }
+    }
+    if cfg.mode == "local" || cfg.mode == "off" {
+        cfg.mode = "remote".to_string();
+    }
+    cfg.save(&state.store)?;
+
+    // 返回结果**不含明文令牌**（只在 vault 里）
+    Ok(json!({
+        "ok": true,
+        "tenant": cfg.tenant,
+        "token_prefix": info.get("token_prefix"),
+        "mode": cfg.mode,
+        "base_url": cfg.base_url,
+    }))
+}
+
+/// 断开底座：清掉 vault 里的令牌并切回本地模式
+#[tauri::command]
+pub fn kb_disconnect(state: State<'_, AppState>) -> Result<Value, String> {
+    let removed = crate::kb::clear_token(&state.store).unwrap_or(false);
+    let mut cfg = crate::kb::KbConfig::load(&state.store);
+    cfg.mode = "local".to_string();
+    cfg.save(&state.store)?;
+    Ok(json!({ "ok": true, "token_removed": removed, "mode": cfg.mode }))
+}
+
+/// 列出底座上可用的知识库（agent 不必连数据库）
+#[tauri::command]
+pub async fn kb_list(state: State<'_, AppState>) -> Result<Value, String> {
+    let store = state.store.clone();
+    tokio::task::spawn_blocking(move || {
+        let remote = crate::kb::RemoteKb::from_store(&store);
+        remote.list_kbs()
+    })
+    .await
+    .map_err(|e| format!("任务异常: {e}"))?
+}
+
+/// 测试连接：底座可达性 + 目标库是否存在 + 鉴权是否正常
+#[tauri::command]
+pub async fn kb_test(state: State<'_, AppState>) -> Result<Value, String> {
+    let store = state.store.clone();
+    tokio::task::spawn_blocking(move || {
+        let cfg = crate::kb::KbConfig::load(&store);
+        let remote = crate::kb::RemoteKb::from_store(&store);
+        let health = remote.health()?;
+        let mut out = json!({
+            "config": cfg.to_json(crate::kb::load_token(&store).is_some()),
+            "health": health,
+        });
+        if cfg.uses_remote() {
+            match remote.get_kb() {
+                Ok(kb) => {
+                    out["kb"] = kb;
+                    out["ok"] = json!(true);
+                }
+                Err(e) => {
+                    out["kb_error"] = json!(e);
+                    out["ok"] = json!(false);
+                }
+            }
+        } else {
+            out["ok"] = json!(true);
+            out["note"] = json!("当前是本地模式，未测试底座连接");
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("任务异常: {e}"))?
 }
 
 // ---------------- 数据库连接配置管理 ----------------

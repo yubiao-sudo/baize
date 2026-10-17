@@ -232,6 +232,22 @@ impl Tool for PanelControlTool {
             .as_str()
             .ok_or("panel_control 缺少 action（open/close）")?;
         let panel = args["panel"].as_str().unwrap_or("");
+
+        // 先校验目标名，再检查应用是否就绪：参数错误属于调用方错误，
+        // 任何状态下都应报「未知目标」，而不是被「应用未初始化」掩盖。
+        // （close 允许缺省 panel＝关闭当前面板，故只校验 open）
+        if action == "open" {
+            let known = WINDOWS.iter().any(|(id, _)| *id == panel)
+                || PANELS.iter().any(|(id, _)| *id == panel)
+                || OVERLAYS.iter().any(|(id, _)| *id == panel);
+            if panel.is_empty() || !known {
+                return Err(format!(
+                    "未知目标「{panel}」，可用：{}",
+                    all_panel_ids().join("/")
+                ));
+            }
+        }
+
         let app = APP_HANDLE
             .get()
             .ok_or("面板控制不可用（应用尚未初始化完成）")?;
@@ -257,16 +273,6 @@ impl Tool for PanelControlTool {
             return Ok(json!({ "ok": true, "message": format!("已隐藏{label}") }));
         }
 
-        if action == "open" {
-            let known = PANELS.iter().any(|(id, _)| *id == panel)
-                || OVERLAYS.iter().any(|(id, _)| *id == panel);
-            if panel.is_empty() || !known {
-                return Err(format!(
-                    "未知目标「{panel}」，可用：{}",
-                    all_panel_ids().join("/")
-                ));
-            }
-        }
         // tab 仅对 settings 有意义；非法值静默忽略（前端回退默认页签）
         let tab = args["tab"].as_str().unwrap_or("");
         let tab = if panel == "settings" && SETTINGS_TABS.contains(&tab) {

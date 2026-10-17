@@ -8,8 +8,11 @@ mod clipboard;
 mod desktop_ops; // 系统级动作（锁屏/设置页/截图/任务管理器…）+ 常见应用快捷键查询
 mod commands;
 mod crashlog; // SEH 级崩溃诊断：段错误等未处理异常写 %TEMP%\baize-crash-<pid>-*.log
+mod configview; // 配置视图：把 settings 里影响决策的项汇总给模型（摘要注入 + config_get 只读查询）
 mod datapipeline;
+mod draft; // 流式回复草稿：边生成边落库，进程被掐断时可恢复被中断的那一轮
 mod heartbeat;
+mod hangwatch; // 主线程卡顿看门狗：卡死被 Windows 关掉后，日志里能查到卡了多久、当时在跑什么
 mod document;
 mod email;
 mod embedding;
@@ -27,6 +30,8 @@ mod mic;
 mod model;
 mod multimodal;
 mod notify;
+// 远程知识库客户端：把 knowledge-fabric 底座接到 rag_* 工具上
+mod kb;
 mod ocr;
 mod panel;
 mod paths;
@@ -151,6 +156,14 @@ impl AppState {
                 None => panic!("无法打开本地数据库 baize.db: {last_err}"),
             }
         };
+
+        // 上一次进程如果不是正常结束（卡死被关/被杀），最后那一轮回复只留下草稿：
+        // 在这里补回成一条带「被中断」标注的 assistant 消息。必须早于窗口创建，
+        // 否则前端先读到历史，补写的内容要刷新才出现。
+        draft::recover(&store);
+
+        // 配置视图首次快照：db_* 工具的 description 会读它，必须在工具注册/首次调用前就绪
+        configview::refresh(&store);
 
         // 模型用量上报 / 降级失败日志 sink（P0-2 / P1-7）：路由层事件统一落库
         {
@@ -643,6 +656,8 @@ pub(crate) fn load_mcp_config(store: &MemoryStore) -> mcp::McpConfig {
 /// 即强杀进程（互斥锁由内核在进程终止时释放），绝不让僵尸活过 1.2 秒。
 fn quit_hard(app: &tauri::AppHandle) {
     use tauri::Manager;
+    // 先告诉卡顿看门狗：这是主动退出，清理期间的停顿不用记成「卡死」
+    hangwatch::stop();
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -1091,6 +1106,9 @@ pub fn run() {
             // 统一心跳中心：聚合子系统打点 → baize:vital 广播（银河背景星光随心跳明灭）
             heartbeat::init(app.handle().clone());
 
+            // 主线程卡顿看门狗：每秒探一次主线程往返，卡住超阈值就落盘（带当前活动标记）
+            hangwatch::install(app.handle().clone());
+
             // 后台记忆治理守护：每日一次 去重合并 + 衰减清理（星图更干净）
             {
                 let store = app.state::<AppState>().store.clone();
@@ -1155,6 +1173,9 @@ pub fn run() {
             state
                 .tools
                 .register(Box::new(security::PolicyGetTool::new(state.store.clone())));
+            state
+                .tools
+                .register(Box::new(configview::ConfigGetTool::new(state.store.clone())));
             state
                 .tools
                 .register(Box::new(security::PolicySetTool::new(state.store.clone())));
@@ -1260,6 +1281,13 @@ pub fn run() {
             commands::index_rag_dir,
             commands::clear_rag,
             commands::search_rag,
+            // 远程知识库（knowledge-fabric 底座）
+            commands::kb_config_get,
+            commands::kb_config_set,
+            commands::kb_exchange_code,
+            commands::kb_disconnect,
+            commands::kb_list,
+            commands::kb_test,
             commands::get_db_connections,
             commands::save_db_connections,
             commands::get_browser_state,

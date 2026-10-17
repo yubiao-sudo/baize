@@ -1449,6 +1449,50 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// 按前缀匹配列出设置项（用于扫描多会话的草稿键这类批量前缀）。
+    ///
+    /// 用 `substr(...) = ?` 而不是 `LIKE ? || '%'`：键前缀里带下划线（`chat_draft:`），
+    /// 在 LIKE 里 `_` 是通配符，会误匹配到 `chatXdraft:`。
+    pub fn settings_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let collected = (|| -> Result<Vec<(String, String)>, rusqlite::Error> {
+            let mut stmt = conn.prepare(
+                "SELECT key, value FROM settings WHERE substr(key, 1, length(?1)) = ?1",
+            )?;
+            let rows = stmt.query_map(params![prefix], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })();
+        collected.unwrap_or_default()
+    }
+
+    /// 列出全部设置项的键名（不含值；值请用 get_setting 单独取，便于逐项脱敏）。
+    pub fn all_setting_keys(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let collected = (|| -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = conn.prepare("SELECT key FROM settings ORDER BY key")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            Ok(out)
+        })();
+        collected.unwrap_or_default()
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = ?1", params![key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ---------- 模型用量统计 / 降级失败日志 ----------
 
     /// 累计一次模型调用的 token 用量（按天 × 提供方 × 模型聚合）

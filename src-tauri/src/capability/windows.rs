@@ -247,8 +247,14 @@ impl WindowsCapability {
     }
 }
 
-/// 解析 UIA 根元素：None=前台窗口（焦点元素的 Window 祖先），Some=按名匹配桌面顶层窗口。
+/// 解析 UIA 根元素：None=前台窗口（Win32 前台句柄优先），Some=按名匹配桌面顶层窗口。
 /// 自由函数：observe/interactive_map 的工作线程内直接调用（不经过 &self）。
+///
+/// 前台路径为什么先走 GetForegroundWindow：旧实现取 `get_focused_element()` 再向上
+/// 找 ControlType::Window 祖先，在 Win10 记事本上只能拿到「文件(F)」一个节点（焦点
+/// 落在菜单栏时，其 Window 祖先并非顶层窗口），导致 find_element / click_element
+/// 不带窗口名时形同废掉。句柄路径拿到的是真正的顶层窗口，与 ByName 兜底同一条已验证
+/// 可用的通路；仅当句柄取元素失败（极少数无 UIA 支持的窗口）才回落焦点元素。
 fn resolve_root_element(
     automation: &UIAutomation,
     condition: &UICondition,
@@ -256,6 +262,17 @@ fn resolve_root_element(
 ) -> Result<UIElement, CapError> {
     match &req.window {
         None => {
+            // 一级：Win32 前台窗口句柄 → UIA 顶层元素
+            let hwnd = unsafe { GetForegroundWindow() };
+            if hwnd.0 != 0 {
+                let handle = uiautomation::types::Handle::from(hwnd);
+                if let Ok(el) = automation.element_from_handle(handle) {
+                    if matches!(el.get_control_type(), Ok(ControlType::Window)) {
+                        return Ok(el);
+                    }
+                }
+            }
+            // 二级回落：焦点元素的 Window 祖先（原来的一级，保留兜底）
             let focused = automation
                 .get_focused_element()
                 .map_err(|e| CapError::InvalidState(format!("无法获取焦点元素: {e}")))?;
@@ -470,10 +487,27 @@ fn find_anywhere_impl(target: &str) -> Result<Vec<ElementMatch>, CapError> {
 /// 返回 Some(res)=已有结论（命中点击成功/真实错误）；None=UIA 无命中 → 调用方走视觉兜底。
 /// 语义点击的 UIA 段（工作线程内执行）。pub(crate) 供探针 stress 压测复用同一生产路径。
 pub(crate) fn click_element_uia_impl(target: String) -> Option<Result<ActionResult, CapError>> {
+    click_element_uia_impl_in(target, None)
+}
+
+/// click_element 的 UIA 定位+点击段（可指定窗口）。`window`=None 走前台窗口。
+pub(crate) fn click_element_uia_impl_in(
+    target: String,
+    window: Option<String>,
+) -> Option<Result<ActionResult, CapError>> {
     let automation = UIAutomation::new().ok()?;
     let condition = automation.create_true_condition().ok()?;
-    let req = ObserveReq::default();
-    let root = resolve_root_element(&automation, &condition, &req).ok()?;
+    let has_window = window.is_some();
+    let req = ObserveReq {
+        window: window.map(crate::capability::WindowTarget::ByName),
+        ..ObserveReq::default()
+    };
+    // 指定了窗口却解析不出来 = 参数错误，直接报错；前台窗口解析失败才静默走视觉兜底
+    let root = match resolve_root_element(&automation, &condition, &req) {
+        Ok(r) => r,
+        Err(e) if has_window => return Some(Err(e)),
+        Err(_) => return None,
+    };
     // 评分选优：先收集全部候选取最高分，再回树上按「名称+矩形」双条件定位点击。
     let mut candidates = Vec::new();
     collect_matches(&root, &target, &condition, 0, GUI_FIND_DEPTH, &mut candidates);
@@ -909,12 +943,16 @@ impl Capability for WindowsCapability {
         }
     }
 
-    fn find(&self, target: &str) -> Result<Vec<ElementMatch>, CapError> {
+    fn find(&self, target: &str, window: Option<&str>) -> Result<Vec<ElementMatch>, CapError> {
         // UIA 遍历放工作线程限时执行（同 observe，防无响应窗口阻塞）
         let target = target.to_string();
+        let req = ObserveReq {
+            window: window.map(|w| crate::capability::WindowTarget::ByName(w.to_string())),
+            ..ObserveReq::default()
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(find_in_window_impl(ObserveReq::default(), &target));
+            let _ = tx.send(find_in_window_impl(req, &target));
         });
         match rx.recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS)) {
             Ok(res) => res,
@@ -957,13 +995,18 @@ impl Capability for WindowsCapability {
         }
     }
 
-    fn click_element(&self, target: &str) -> Result<ActionResult, CapError> {
+    fn click_element(
+        &self,
+        target: &str,
+        window: Option<&str>,
+    ) -> Result<ActionResult, CapError> {
         // UIA 定位+点击放工作线程限时执行：Some(res)=有结果直接返回；None=未命中或超时
         // → 落视觉兜底链（OCR/SoM 接地坐标点击），保证对无响应窗口也能完成动作
         let target_owned = target.to_string();
+        let window_owned = window.map(|w| w.to_string());
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(click_element_uia_impl(target_owned));
+            let _ = tx.send(click_element_uia_impl_in(target_owned, window_owned));
         });
         let uia_result = rx
             .recv_timeout(std::time::Duration::from_millis(UIA_WALK_TIMEOUT_MS))
@@ -975,8 +1018,14 @@ impl Capability for WindowsCapability {
         // 回退：OCR / Set-of-Marks / 视觉接地 → 坐标点击，并附操作后界面变化验证。
         // 截图复用：ground_on_screenshot 直接用本图作为 before 基线，验证/微偏移重试
         // 逻辑统一走 click_verify_reclick（与 click_at / mouse_click 同一实现）。
+        // 指定了窗口时先聚焦：视觉兜底要在前台窗口上接地，否则坐标可能落在别的窗口。
+        if let Some(w) = window {
+            let _ = self.act(&Action::WindowFocus {
+                name: w.to_string(),
+            });
+        }
         let info = self.capture_screen()?;
-        let rect = super::ground_on_screenshot(self, target, &info)?;
+        let rect = super::ground_on_screenshot(self, target, &info, window)?;
         let cx = rect.x + rect.width / 2.0;
         let cy = rect.y + rect.height / 2.0;
         let _res = self.act(&Action::ClickAt { x: cx, y: cy })?;
@@ -994,9 +1043,14 @@ impl Capability for WindowsCapability {
         };
         Ok(ActionResult {
             ok: true,
-            description: format!(
-                "点击控件: {target}（UIA 无命中/超时 {UIA_WALK_TIMEOUT_MS}ms，视觉兜底：{note}）"
-            ),
+            description: match window {
+                Some(w) => format!(
+                    "点击控件: {target}（窗口「{w}」内 UIA 无命中/超时 {UIA_WALK_TIMEOUT_MS}ms，视觉兜底：{note}）"
+                ),
+                None => format!(
+                    "点击控件: {target}（UIA 无命中/超时 {UIA_WALK_TIMEOUT_MS}ms，视觉兜底：{note}）"
+                ),
+            },
         })
     }
 }

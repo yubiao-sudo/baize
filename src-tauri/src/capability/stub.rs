@@ -39,7 +39,7 @@ impl Capability for StubCapability {
         }
     }
 
-    fn find(&self, _target: &str) -> Result<Vec<ElementMatch>, CapError> {
+    fn find(&self, _target: &str, _window: Option<&str>) -> Result<Vec<ElementMatch>, CapError> {
         Err(CapError::Unsupported("当前平台暂未实现语义定位"))
     }
 
@@ -47,7 +47,11 @@ impl Capability for StubCapability {
         Err(CapError::Unsupported("当前平台暂未实现语义定位"))
     }
 
-    fn click_element(&self, _target: &str) -> Result<ActionResult, CapError> {
+    fn click_element(
+        &self,
+        _target: &str,
+        _window: Option<&str>,
+    ) -> Result<ActionResult, CapError> {
         Err(CapError::Unsupported("当前平台暂未实现语义点击"))
     }
 }

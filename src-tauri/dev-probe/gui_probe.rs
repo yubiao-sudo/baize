@@ -105,7 +105,7 @@ fn main() {
         for i in 0..n {
             if let (Some(cap), Some(tg)) = (&full_cap, args.get(3)) {
                 let t = Instant::now();
-                let outcome = match cap.click_element(tg) {
+                let outcome = match cap.click_element(tg, None) {
                     Ok(r) => format!("ok: {}", r.description),
                     Err(e) => format!("ERR: {e}"),
                 };
@@ -207,7 +207,7 @@ fn main() {
 
     if let Some(kw) = find_kw {
         let t = Instant::now();
-        match cap.find(&kw) {
+        match cap.find(&kw, None) {
             Ok(m) => println!(
                 "[find         {:>9?}] matches={} top={:?}",
                 t.elapsed(),
@@ -220,7 +220,7 @@ fn main() {
 
     if let Some(ct) = click_target {
         let t = Instant::now();
-        match cap.click_element(&ct) {
+        match cap.click_element(&ct, None) {
             Ok(r) => println!("[click_element {:>8?}] {}", t.elapsed(), r.description),
             Err(e) => println!("[click_element {:>8?}] ERROR: {e}", t.elapsed()),
         }

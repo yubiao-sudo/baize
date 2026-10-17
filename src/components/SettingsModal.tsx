@@ -31,6 +31,13 @@ import {
   getVoice,
   getWechatStatus,
   indexRagDir,
+  // 远程知识库（接入 knowledge-fabric 底座）
+  kbConfigGet,
+  kbConfigSet,
+  kbExchangeCode,
+  kbDisconnect,
+  kbList,
+  kbTest,
   getModelUsageReport,
   getModelUsageDaily,
   listQuickCommands,
@@ -101,6 +108,9 @@ import type {
   NotifyConfig,
   RagDoc,
   RagHit,
+  RagAnswer,
+  KbConfig,
+  KbMeta,
   RuntimeConfig,
   TokenSaverConfig,
   VendorPreset,
@@ -302,6 +312,19 @@ export default function SettingsModal({
   const [ragQuery, setRagQuery] = useState("");
   const [ragHits, setRagHits] = useState<RagHit[]>([]);
   const [ragMsg, setRagMsg] = useState("");
+  // 检索结果的整体判定（接入底座后才有 refused/来源这些信息）
+  const [ragAnswer, setRagAnswer] = useState<RagAnswer | null>(null);
+
+  // 企业知识库（接入 knowledge-fabric 底座）
+  const [kbCfg, setKbCfg] = useState<KbConfig | null>(null);
+  const [kbCode, setKbCode] = useState("");
+  const [kbBusy, setKbBusy] = useState(false);
+  const [kbMsg, setKbMsg] = useState("");
+  // 连接状态徽标：null=未知 / true=已连通 / false=失败
+  // 之前只用一行小灰字提示，用户根本看不出连没连上（实测反馈"提示不明显"）
+  const [kbOk, setKbOk] = useState<boolean | null>(null);
+  const [kbCounts, setKbCounts] = useState<{ documents: number; chunks: number } | null>(null);
+  const [kbItems, setKbItems] = useState<KbMeta[]>([]);
 
   // 音效：总开关 / 音量 / 弹窗提醒风格
   const [sfxOn, setSfxOn] = useState(isSfxEnabled());
@@ -422,6 +445,8 @@ export default function SettingsModal({
     getTokenSaverConfig().then(setTokenSaver).catch((e) => setError(String(e)));
     getRagState().then(setRagDocs).catch(() => {});
     getDbConnections().then(setDbConns).catch(() => {});
+    // 企业知识库配置：是否已接入底座，决定要不要显示远程区块
+    kbConfigGet().then(setKbCfg).catch(() => {});
   }, []);
 
   // 微信：加载状态并订阅事件（状态变化 + 扫码二维码）
@@ -585,6 +610,145 @@ export default function SettingsModal({
     if (!ragQuery.trim()) return;
     const r = await searchRag(ragQuery.trim());
     setRagHits(r.hits);
+    setRagAnswer(r);
+  };
+
+  // ---------- 企业知识库（接入 knowledge-fabric 底座） ----------
+
+  const loadKb = async () => {
+    try {
+      setKbCfg(await kbConfigGet());
+    } catch (e) {
+      setKbMsg(String(e));
+    }
+  };
+
+  /** 用接入码连接：底座控制台「接入 Agent」页生成 8 位随机码，粘进来即可 */
+  const doKbConnect = async () => {
+    if (!kbCode.trim()) {
+      setKbMsg("请先填入底座控制台生成的接入码（形如 KF-7K3M-9QX2）");
+      return;
+    }
+    setKbBusy(true);
+    setKbMsg("正在兑换令牌…");
+    try {
+      const r = await kbExchangeCode(kbCfg?.base_url ?? "http://127.0.0.1:8082", kbCode.trim());
+      setKbCode("");
+      setKbMsg(`已连接：租户 ${r.tenant}，令牌 ${r.token_prefix ?? ""}…（已加密存入本地凭据库）`);
+      setKbOk(true);
+      await loadKb();
+      // 连上后立刻自动测一次，把"多少个文档/分片"直接显示出来
+      // —— 只提示"成功"不够，用户要看到连到了哪个库、里面有多少东西。
+      void doKbTest();
+      // 连上后立刻拉一次库列表，用户可直接选
+      try {
+        const list = await kbList();
+        setKbItems(list.items ?? []);
+        if ((list.items ?? []).length > 0 && kbCfg) {
+          const first = list.items[0];
+          const next = { ...kbCfg, tenant: first.tenant, kb: first.kb };
+          setKbCfg(next);
+          await kbConfigSet({
+            mode: next.mode,
+            base_url: next.base_url,
+            ingest_url: next.ingest_url,
+            tenant: next.tenant,
+            kb: next.kb,
+            profile: next.profile,
+            top_k: next.top_k,
+            timeout_ms: next.timeout_ms,
+            fallback_local: next.fallback_local,
+          });
+          void doKbTest();
+        }
+      } catch (e) {
+        setKbMsg((m) => `${m}｜拉取库列表失败：${String(e)}`);
+      }
+    } catch (e) {
+      setKbMsg(String(e));
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  const doKbSave = async () => {
+    if (!kbCfg) return;
+    setKbBusy(true);
+    try {
+      const saved = await kbConfigSet({
+        mode: kbCfg.mode,
+        base_url: kbCfg.base_url,
+        ingest_url: kbCfg.ingest_url,
+        tenant: kbCfg.tenant,
+        kb: kbCfg.kb,
+        profile: kbCfg.profile,
+        top_k: kbCfg.top_k,
+        timeout_ms: kbCfg.timeout_ms,
+        fallback_local: kbCfg.fallback_local,
+      });
+      setKbCfg(saved);
+      setKbMsg("配置已保存");
+    } catch (e) {
+      setKbMsg(String(e));
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  const doKbTest = async () => {
+    setKbBusy(true);
+    setKbMsg("正在测试…");
+    try {
+      const r = await kbTest();
+      if (r.ok) {
+        const kb = (r.kb as Record<string, unknown> | undefined) ?? {};
+        const docs = Number(kb.documents ?? NaN);
+        const chunks = Number(kb.chunks ?? NaN);
+        if (!Number.isNaN(docs)) setKbCounts({ documents: docs, chunks: chunks });
+        setKbOk(true);
+        setKbMsg(
+          !Number.isNaN(docs)
+            ? `已连接：${String(kb.tenant)}/${String(kb.kb)} · ${docs} 个文档 / ${chunks} 个分片`
+            : "已连接（未指定具体知识库，仅验证了服务可达）"
+        );
+      } else {
+        setKbOk(false);
+        setKbMsg(`连接失败：${r.kb_error ?? "底座不可达"}`);
+      }
+    } catch (e) {
+      setKbOk(false);
+      setKbMsg(String(e));
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  const doKbList = async () => {
+    setKbBusy(true);
+    try {
+      const list = await kbList();
+      setKbItems(list.items ?? []);
+      setKbMsg(`底座上有 ${list.count ?? 0} 个知识库`);
+    } catch (e) {
+      setKbMsg(String(e));
+    } finally {
+      setKbBusy(false);
+    }
+  };
+
+  const doKbDisconnect = async () => {
+    if (!confirm("断开后会删除本地保存的令牌，并切回本地索引模式。确定？")) return;
+    setKbBusy(true);
+    try {
+      const r = await kbDisconnect();
+      setKbItems([]);
+      setKbMsg(`已断开（令牌${r.token_removed ? "已删除" : "本就不存在"}），当前模式 ${r.mode}`);
+      await loadKb();
+    } catch (e) {
+      setKbMsg(String(e));
+    } finally {
+      setKbBusy(false);
+    }
   };
 
   const updModel = (patch: Partial<ModelConfig>) => setModel((c) => (c ? { ...c, ...patch } : c));
@@ -1726,9 +1890,256 @@ export default function SettingsModal({
                   ))}
                 </div>
               )}
+              {ragAnswer && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-faint)" }}>
+                  {ragAnswer.refused ? (
+                    <span style={{ color: "#f87171" }}>
+                      底座判定：知识库里没有足够依据（{ragAnswer.reason ?? "依据不足"}）
+                    </span>
+                  ) : (
+                    <span>
+                      来源 {ragAnswer.source ?? "local"}
+                      {ragAnswer.answerability != null && ` · 可达分 ${ragAnswer.answerability.toFixed(4)}`}
+                      {ragAnswer.threshold != null && ` / 阈值 ${ragAnswer.threshold}`}
+                    </span>
+                  )}
+                </div>
+              )}
             </section>
 
-            {/* ============ 数据库连接 ============ */}
+            {/* ============ 企业知识库（接入 knowledge-fabric 底座） ============ */}
+            <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
+              <h4 style={{ margin: "4px 0 8px", color: "#60a5fa" }}>企业知识库（远程底座）</h4>
+
+              {/* 连接状态横幅：必须一眼能看出"连没连上、连到哪个库、里面有多少东西"。
+                  之前只在小灰字里写一句"已连接"，实测用户根本没注意到。 */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  marginBottom: 10,
+                  border: `1px solid ${
+                    kbOk === true ? "#34d399" : kbOk === false ? "#f87171" : "var(--border-soft)"
+                  }`,
+                  background:
+                    kbOk === true
+                      ? "rgba(52,211,153,.12)"
+                      : kbOk === false
+                      ? "rgba(248,113,113,.12)"
+                      : "var(--box-solid)",
+                }}
+              >
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 999,
+                    flexShrink: 0,
+                    background:
+                      kbOk === true ? "#34d399" : kbOk === false ? "#f87171" : "var(--text-faint)",
+                    boxShadow: kbOk === true ? "0 0 8px #34d399" : undefined,
+                  }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color:
+                        kbOk === true ? "#34d399" : kbOk === false ? "#f87171" : "var(--text-dim)",
+                    }}
+                  >
+                    {kbOk === true
+                      ? `已连接 · ${kbCfg?.tenant ?? ""}/${kbCfg?.kb ?? ""}`
+                      : kbOk === false
+                      ? "连接失败"
+                      : kbCfg?.has_token
+                      ? "已保存令牌，点「测试连接」确认"
+                      : "未接入（未保存令牌）"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>
+                    {kbOk === true && kbCounts
+                      ? `${kbCounts.documents} 个文档 · ${kbCounts.chunks} 个分片 · `
+                      : ""}
+                    {kbCfg?.mode === "remote"
+                      ? "模式 remote（只用底座）"
+                      : kbCfg?.mode === "hybrid"
+                      ? "模式 hybrid（优先底座）"
+                      : kbCfg?.mode === "off"
+                      ? "模式 off（已关闭知识库）"
+                      : "模式 local（本地索引）"}
+                    {kbCfg?.fallback_local ? " · 允许回落本地" : " · 不回落"}
+                  </div>
+                </div>
+                {kbBusy && (
+                  <span style={{ fontSize: 11, color: "var(--text-faint)" }}>处理中…</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 8 }}>
+                连接 knowledge-fabric 底座后，<code>rag_search</code> 会改用底座检索：
+                有重排、有可核实的引用区间，并且<strong>能在没有依据时明确拒答</strong>。
+                接入码在底座控制台的「接入 Agent」页生成（8 位、10 分钟、只能用一次）。
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input
+                  style={{ ...input, flex: 2 }}
+                  value={kbCfg?.base_url ?? ""}
+                  onChange={(e) => setKbCfg((c) => (c ? { ...c, base_url: e.target.value } : c))}
+                  placeholder="底座服务地址，如 http://127.0.0.1:8082"
+                />
+                <input
+                  style={{ ...input, flex: 1 }}
+                  value={kbCode}
+                  onChange={(e) => setKbCode(e.target.value)}
+                  placeholder="接入码 KF-XXXX-XXXX"
+                />
+                <button
+                  className="acui-btn primary"
+                  disabled={kbBusy}
+                  onClick={() => void doKbConnect()}
+                >
+                  连接
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+                  模式
+                  <select
+                    style={{ ...input, width: 110 }}
+                    value={kbCfg?.mode ?? "local"}
+                    onChange={(e) => setKbCfg((c) => (c ? { ...c, mode: e.target.value as KbConfig["mode"] } : c))}
+                  >
+                    <option value="off">off 关闭</option>
+                    <option value="local">local 本地</option>
+                    <option value="remote">remote 只用底座</option>
+                    <option value="hybrid">hybrid 优先底座</option>
+                  </select>
+                </label>
+                <label style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+                  租户
+                  <input
+                    style={{ ...input, width: 90 }}
+                    value={kbCfg?.tenant ?? ""}
+                    onChange={(e) => setKbCfg((c) => (c ? { ...c, tenant: e.target.value } : c))}
+                  />
+                </label>
+                <label style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+                  知识库
+                  <input
+                    style={{ ...input, width: 100 }}
+                    value={kbCfg?.kb ?? ""}
+                    onChange={(e) => setKbCfg((c) => (c ? { ...c, kb: e.target.value } : c))}
+                  />
+                </label>
+                <label style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+                  条数
+                  <input
+                    type="number"
+                    style={{ ...input, width: 64 }}
+                    value={kbCfg?.top_k ?? 6}
+                    onChange={(e) => setKbCfg((c) => (c ? { ...c, top_k: Number(e.target.value) } : c))}
+                  />
+                </label>
+                <label style={{ fontSize: 11, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 6 }}>
+                  超时 ms
+                  <input
+                    type="number"
+                    style={{ ...input, width: 78 }}
+                    value={kbCfg?.timeout_ms ?? 8000}
+                    onChange={(e) => setKbCfg((c) => (c ? { ...c, timeout_ms: Number(e.target.value) } : c))}
+                  />
+                </label>
+              </div>
+
+              <label
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-dim)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 8,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={kbCfg?.fallback_local ?? false}
+                  onChange={(e) => setKbCfg((c) => (c ? { ...c, fallback_local: e.target.checked } : c))}
+                />
+                底座不可用时回落本地索引
+                <span style={{ color: "var(--text-faint)" }}>
+                  （默认关闭：宁可明确报错，也不给出过期数据；开启后结果会标注 local-fallback）
+                </span>
+              </label>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <button className="acui-btn" disabled={kbBusy} onClick={() => void doKbSave()}>
+                  保存配置
+                </button>
+                <button className="acui-btn" disabled={kbBusy} onClick={() => void doKbTest()}>
+                  测试连接
+                </button>
+                <button className="acui-btn" disabled={kbBusy} onClick={() => void doKbList()}>
+                  列出知识库
+                </button>
+                {kbCfg?.has_token && (
+                  <button
+                    className="acui-btn danger"
+                    disabled={kbBusy}
+                    onClick={() => void doKbDisconnect()}
+                  >
+                    断开
+                  </button>
+                )}
+                <span style={{ fontSize: 11, color: kbCfg?.has_token ? "#34d399" : "var(--text-faint)" }}>
+                  {kbCfg?.has_token ? "已保存接入令牌（DPAPI 加密）" : "未接入（无令牌）"}
+                </span>
+              </div>
+
+              {kbMsg && (
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginBottom: 8 }}>{kbMsg}</div>
+              )}
+
+              {kbItems.length > 0 && (
+                <div style={{ maxHeight: 140, overflowY: "auto", background: "var(--box-solid)", borderRadius: 8, padding: 8 }}>
+                  {kbItems.map((k) => {
+                    const active = k.tenant === kbCfg?.tenant && k.kb === kbCfg?.kb;
+                    return (
+                      <div
+                        key={`${k.tenant}/${k.kb}`}
+                        onClick={() =>
+                          setKbCfg((c) => (c ? { ...c, tenant: k.tenant, kb: k.kb } : c))
+                        }
+                        style={{
+                          fontSize: 11,
+                          padding: "4px 6px",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          background: active ? "rgba(96,165,250,.16)" : "transparent",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                      >
+                        <span style={{ color: active ? "#93c5fd" : "var(--text-dim)" }}>
+                          {k.tenant}/{k.kb}
+                        </span>
+                        <span style={{ color: "var(--text-faint)", flexShrink: 0 }}>
+                          {k.documents} 文档 · {k.chunks} 分片
+                          {k.dense_ratio < 1 && ` · 稠密覆盖 ${(k.dense_ratio * 100).toFixed(0)}%`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
             <section style={{ borderTop: "1px solid var(--border-soft)", paddingTop: 12, marginTop: 8 }}>
               <h4 style={{ margin: "4px 0 8px", color: "#34d399" }}>数据库连接</h4>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>

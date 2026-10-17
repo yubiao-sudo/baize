@@ -21,7 +21,9 @@ import type {
   Project,
   RagDoc,
   DbConnection,
-  RagHit,
+  RagAnswer,
+  KbConfig,
+  KbMeta,
   RuntimeConfig,
   ThoughtEvent,
   Todo,
@@ -699,8 +701,47 @@ export async function clearRag(): Promise<boolean> {
   return invoke<boolean>("clear_rag");
 }
 
-export async function searchRag(query: string): Promise<{ count: number; hits: RagHit[] }> {
-  return invoke("search_rag", { query });
+export async function searchRag(query: string): Promise<RagAnswer> {
+  return invoke<RagAnswer>("search_rag", { query });
+}
+
+// ---------------- 远程知识库（knowledge-fabric 底座） ----------------
+
+export async function kbConfigGet(): Promise<KbConfig> {
+  return invoke<KbConfig>("kb_config_get");
+}
+
+export async function kbConfigSet(cfg: Omit<KbConfig, "has_token">): Promise<KbConfig> {
+  return invoke<KbConfig>("kb_config_set", cfg);
+}
+
+/** 用接入码连接底座：兑换长期令牌并加密存入 vault（前端拿不到明文） */
+export async function kbExchangeCode(
+  base_url: string,
+  code: string,
+): Promise<{ ok: boolean; tenant: string; token_prefix?: string; mode: string; base_url: string }> {
+  // 参数名用 snake_case：后端命令声明了 rename_all = "snake_case"，
+  // 两边字段名保持一致，避免再出现 "missing required key baseUrl" 这类错。
+  return invoke("kb_exchange_code", { base_url, code });
+}
+
+export async function kbDisconnect(): Promise<{ ok: boolean; token_removed: boolean; mode: string }> {
+  return invoke("kb_disconnect");
+}
+
+export async function kbList(): Promise<{ count: number; items: KbMeta[] }> {
+  return invoke("kb_list");
+}
+
+export async function kbTest(): Promise<{
+  ok: boolean;
+  config: KbConfig;
+  health?: Record<string, unknown>;
+  kb?: Record<string, unknown>;
+  kb_error?: string;
+  note?: string;
+}> {
+  return invoke("kb_test");
 }
 
 // ---------------- 数据库连接配置 ----------------

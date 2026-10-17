@@ -189,8 +189,10 @@ impl Tool for UnifiedSearchTool {
             // RagIndex 在 AppState 里，工具层无法直接拿到；通过全局注册表桥接（lib 启动时注入）
             match crate::unified_search::rag_bridge_lookup() {
                 Some(rag) => {
-                    let hits = rag.search(&query, max);
-                    out["sources"]["knowledge"] = json!({ "count": hits.len(), "hits": hits });
+                    // 统一搜索也走同一套分派：远程模式下这里查的是底座，
+                    // 返回里带 refused/source，调用方可据此判断"是没找到还是被判拒答"
+                    let answer = rag.search(&query, max);
+                    out["sources"]["knowledge"] = answer.to_json();
                 }
                 None => {
                     out["sources"]["knowledge"] =

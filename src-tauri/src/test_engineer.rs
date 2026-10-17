@@ -1400,7 +1400,11 @@ fn dispatch_ui_action(capability: &dyn Capability, step: &mut Value, ctx: &mut W
         }
         "click_element" => {
             let name = step["name"].as_str().ok_or("click_element 缺少参数 name")?;
-            let res = capability.click_element(name).map_err(|e| e.to_string())?;
+            // 测试步骤可选 window 字段：指定目标窗口（不填=前台窗口）
+            let win = step["window"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+            let res = capability
+                .click_element(name, win)
+                .map_err(|e| e.to_string())?;
             Ok((format!("点击控件「{name}」：{}", res.description), Vec::new()))
         }
         "click_at" => {
@@ -1633,7 +1637,7 @@ fn dispatch_ui_action(capability: &dyn Capability, step: &mut Value, ctx: &mut W
                     crate::browser::act(json!({ "action": "click", "selector": sel }))?;
                 }
                 (_, Some(nm)) => {
-                    capability.click_element(nm).map_err(|e| e.to_string())?;
+                    capability.click_element(nm, None).map_err(|e| e.to_string())?;
                 }
                 _ => return Err("upload_file 缺少参数：请提供 selector(web) 或 name(桌面)".into()),
             }
@@ -4260,9 +4264,9 @@ mod pipeline_tests {
         fn act(&self, _action: &Action) -> Result<ActionResult, CapError> {
             Err(CapError::Unsupported("noop".into()))
         }
-        fn find(&self, _target: &str) -> Result<Vec<ElementMatch>, CapError> { Ok(vec![]) }
+        fn find(&self, _target: &str, _window: Option<&str>) -> Result<Vec<ElementMatch>, CapError> { Ok(vec![]) }
         fn find_anywhere(&self, _target: &str) -> Result<Vec<ElementMatch>, CapError> { Ok(vec![]) }
-        fn click_element(&self, _target: &str) -> Result<ActionResult, CapError> {
+        fn click_element(&self, _target: &str, _window: Option<&str>) -> Result<ActionResult, CapError> {
             Err(CapError::Unsupported("noop".into()))
         }
     }

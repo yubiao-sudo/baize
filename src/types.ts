@@ -76,10 +76,62 @@ export interface RagDoc {
 }
 
 // 知识库检索命中（后端 search_rag）
+// 前三个字段是本地 RAG 就有的；下面的是接入底座后新增的增量字段，
+// 老代码只读 path/content/score 也完全不受影响。
 export interface RagHit {
   path: string;
   content: string;
   score: number;
+  /** 底座的原始相似度/重排概率（0~1），score 是它 ×100 的百分制 */
+  score_raw?: number;
+  page?: number | null;
+  /** 原文中的字符区间，可据此核对引用是否真实存在 */
+  char_range?: [number, number] | number[] | null;
+  /** 人类可读的引用串，如 "kf_ab.pdf p0 [16-37]" */
+  citation?: string;
+  section?: string;
+  chunk_id?: string | null;
+}
+
+// search_rag 的完整返回。
+// `refused=true` 表示底座判定「知识库里没有足够依据」——此时 hits 为空，
+// agent 必须如实转达，不能凭常识补全。
+export interface RagAnswer {
+  count: number;
+  refused?: boolean;
+  reason?: string | null;
+  /** knowledge-fabric | local | local-fallback | none */
+  source?: string;
+  answerability?: number | null;
+  threshold?: number | null;
+  hits: RagHit[];
+}
+
+// 知识库接入配置（后端 kb_config_get，**不含令牌**）
+export interface KbConfig {
+  mode: "off" | "local" | "remote" | "hybrid";
+  base_url: string;
+  /** 摄入服务地址（与检索是两个端口；agent 上传文档时用） */
+  ingest_url: string;
+  tenant: string;
+  kb: string;
+  profile: string;
+  top_k: number;
+  timeout_ms: number;
+  fallback_local: boolean;
+  has_token: boolean;
+}
+
+// 底座上的一个知识库（GET /v1/kbs）
+export interface KbMeta {
+  tenant: string;
+  kb: string;
+  documents: number;
+  chunks: number;
+  chunks_with_dense: number;
+  /** 稠密向量覆盖率；<1 说明含旧切片，检索会退化成纯稀疏 */
+  dense_ratio: number;
+  last_ingested_at?: string | null;
 }
 
 // 数据库连接配置（后端 DbConnection）
